@@ -6,6 +6,8 @@
   <application
       android:allowBackup="true"
       android:label="OpenStarbound Mobile"
+      android:icon="@mipmap/ic_launcher"
+      android:roundIcon="@mipmap/ic_launcher_round"
       android:hardwareAccelerated="true"
       android:enableOnBackInvokedCallback="true"
       android:resizeableActivity="false"

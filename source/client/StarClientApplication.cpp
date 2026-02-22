@@ -437,14 +437,22 @@ void ClientApplication::processInput(InputEvent const& event) {
       });
   }
   else if (auto cAxis = event.ptr<ControllerAxisEvent>()) {
+    float axisValue = cAxis->controllerAxisValue;
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
+    // Mobile platforms can report noisy virtual/driver axis values.
+    // Filter tiny magnitudes so they do not unintentionally slow movement.
+    if (abs(axisValue) < 0.25f)
+      axisValue = 0.0f;
+#endif
+
     if (cAxis->controllerAxis == ControllerAxis::LeftX)
-      m_controllerLeftStick[0] = cAxis->controllerAxisValue;
+      m_controllerLeftStick[0] = axisValue;
     else if (cAxis->controllerAxis == ControllerAxis::LeftY)
-      m_controllerLeftStick[1] = cAxis->controllerAxisValue;
+      m_controllerLeftStick[1] = axisValue;
     else if (cAxis->controllerAxis == ControllerAxis::RightX)
-      m_controllerRightStick[0] = cAxis->controllerAxisValue;
+      m_controllerRightStick[0] = axisValue;
     else if (cAxis->controllerAxis == ControllerAxis::RightY)
-      m_controllerRightStick[1] = cAxis->controllerAxisValue;
+      m_controllerRightStick[1] = axisValue;
   }
 
   bool processed = !m_errorScreen->accepted() && m_errorScreen->handleInputEvent(event);
@@ -555,18 +563,28 @@ void ClientApplication::render() {
   } else if (m_state > MainAppState::Title) {
     WorldClientPtr worldClient = m_universeClient->worldClient();
     if (worldClient) {
+#if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       auto totalStart = Time::monotonicMicroseconds();
+#endif
       renderer->switchEffectConfig("world");
+#if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       auto clientStart = totalStart;
+#endif
       worldClient->render(m_renderData, TilePainter::BorderTileSize);
+#if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       LogMap::set("client_render_world_client", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - clientStart));
+#endif
 
+#if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       auto paintStart = Time::monotonicMicroseconds();
+#endif
       m_worldPainter->render(m_renderData, [&]() -> bool {
         return worldClient->waitForLighting(&m_renderData);
       });
+#if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       LogMap::set("client_render_world_painter", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - paintStart));
       LogMap::set("client_render_world_total", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - totalStart));
+#endif
       
       auto size = Vec2F(renderer->screenSize());
       auto quad = renderFlatRect(RectF::withSize(size / -2, size), Vec4B::filled(0), 0.0f);
@@ -582,11 +600,15 @@ void ClientApplication::render() {
       }
     }
     renderer->switchEffectConfig("interface");
+#if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     auto start = Time::monotonicMicroseconds();
+#endif
     m_mainInterface->renderInWorldElements();
     m_mainInterface->render();
     m_cinematicOverlay->render();
+#if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     LogMap::set("client_render_interface", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - start));
+#endif
   }
 
   if (!m_errorScreen->accepted())
@@ -1343,10 +1365,21 @@ void ClientApplication::updateRunning(float dt) {
       config->set("zoomLevel", min(1000000.f, newZoom));
     }
 
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
+    bool virtualDirectionHeld =
+        isActionTaken(InterfaceAction::PlayerRight) ||
+        isActionTaken(InterfaceAction::PlayerLeft);
+
+    if (!virtualDirectionHeld && m_controllerInput && m_controllerLeftStick.magnitudeSquared() > 0.01f)
+      m_player->setMoveVector(m_controllerLeftStick);
+    else
+      m_player->setMoveVector(Vec2F());
+#else
     if (m_controllerInput && m_controllerLeftStick.magnitudeSquared() > 0.01f)
       m_player->setMoveVector(m_controllerLeftStick);
     else
       m_player->setMoveVector(Vec2F());
+#endif
 
     if (m_voice && m_input)
       m_voice->setInput(m_input->bindHeld("opensb", "pushToTalk"));
@@ -1449,6 +1482,7 @@ void ClientApplication::updateRunning(float dt) {
       m_universeServer->setPause(m_mainInterface->escapeDialogOpen());
     }
 
+#if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     Vec2F aimPosition = m_player->aimPosition();
     float fps = app->renderFps();
     LogMap::set("client_render_rate", strf("{:4.2f} FPS ({:4.2f}ms)", fps, (1.0f / app->renderFps()) * 1000.0f));
@@ -1461,6 +1495,7 @@ void ClientApplication::updateRunning(float dt) {
       LogMap::set("tile_liquid_level", toString(world->liquidLevel(aim).level));
       LogMap::set("tile_dungeon_id", world->isTileProtected(aim) ? strf("^red;{}", world->dungeonId(aim)) : toString(world->dungeonId(aim)));
     }
+#endif
 
     if (m_mainInterface->currentState() == MainInterface::ReturnToTitle)
       changeState(MainAppState::Title);

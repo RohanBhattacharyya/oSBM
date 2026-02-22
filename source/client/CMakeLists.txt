@@ -51,12 +51,31 @@ ENDIF()
 IF (STAR_SYSTEM_ANDROID)
   SET (STAR_ANDROID_JNI_LIB_DIR "${PROJECT_SOURCE_DIR}/application/mobile/android/host/app/src/main/jniLibs/arm64-v8a")
   SET_TARGET_PROPERTIES (starbound PROPERTIES OUTPUT_NAME main)
-  ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_ANDROID_JNI_LIB_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:starbound>" "${STAR_ANDROID_JNI_LIB_DIR}/libmain.so"
-    COMMENT "Copying libmain.so into Android host jniLibs"
-    VERBATIM
-  )
+  if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR CMAKE_BUILD_TYPE STREQUAL "RelWithAsserts" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+    if(CMAKE_STRIP)
+      ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_ANDROID_JNI_LIB_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:starbound>" "${STAR_ANDROID_JNI_LIB_DIR}/libmain.so"
+        COMMAND ${CMAKE_STRIP} --strip-unneeded "${STAR_ANDROID_JNI_LIB_DIR}/libmain.so"
+        COMMENT "Copying and stripping libmain.so into Android host jniLibs"
+        VERBATIM
+      )
+    else()
+      ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_ANDROID_JNI_LIB_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:starbound>" "${STAR_ANDROID_JNI_LIB_DIR}/libmain.so"
+        COMMENT "Copying libmain.so into Android host jniLibs (strip unavailable)"
+        VERBATIM
+      )
+    endif()
+  else()
+    ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_ANDROID_JNI_LIB_DIR}"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:starbound>" "${STAR_ANDROID_JNI_LIB_DIR}/libmain.so"
+      COMMENT "Copying libmain.so into Android host jniLibs"
+      VERBATIM
+    )
+  endif()
 ENDIF ()
 
 IF (STAR_SYSTEM_MACOS)

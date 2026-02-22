@@ -444,6 +444,13 @@ else()
 
 endif()
 
+# Android release builds benefit from section GC and frame-pointer omission:
+# smaller binaries and modestly better codegen on low-end devices.
+if(STAR_SYSTEM_ANDROID AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+  add_compile_options(-ffunction-sections -fdata-sections -fomit-frame-pointer)
+  add_link_options(-Wl,--gc-sections)
+endif()
+
 # Set other global build settings based on environment...
 
 if(STAR_SYSTEM_MACOS)
@@ -705,6 +712,10 @@ if(STAR_BUILD_GUI)
     set(STAR_ANDROID_HOST_DIR "${PROJECT_SOURCE_DIR}/application/mobile/android/host")
     set(STAR_ANDROID_GRADLE_WRAPPER "${STAR_ANDROID_HOST_DIR}/gradlew")
     set(STAR_ANDROID_GRADLE_USER_HOME "${CMAKE_BINARY_DIR}/.gradle")
+    set(STAR_ANDROID_APK_GRADLE_TASK ":app:assembleDebug")
+    if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR CMAKE_BUILD_TYPE STREQUAL "RelWithAsserts" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
+      set(STAR_ANDROID_APK_GRADLE_TASK ":app:assembleRelease")
+    endif()
     file(GLOB STAR_ANDROID_SDL3_JAR_CANDIDATES
       "${CMAKE_BINARY_DIR}/vcpkg_installed/*/share/java/SDL3/SDL3-*.jar"
     )
@@ -721,10 +732,10 @@ if(STAR_BUILD_GUI)
         ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
         GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
         STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
-        bash -lc "if [ -z \"${JAVA_HOME}\" ]; then export JAVA_HOME=\"$(dirname \"$(dirname \"$(readlink -f \"$(command -v javac)\")\")\")\"; fi; if [ -x \"${STAR_ANDROID_GRADLE_WRAPPER}\" ]; then \"${STAR_ANDROID_GRADLE_WRAPPER}\" -p \"${STAR_ANDROID_HOST_DIR}\" :app:assembleDebug; elif command -v gradle >/dev/null 2>&1; then gradle -p \"${STAR_ANDROID_HOST_DIR}\" :app:assembleDebug; else echo \"Android packaging requires Gradle. Install 'gradle' or add a wrapper at ${STAR_ANDROID_GRADLE_WRAPPER}.\" >&2; exit 1; fi"
+        bash -lc "if [ -z \"${JAVA_HOME}\" ]; then export JAVA_HOME=\"$(dirname \"$(dirname \"$(readlink -f \"$(command -v javac)\")\")\")\"; fi; if [ -x \"${STAR_ANDROID_GRADLE_WRAPPER}\" ]; then \"${STAR_ANDROID_GRADLE_WRAPPER}\" -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; elif command -v gradle >/dev/null 2>&1; then gradle -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; else echo \"Android packaging requires Gradle. Install 'gradle' or add a wrapper at ${STAR_ANDROID_GRADLE_WRAPPER}.\" >&2; exit 1; fi"
       DEPENDS starbound
       WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
-      COMMENT "Building Android APK (:app:assembleDebug)"
+      COMMENT "Building Android APK (${STAR_ANDROID_APK_GRADLE_TASK})"
       VERBATIM
     )
   endif()

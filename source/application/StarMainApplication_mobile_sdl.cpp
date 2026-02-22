@@ -26,6 +26,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <vector>
 #ifdef STAR_SYSTEM_ANDROID
 #include <android/log.h>
@@ -194,6 +195,10 @@ public:
     drawButton(draw, m_interactButtonCenter, radius * 0.50f, m_interactHeld, "E", base, fill);
     drawButton(draw, m_altButtonCenter, radius * 0.50f, m_altHeld, "A", base, fill);
     drawButton(draw, m_pauseButtonCenter, radius * 0.52f, m_pauseHeld, "ESC", base, fill);
+  }
+
+  bool overlayEnabled() const {
+    return m_config.enabled;
   }
 
 private:
@@ -1063,6 +1068,9 @@ private:
       bundledAssetsRoot = "../assets";
 #endif
 
+    unsigned hwThreads = std::max(1u, std::thread::hardware_concurrency());
+    unsigned workerPoolSize = std::clamp(hwThreads > 2 ? hwThreads - 1 : hwThreads, 2u, 6u);
+
     Json bootConfig = JsonObject{
       {"assetDirectories", JsonArray{bundledAssetsRoot, modsPath}},
       {"assetSources", JsonArray{state.packedPakPath}},
@@ -1070,7 +1078,7 @@ private:
         {"skipDigest", true},
         {"skipPreload", true},
         {"digestIgnore", JsonArray{".*"}},
-        {"workerPoolSize", 1}
+        {"workerPoolSize", workerPoolSize}
       }},
       {"storageDirectory", m_storageRoot},
       {"logDirectory", File::relativeTo(m_storageRoot, "logs")},
@@ -1233,29 +1241,48 @@ private:
   }
 
   void runGameLoop() {
+    m_updateTicker.reset();
+    m_renderTicker.reset();
+
     while (!m_quitRequested && !m_softQuitRequested) {
       auto inputEvents = processEvents();
 
       for (auto const& event : inputEvents)
         m_application->processInput(event);
 
-      m_application->update();
+      bool overlayEnabled = m_touchAdapter && m_touchAdapter->overlayEnabled();
+      if (overlayEnabled) {
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+      }
+
+      int updatesBehind = std::max<int>(round(m_updateTicker.ticksBehind()), 1);
+      updatesBehind = std::min<int>(updatesBehind, (int)m_maxFrameSkip + 1);
+      for (int i = 0; i < updatesBehind; ++i) {
+        if (overlayEnabled) {
+          // Keep ImGui frame state consistent when we catch up multiple updates.
+          if (i != 0)
+            ImGui::EndFrame();
+          ImGui::NewFrame();
+        }
+        m_application->update();
+        m_updateRate = m_updateTicker.tick();
+      }
 
       m_renderer->startFrame();
       m_application->render();
 
-      ImGui_ImplOpenGL3_NewFrame();
-      ImGui_ImplSDL3_NewFrame();
-      ImGui::NewFrame();
-      m_touchAdapter->drawOverlay();
-      ImGui::Render();
+      if (overlayEnabled) {
+        m_touchAdapter->drawOverlay();
+        ImGui::Render();
+      }
 
       m_renderer->finishFrame();
-      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+      if (overlayEnabled)
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
       SDL_GL_SwapWindow(m_window);
 
       m_renderRate = m_renderTicker.tick();
-      m_updateRate = m_updateTicker.tick();
 
       if (m_signalHandler.interruptCaught())
         m_quitRequested = true;
@@ -1286,7 +1313,8 @@ private:
     List<InputEvent> events;
 
     SDL_Event event;
-    ImGuiIO& io = ImGui::GetIO();
+    bool overlayEnabled = m_touchAdapter && m_touchAdapter->overlayEnabled();
+    ImGuiIO* io = overlayEnabled ? &ImGui::GetIO() : nullptr;
 
     m_touchAdapter->beginFrame();
 
@@ -1296,7 +1324,8 @@ private:
           && event.type != SDL_EVENT_FINGER_MOTION) {
         SDL_ConvertEventToRenderCoordinates(SDL_GetRenderer(m_window), &event);
       }
-      ImGui_ImplSDL3_ProcessEvent(&event);
+      if (overlayEnabled)
+        ImGui_ImplSDL3_ProcessEvent(&event);
 
       if (event.type == SDL_EVENT_QUIT) {
 #ifdef STAR_SYSTEM_ANDROID
@@ -1320,21 +1349,21 @@ private:
         continue;
 
       Maybe<InputEvent> input;
-      if (event.type == SDL_EVENT_KEY_DOWN && (!io.WantCaptureKeyboard || !io.WantTextInput) && !event.key.repeat) {
+      if (event.type == SDL_EVENT_KEY_DOWN && (!overlayEnabled || (!io->WantCaptureKeyboard || !io->WantTextInput)) && !event.key.repeat) {
         if (auto key = keyFromSdlKeyCode(event.key.key))
           input.set(KeyDownEvent{*key, (KeyMod)event.key.mod});
       } else if (event.type == SDL_EVENT_KEY_UP) {
         if (auto key = keyFromSdlKeyCode(event.key.key))
           input.set(KeyUpEvent{*key});
-      } else if (event.type == SDL_EVENT_TEXT_INPUT && !io.WantTextInput) {
+      } else if (event.type == SDL_EVENT_TEXT_INPUT && (!overlayEnabled || !io->WantTextInput)) {
         input.set(TextInputEvent{event.text.text});
       } else if (event.type == SDL_EVENT_MOUSE_MOTION) {
         input.set(MouseMoveEvent{{event.motion.xrel, -event.motion.yrel}, {event.motion.x, (int)m_windowSize[1] - event.motion.y}});
-      } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !io.WantCaptureMouse) {
+      } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && (!overlayEnabled || !io->WantCaptureMouse)) {
         input.set(MouseButtonDownEvent{mouseButtonFromSdlMouseButton(event.button.button), {event.button.x, (int)m_windowSize[1] - event.button.y}});
-      } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && !io.WantCaptureMouse) {
+      } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && (!overlayEnabled || !io->WantCaptureMouse)) {
         input.set(MouseButtonUpEvent{mouseButtonFromSdlMouseButton(event.button.button), {event.button.x, (int)m_windowSize[1] - event.button.y}});
-      } else if (event.type == SDL_EVENT_MOUSE_WHEEL && !io.WantCaptureMouse) {
+      } else if (event.type == SDL_EVENT_MOUSE_WHEEL && (!overlayEnabled || !io->WantCaptureMouse)) {
         input.set(MouseWheelEvent{event.wheel.y < 0 ? MouseWheel::Down : MouseWheel::Up, {event.wheel.mouse_x, (int)m_windowSize[1] - event.wheel.mouse_y}});
       } else if (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
         input.set(ControllerAxisEvent{(ControllerId)event.gaxis.which, controllerAxisFromSdlControllerAxis(event.gaxis.axis), (float)event.gaxis.value / 32768.0f});
