@@ -57,6 +57,31 @@ Json const AdditionalAssetsSettings = Json::parseJson(R"JSON(
     }
   )JSON");
 
+namespace {
+
+bool mobileDefaultActionMatch(Key key, InterfaceAction action) {
+  switch (action) {
+    case InterfaceAction::PlayerUp:
+      return key == Key::W;
+    case InterfaceAction::PlayerDown:
+      return key == Key::S;
+    case InterfaceAction::PlayerLeft:
+      return key == Key::A;
+    case InterfaceAction::PlayerRight:
+      return key == Key::D;
+    case InterfaceAction::PlayerJump:
+      return key == Key::Space;
+    case InterfaceAction::PlayerInteract:
+      return key == Key::E;
+    case InterfaceAction::InterfaceEscapeMenu:
+      return key == Key::Escape;
+    default:
+      return false;
+  }
+}
+
+}
+
 Json const AdditionalDefaultConfiguration = Json::parseJson(R"JSON(
     {
       "configurationVersion" : {
@@ -432,8 +457,15 @@ void ClientApplication::processInput(InputEvent const& event) {
         processed = m_titleScreen->handleInputEvent(event);
 
     } else if (m_state == MainAppState::SinglePlayer || m_state == MainAppState::MultiPlayer) {
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
+      // On mobile, route gameplay UI input first so touch interaction keeps
+      // working even if a cinematic overlay reports suppressInput.
+      if (!(processed = m_mainInterface->handleInputEvent(event)))
+        processed = m_cinematicOverlay->handleInputEvent(event);
+#else
       if (!(processed = m_cinematicOverlay->handleInputEvent(event)))
         processed = m_mainInterface->handleInputEvent(event);
+#endif
     }
   }
 
@@ -1212,7 +1244,27 @@ void ClientApplication::updateRunning(float dt) {
       p2pNetworkingService->setActivityData("In Game", finalDetails.utf8Ptr(), m_timeSinceJoin, party);
     }
 
-    if (!m_mainInterface->inputFocus() && !m_cinematicOverlay->suppressInput()) {
+    bool allowPlayerInput = false;
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
+    allowPlayerInput = !m_mainInterface->inputFocus();
+#else
+    allowPlayerInput = !m_cinematicOverlay->suppressInput() && !m_mainInterface->inputFocus();
+#endif
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
+    if (!allowPlayerInput) {
+      allowPlayerInput =
+          isActionTaken(InterfaceAction::PlayerRight)
+          || isActionTaken(InterfaceAction::PlayerLeft)
+          || isActionTaken(InterfaceAction::PlayerUp)
+          || isActionTaken(InterfaceAction::PlayerDown)
+          || isActionTaken(InterfaceAction::PlayerJump)
+          || isActionTakenEdge(InterfaceAction::PlayerJump)
+          || isActionTaken(InterfaceAction::PlayerInteract)
+          || isActionTakenEdge(InterfaceAction::PlayerInteract);
+    }
+#endif
+
+    if (allowPlayerInput) {
       m_player->setShifting(isActionTaken(InterfaceAction::PlayerShifting));
 
       if (isActionTaken(InterfaceAction::PlayerRight))
@@ -1223,7 +1275,7 @@ void ClientApplication::updateRunning(float dt) {
         m_player->moveUp();
       if (isActionTaken(InterfaceAction::PlayerDown))
         m_player->moveDown();
-      if (isActionTaken(InterfaceAction::PlayerJump))
+      if (isActionTaken(InterfaceAction::PlayerJump) || isActionTakenEdge(InterfaceAction::PlayerJump))
         m_player->jump();
 
       if (isActionTaken(InterfaceAction::PlayerTechAction1))
@@ -1420,7 +1472,7 @@ void ClientApplication::updateRunning(float dt) {
 
 bool ClientApplication::isActionTaken(InterfaceAction action) const {
   for (auto keyEvent : m_heldKeyEvents) {
-    if (m_guiContext->actions(keyEvent).contains(action))
+    if (m_guiContext->actions(keyEvent).contains(action) || mobileDefaultActionMatch(keyEvent.key, action))
       return true;
   }
 
@@ -1429,7 +1481,7 @@ bool ClientApplication::isActionTaken(InterfaceAction action) const {
 
 bool ClientApplication::isActionTakenEdge(InterfaceAction action) const {
   for (auto keyEvent : m_edgeKeyEvents) {
-    if (m_guiContext->actions(keyEvent).contains(action))
+    if (m_guiContext->actions(keyEvent).contains(action) || mobileDefaultActionMatch(keyEvent.key, action))
       return true;
   }
 

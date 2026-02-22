@@ -25,6 +25,8 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstring>
+#include <mutex>
+#include <vector>
 #ifdef STAR_SYSTEM_ANDROID
 #include <android/log.h>
 #endif
@@ -134,15 +136,19 @@ public:
     m_config = config;
   }
 
-  void beginFrame(List<InputEvent>& outEvents) {
-    m_frameEvents = &outEvents;
+  void beginFrame() {
+    m_generatedEvents.clear();
     if (!m_config.enabled)
       clearActions();
   }
 
   void endFrame() {
     emitActionEdges();
-    m_frameEvents = nullptr;
+  }
+
+  void appendGeneratedEvents(List<InputEvent>& outEvents) {
+    outEvents.appendAll(m_generatedEvents);
+    m_generatedEvents.clear();
   }
 
   bool processSdlEvent(SDL_Event const& event) {
@@ -250,15 +256,12 @@ private:
     if (insideCircle(pos, m_pauseButtonCenter, radius * 0.60f)) {
       state.role = FingerRole::PauseButton;
       m_pauseHeld = true;
-      setActionKey(true, Key::Escape, m_pauseKeyHeld);
     } else if (insideCircle(pos, m_jumpButtonCenter, radius * 0.70f)) {
       state.role = FingerRole::JumpButton;
       m_jumpHeld = true;
-      setActionKey(true, Key::Space, m_jumpKeyHeld);
     } else if (insideCircle(pos, m_interactButtonCenter, radius * 0.65f)) {
       state.role = FingerRole::InteractButton;
       m_interactHeld = true;
-      setActionKey(true, Key::E, m_interactKeyHeld);
     } else if (insideCircle(pos, m_altButtonCenter, radius * 0.65f)) {
       state.role = FingerRole::AltButton;
       m_altHeld = true;
@@ -277,6 +280,8 @@ private:
       state.role = FingerRole::Aim;
       m_aimFinger = finger;
       m_primaryHeld = true;
+      m_primaryMouseHeld = true;
+      m_primaryTouchPos = pos;
       emitMouseMove(pos);
       emitMouseDown(pos);
     }
@@ -303,6 +308,7 @@ private:
       else
         m_moveVec = delta / radius;
     } else if (ptr->role == FingerRole::Aim) {
+      m_primaryTouchPos = pos;
       emitMouseMove(pos);
     }
   }
@@ -319,18 +325,18 @@ private:
         m_joystickFinger = 0;
         break;
       case FingerRole::Aim:
-        if (m_primaryHeld)
+        if (m_primaryMouseHeld) {
           emitMouseUp(pos);
+          m_primaryMouseHeld = false;
+        }
         m_primaryHeld = false;
         m_aimFinger = 0;
         break;
       case FingerRole::JumpButton:
         m_jumpHeld = false;
-        setActionKey(false, Key::Space, m_jumpKeyHeld);
         break;
       case FingerRole::InteractButton:
         m_interactHeld = false;
-        setActionKey(false, Key::E, m_interactKeyHeld);
         break;
       case FingerRole::AltButton:
         m_altHeld = false;
@@ -341,7 +347,6 @@ private:
         break;
       case FingerRole::PauseButton:
         m_pauseHeld = false;
-        setActionKey(false, Key::Escape, m_pauseKeyHeld);
         break;
       default:
         break;
@@ -366,15 +371,35 @@ private:
     setActionKey(m_moveVec[0] < -0.30f, Key::A, m_leftHeld);
     setActionKey(m_moveVec[1] < -0.30f, Key::W, m_upHeld);
     setActionKey(m_moveVec[1] > 0.30f, Key::S, m_downHeld);
+    setActionKey(m_jumpHeld, Key::Space, m_jumpKeyHeld);
+    setActionKey(m_interactHeld, Key::E, m_interactKeyHeld);
+    setActionKey(m_pauseHeld, Key::Escape, m_pauseKeyHeld);
+
+    if (m_altHeld && !m_altMouseHeld) {
+      m_altMouseHeld = true;
+      emitMouseDown(m_altButtonCenter, MouseButton::Right);
+    } else if (!m_altHeld && m_altMouseHeld) {
+      m_altMouseHeld = false;
+      emitMouseUp(m_altButtonCenter, MouseButton::Right);
+    }
+
+    if (m_primaryHeld && !m_primaryMouseHeld) {
+      m_primaryMouseHeld = true;
+      emitMouseMove(m_primaryTouchPos);
+      emitMouseDown(m_primaryTouchPos);
+    } else if (!m_primaryHeld && m_primaryMouseHeld) {
+      m_primaryMouseHeld = false;
+      emitMouseUp(m_primaryTouchPos);
+    }
   }
 
   void setActionKey(bool desired, Key key, bool& held) {
     if (desired && !held) {
       held = true;
-      m_frameEvents->append(KeyDownEvent{key, noMods()});
+      emitEvent(KeyDownEvent{key, noMods()});
     } else if (!desired && held) {
       held = false;
-      m_frameEvents->append(KeyUpEvent{key});
+      emitEvent(KeyUpEvent{key});
     }
   }
 
@@ -391,18 +416,27 @@ private:
       m_altMouseHeld = false;
       emitMouseUp(m_altButtonCenter, MouseButton::Right);
     }
+
+    if (m_primaryMouseHeld) {
+      m_primaryMouseHeld = false;
+      emitMouseUp(m_primaryTouchPos);
+    }
   }
 
   void emitMouseMove(Vec2F const& pos) {
-    m_frameEvents->append(MouseMoveEvent{{0, 0}, toInputSpace(pos)});
+    emitEvent(MouseMoveEvent{{0, 0}, toInputSpace(pos)});
   }
 
   void emitMouseDown(Vec2F const& pos, MouseButton button = MouseButton::Left) {
-    m_frameEvents->append(MouseButtonDownEvent{button, toInputSpace(pos)});
+    emitEvent(MouseButtonDownEvent{button, toInputSpace(pos)});
   }
 
   void emitMouseUp(Vec2F const& pos, MouseButton button = MouseButton::Left) {
-    m_frameEvents->append(MouseButtonUpEvent{button, toInputSpace(pos)});
+    emitEvent(MouseButtonUpEvent{button, toInputSpace(pos)});
+  }
+
+  void emitEvent(InputEvent const& event) {
+    m_generatedEvents.append(event);
   }
 
   static void drawButton(ImDrawList* draw, Vec2F const& center, float radius, bool held, char const* label, ImU32 base, ImU32 fill) {
@@ -414,7 +448,7 @@ private:
 
   Vec2U* m_windowSize;
   MobileTouchConfig m_config;
-  List<InputEvent>* m_frameEvents = nullptr;
+  List<InputEvent> m_generatedEvents;
 
   StableHashMap<uint64_t, FingerState> m_fingers;
 
@@ -431,6 +465,8 @@ private:
   Vec2F m_pauseButtonCenter;
 
   bool m_primaryHeld = false;
+  bool m_primaryMouseHeld = false;
+  Vec2F m_primaryTouchPos;
   bool m_jumpHeld = false;
   bool m_interactHeld = false;
   bool m_altHeld = false;
@@ -649,12 +685,24 @@ private:
     }
 
     AudioFormat enableAudio() override {
-      parent->m_audioEnabled = true;
+      {
+        std::lock_guard<std::mutex> lock(parent->m_audioMutex);
+        parent->m_audioEnabled = true;
+      }
+      if (parent->m_sdlAudioOutputStream)
+        SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(parent->m_sdlAudioOutputStream));
+      else
+        Logger::warn("Application: enableAudio requested but playback stream is unavailable");
       return {44100, 2};
     }
 
     void disableAudio() override {
-      parent->m_audioEnabled = false;
+      {
+        std::lock_guard<std::mutex> lock(parent->m_audioMutex);
+        parent->m_audioEnabled = false;
+      }
+      if (parent->m_sdlAudioOutputStream)
+        SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(parent->m_sdlAudioOutputStream));
     }
 
     bool openAudioInputDevice(uint32_t, int, int, AudioCallback) override {
@@ -762,6 +810,37 @@ private:
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD))
       throw ApplicationException::format("Could not initialize SDL: {}", SDL_GetError());
+
+    SDL_AudioSpec desired = {SDL_AUDIO_S16, 2, 44100};
+    m_sdlAudioOutputStream = SDL_OpenAudioDeviceStream(
+        SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+        &desired,
+        [](void* userdata, SDL_AudioStream* stream, int len, int) {
+          if (len <= 0)
+            return;
+
+          auto* platform = static_cast<MobilePlatform*>(userdata);
+          std::lock_guard<std::mutex> lock(platform->m_audioMutex);
+
+          platform->m_audioOutputData.resize((size_t)len);
+          if (platform->m_audioEnabled && platform->m_application) {
+            platform->m_application->getAudioData(
+                reinterpret_cast<int16_t*>(platform->m_audioOutputData.data()),
+                (size_t)len / 4);
+          } else {
+            std::memset(platform->m_audioOutputData.data(), 0, (size_t)len);
+          }
+
+          SDL_PutAudioStreamData(stream, platform->m_audioOutputData.data(), len);
+        },
+        this);
+
+    if (!m_sdlAudioOutputStream) {
+      Logger::error("Application: Could not open mobile audio device, no sound available!");
+    } else {
+      Logger::info("Application: Opened mobile audio device with 44.1khz / 16 bit stereo audio");
+      SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(m_sdlAudioOutputStream));
+    }
   }
 
   void setupWindowAndRenderer() {
@@ -817,6 +896,10 @@ private:
   }
 
   void teardownSdl() {
+    if (m_sdlAudioOutputStream) {
+      SDL_CloseAudioDevice(SDL_GetAudioStreamDevice(m_sdlAudioOutputStream));
+      m_sdlAudioOutputStream = nullptr;
+    }
 #ifdef STAR_SYSTEM_ANDROID
     // Avoid explicit SDL video teardown on Android. Some device/driver stacks
     // abort in SDL's VsyncReceiver path while teardown races in-flight callbacks.
@@ -1184,6 +1267,14 @@ private:
   }
 
   void shutdownApplication() {
+    std::lock_guard<std::mutex> lock(m_audioMutex);
+    m_audioEnabled = false;
+    if (m_sdlAudioOutputStream)
+      SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(m_sdlAudioOutputStream));
+
+    if (!m_application)
+      return;
+
     try {
       m_application->shutdown();
     } catch (...) {
@@ -1197,7 +1288,7 @@ private:
     SDL_Event event;
     ImGuiIO& io = ImGui::GetIO();
 
-    m_touchAdapter->beginFrame(events);
+    m_touchAdapter->beginFrame();
 
     while (SDL_PollEvent(&event)) {
       if (event.type != SDL_EVENT_FINGER_DOWN
@@ -1258,6 +1349,7 @@ private:
     }
 
     m_touchAdapter->endFrame();
+    m_touchAdapter->appendGeneratedEvents(events);
     return events;
   }
 
@@ -1290,6 +1382,9 @@ private:
   bool m_cursorHardware = false;
   bool m_textInput = false;
   bool m_audioEnabled = false;
+  SDL_AudioStream* m_sdlAudioOutputStream = nullptr;
+  std::vector<uint8_t> m_audioOutputData;
+  std::mutex m_audioMutex;
   bool m_quitRequested = false;
   bool m_softQuitRequested = false;
   String m_runtimeExitReason;

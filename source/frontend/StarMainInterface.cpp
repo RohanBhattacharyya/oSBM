@@ -291,8 +291,18 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
   }
 
   if (event.is<KeyDownEvent>()) {
+    auto keyDown = event.ptr<KeyDownEvent>();
+    auto actions = m_guiContext->actions(event);
+
+    // Mobile virtual pause emits Escape directly and should always open/close the
+    // pause dialog even if a widget currently has keyboard capture.
+    if (keyDown && keyDown->key == Key::Escape) {
+      m_paneManager.toggleRegisteredPane(MainInterfacePanes::EscapeDialog);
+      return true;
+    }
+
     if (m_chat->hasFocus()) {
-      if (m_guiContext->actions(event).contains(InterfaceAction::ChatSendLine)) {
+      if (actions.contains(InterfaceAction::ChatSendLine)) {
         doChat(m_chat->currentChat(), true);
         m_chat->clearCurrentChat();
         m_chat->stopChat();
@@ -301,7 +311,7 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
     } else if (!m_paneManager.keyboardCapturedWidget()) {
       Maybe<InventorySlot> swapSlot;
 
-      for (auto action : m_guiContext->actions(event)) {
+      for (auto action : actions) {
         switch (action) {
           default:
             break;
