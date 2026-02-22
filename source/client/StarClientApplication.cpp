@@ -18,6 +18,7 @@
 #include "StarVoice.hpp"
 #include "StarCurve25519.hpp"
 #include "StarInterpolation.hpp"
+#include "StarThread.hpp"
 
 #include "StarCameraLuaBindings.hpp"
 #include "StarCelestialLuaBindings.hpp"
@@ -33,6 +34,13 @@
 
 #include "imgui.h"
 #include "imgui_freetype.h"
+
+#if defined(STAR_SYSTEM_ANDROID)
+#include <android/log.h>
+#define STAR_ANDROID_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "OpenStarbound", __VA_ARGS__)
+#else
+#define STAR_ANDROID_LOGI(...)
+#endif
 
 #if defined STAR_SYSTEM_WINDOWS
 #include <windows.h>
@@ -75,6 +83,15 @@ Json const AdditionalDefaultConfiguration = Json::parseJson(R"JSON(
       "cameraSpeedFactor" : 1.0,
       "interfaceScale" : 0,
       "speechBubbles" : true,
+      "mobile" : {
+        "touchControls" : {
+          "enabled" : true,
+          "opacity" : 0.35,
+          "size" : 1.0,
+          "deadzone" : 0.15,
+          "invertLook" : false
+        }
+      },
 
       "title" : {
         "multiPlayerAddress" : "",
@@ -158,6 +175,26 @@ void ClientApplication::startup(StringList const& cmdLineArgs) {
   RootLoader rootLoader({AdditionalAssetsSettings, AdditionalDefaultConfiguration, String("starbound.log"), LogLevel::Info, false, String("starbound.config")});
   m_root = rootLoader.initOrDie(cmdLineArgs).first;
 
+#if STAR_SYSTEM_ANDROID
+  STAR_ANDROID_LOGI("startup: preloading assets/config begin");
+  auto assets = m_root->assets();
+  STAR_ANDROID_LOGI("startup: assets handle ready");
+  m_minInterfaceScale = assets->json("/interface.config:minInterfaceScale").toFloat();
+  STAR_ANDROID_LOGI("startup: minInterfaceScale ready");
+  m_maxInterfaceScale = assets->json("/interface.config:maxInterfaceScale").toFloat();
+  STAR_ANDROID_LOGI("startup: maxInterfaceScale ready");
+  m_crossoverRes = jsonToVec2F(assets->json("/interface.config:interfaceCrossoverRes"));
+  STAR_ANDROID_LOGI("startup: crossoverRes ready");
+  m_windowTitle = assets->json("/client.config:windowTitle").toString();
+  STAR_ANDROID_LOGI("startup: windowTitle ready");
+  m_maxFrameSkipSetting = assets->json("/client.config:maxFrameSkip").toUInt();
+  STAR_ANDROID_LOGI("startup: maxFrameSkip ready");
+  m_updateTrackWindowSetting = assets->json("/client.config:updateTrackWindow").toFloat();
+  STAR_ANDROID_LOGI("startup: updateTrackWindow ready");
+  m_assetsBootstrapReady = true;
+  STAR_ANDROID_LOGI("startup: preloading assets/config done");
+#endif
+
   Logger::info("OpenStarbound Client v{} for v{} ({}) Source ID: {} Protocol: {}", OpenStarVersionString, StarVersionString, StarArchitectureString, StarSourceIdentifierString, StarProtocolVersion);
 }
 
@@ -186,10 +223,13 @@ void ClientApplication::shutdown() {
 }
 
 void ClientApplication::applicationInit(ApplicationControllerPtr appController) {
+  STAR_ANDROID_LOGI("applicationInit: begin");
   Application::applicationInit(appController);
 
+  STAR_ANDROID_LOGI("applicationInit: setCursorVisible");
   appController->setCursorVisible(true);
 
+  STAR_ANDROID_LOGI("applicationInit: read config");
   auto configuration = m_root->configuration();
   bool vsync = configuration->get("vsync").toBool();
   Vec2U windowedSize = jsonToVec2U(configuration->get("windowedResolution"));
@@ -199,6 +239,7 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
   bool maximized = configuration->get("maximized").toBool();
   m_controllerInput = configuration->get("controllerInput").optBool().value();
   
+  STAR_ANDROID_LOGI("applicationInit: configure window mode");
   if (fullscreen)
     appController->setFullscreenWindow(fullscreenSize);
   else if (borderless)
@@ -217,24 +258,48 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
   if (auto jServerUpdateRate = configuration->get("serverUpdateRate"))
     ServerGlobalTimestep = 1.0f / jServerUpdateRate.toFloat();
 
+  STAR_ANDROID_LOGI("applicationInit: set update/vsync/hardware cursor");
   appController->setTargetUpdateRate(updateRate);
   appController->setVSyncEnabled(vsync);
   appController->setCursorHardware(configuration->get("hardwareCursor").optBool().value(true));
 
   // Must be called before anything that can invoke an asset load.
+  STAR_ANDROID_LOGI("applicationInit: loadMods begin");
   loadMods();
+  STAR_ANDROID_LOGI("applicationInit: loadMods done");
   
+  STAR_ANDROID_LOGI("applicationInit: enableAudio");
   AudioFormat audioFormat = appController->enableAudio();
+  STAR_ANDROID_LOGI("applicationInit: create MainMixer");
   m_mainMixer = make_shared<MainMixer>(audioFormat.sampleRate, audioFormat.channels);
   m_mainMixer->setVolume(0.5);
   
-  m_worldPainter = make_shared<WorldPainter>();
+  STAR_ANDROID_LOGI("applicationInit: create GuiContext");
   m_guiContext = make_shared<GuiContext>(m_mainMixer->mixer(), appController);
+  STAR_ANDROID_LOGI("applicationInit: create GuiContext done");
+  STAR_ANDROID_LOGI("applicationInit: create Input");
   m_input = make_shared<Input>();
-  m_voice = make_shared<Voice>(appController);  
+  STAR_ANDROID_LOGI("applicationInit: create Input done");
+#if !STAR_SYSTEM_ANDROID
+  STAR_ANDROID_LOGI("applicationInit: create Voice");
+  m_voice = make_shared<Voice>(appController);
+#else
+  m_voice.reset();
+#endif
 
+  STAR_ANDROID_LOGI("applicationInit: read assets + load font");
+#if STAR_SYSTEM_ANDROID
+  if (m_assetsBootstrapReady) {
+    STAR_ANDROID_LOGI("applicationInit: apply preloaded settings");
+    appController->setApplicationTitle(m_windowTitle);
+    appController->setMaxFrameSkip(m_maxFrameSkipSetting);
+    appController->setUpdateTrackWindow(m_updateTrackWindowSetting);
+  } else {
+    STAR_ANDROID_LOGI("applicationInit: preloaded settings unavailable, using defaults");
+  }
+#else
   auto assets = m_root->assets();
-
+  STAR_ANDROID_LOGI("applicationInit: assets handle acquired");
   {
     auto& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
@@ -246,23 +311,35 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
       16, &config, io.Fonts->GetGlyphRangesDefault());
   }
 
+  STAR_ANDROID_LOGI("applicationInit: load interface config");
   m_minInterfaceScale = assets->json("/interface.config:minInterfaceScale").toFloat();
   m_maxInterfaceScale = assets->json("/interface.config:maxInterfaceScale").toFloat();
   m_crossoverRes = jsonToVec2F(assets->json("/interface.config:interfaceCrossoverRes"));
   
+  STAR_ANDROID_LOGI("applicationInit: apply app title and frame settings");
   appController->setApplicationTitle(assets->json("/client.config:windowTitle").toString());
   appController->setMaxFrameSkip(assets->json("/client.config:maxFrameSkip").toUInt());
   appController->setUpdateTrackWindow(assets->json("/client.config:updateTrackWindow").toFloat());
+#endif
   
-  if (auto jVoice = configuration->get("voice"))
-    m_voice->loadJson(jVoice.toObject(), true);
+  STAR_ANDROID_LOGI("applicationInit: load/init voice settings");
+  if (m_voice) {
+    if (auto jVoice = configuration->get("voice"))
+      m_voice->loadJson(jVoice.toObject(), true);
 
-  m_voice->init();
-  m_voice->setLocalSpeaker(0);
+    m_voice->init();
+    m_voice->setLocalSpeaker(0);
+  }
+  STAR_ANDROID_LOGI("applicationInit: done");
 }
 
 void ClientApplication::renderInit(RendererPtr renderer) {
   Application::renderInit(renderer);
+  if (!m_worldPainter) {
+    STAR_ANDROID_LOGI("renderInit: create WorldPainter");
+    m_worldPainter = make_shared<WorldPainter>();
+    STAR_ANDROID_LOGI("renderInit: create WorldPainter done");
+  }
   renderReload();
   m_root->registerReloadListener(m_reloadListener = make_shared<CallbackListener>([this]() { renderReload(); }));
 
@@ -360,7 +437,8 @@ void ClientApplication::processInput(InputEvent const& event) {
     }
   }
 
-  m_input->handleInput(event, processed);
+  if (m_input)
+    m_input->handleInput(event, processed);
 }
 
 void ClientApplication::update() {
@@ -407,14 +485,15 @@ void ClientApplication::update() {
     updateRunning(dt);
   
   // Swallow leftover encoded voice data if we aren't in-game to allow mic read to continue for settings.
-  if (m_state <= MainAppState::Title) {
+  if (m_voice && m_state <= MainAppState::Title) {
     DataStreamBuffer ext;
     m_voice->send(ext);
   } // TODO: directly disable encoding at menu so we don't have to do this
 
   m_guiContext->cleanup();
   m_edgeKeyEvents.clear();
-  m_input->update();
+  if (m_input)
+    m_input->update();
   ++m_framesSkipped;
 }
 
@@ -621,7 +700,8 @@ void ClientApplication::changeState(MainAppState newState) {
 
     m_mainInterface.reset();
 
-    m_voice->clearSpeakers();
+    if (m_voice)
+      m_voice->clearSpeakers();
 
     if (auto p2pNetworkingService = app->p2pNetworkingService()) {
       p2pNetworkingService->setJoinUnavailable();
@@ -796,8 +876,22 @@ void ClientApplication::changeState(MainAppState newState) {
         }
       }
 
-      if (auto errorMessage = m_universeClient->connect(m_universeServer->addLocalClient(), "", "")) {
-        setError(strf("Error connecting locally: {}", *errorMessage));
+      Maybe<String> localConnectError;
+      static String const MissingProtocolResponse = "Expected ProtocolResponse, but none received";
+      for (int attempt = 1; attempt <= 5; ++attempt) {
+        localConnectError = m_universeClient->connect(m_universeServer->addLocalClient(), "", "");
+        if (!localConnectError)
+          break;
+
+        Logger::warn("ClientApplication: local connection attempt {} failed: {}", attempt, *localConnectError);
+        if (!localConnectError->contains(MissingProtocolResponse))
+          break;
+
+        Thread::sleep((unsigned)(200 * attempt));
+      }
+
+      if (localConnectError) {
+        setError(strf("Error connecting locally: {}", *localConnectError));
         return;
       }
     }
@@ -959,7 +1053,8 @@ void ClientApplication::updateTitle(float dt) {
 
   auto& app = appController();
   bool inputActive = m_titleScreen->textInputActive();
-  m_input->setTextInputActive(inputActive);
+  if (m_input)
+    m_input->setTextInputActive(inputActive);
   if (inputActive)
     app->setTextArea(m_titleScreen->paneManager()->keyboardCapturedWidget()->keyboardCaptureArea());
   else
@@ -1173,8 +1268,11 @@ void ClientApplication::updateRunning(float dt) {
       if (isActionTakenEdge(InterfaceAction::EmoteSleep))
         m_player->addEmote(HumanoidEmote::Sleep);
 
-      if (int newZoomDirection = (int)m_input->bindHeld("opensb", "zoomIn") - (int)m_input->bindHeld("opensb", "zoomOut"))
+      if (m_input && (int)m_input->bindHeld("opensb", "zoomIn") - (int)m_input->bindHeld("opensb", "zoomOut"))
+      {
+        int newZoomDirection = (int)m_input->bindHeld("opensb", "zoomIn") - (int)m_input->bindHeld("opensb", "zoomOut");
         m_cameraZoomDirection = newZoomDirection;
+      }
     }
     if (m_cameraZoomDirection != 0) {
       const float threshold = 0.01f;
@@ -1198,11 +1296,12 @@ void ClientApplication::updateRunning(float dt) {
     else
       m_player->setMoveVector(Vec2F());
 
-    m_voice->setInput(m_input->bindHeld("opensb", "pushToTalk"));
+    if (m_voice && m_input)
+      m_voice->setInput(m_input->bindHeld("opensb", "pushToTalk"));
     DataStreamBuffer voiceData;
     voiceData.setByteOrder(ByteOrder::LittleEndian);
     //voiceData.writeBytes(VoiceBroadcastPrefix.utf8Bytes()); transmitting with SE compat for now
-    bool needstoSendVoice = m_voice->send(voiceData, 5000);
+    bool needstoSendVoice = m_voice ? m_voice->send(voiceData, 5000) : false;
 
     auto checkDisconnection = [this]() {
       if (!m_universeClient->isConnected()) {
@@ -1237,11 +1336,13 @@ void ClientApplication::updateRunning(float dt) {
           auto& view = broadcast.utf8();
           if (view.rfind(VoiceBroadcastPrefix.utf8(), 0) != NPos) {
             auto entityId = player->entityId();
-            auto speaker = m_voice->speaker(connectionForEntity(entityId));
-            speaker->entityId = entityId;
-            speaker->name = player->name();
-            speaker->position = player->mouthPosition();
-            m_voice->receive(speaker, view.substr(VoiceBroadcastPrefix.utf8Size()));
+            if (m_voice) {
+              auto speaker = m_voice->speaker(connectionForEntity(entityId));
+              speaker->entityId = entityId;
+              speaker->name = player->name();
+              speaker->position = player->mouthPosition();
+              m_voice->receive(speaker, view.substr(VoiceBroadcastPrefix.utf8Size()));
+            }
           }
           return true;
         };
@@ -1256,12 +1357,15 @@ void ClientApplication::updateRunning(float dt) {
           worldClient->sendSecretBroadcast(broadcast, true, false); // Already compressed by Opus.
         }
         if (auto mainPlayer = m_universeClient->mainPlayer()) {
-          auto localSpeaker = m_voice->localSpeaker();
-          localSpeaker->position = mainPlayer->position();
-          localSpeaker->entityId = mainPlayer->entityId();
-          localSpeaker->name = mainPlayer->name();
+          if (m_voice) {
+            auto localSpeaker = m_voice->localSpeaker();
+            localSpeaker->position = mainPlayer->position();
+            localSpeaker->entityId = mainPlayer->entityId();
+            localSpeaker->name = mainPlayer->name();
+          }
         }
-        m_voice->setLocalSpeaker(worldClient->connection());
+        if (m_voice)
+          m_voice->setLocalSpeaker(worldClient->connection());
       }
       worldClient->setInteractiveHighlightMode(isActionTaken(InterfaceAction::ShowLabels));
     }
@@ -1273,7 +1377,8 @@ void ClientApplication::updateRunning(float dt) {
     m_mainMixer->setSpeed(GlobalTimescale);
 
     bool inputActive = m_mainInterface->textInputActive();
-    m_input->setTextInputActive(inputActive);
+    if (m_input)
+      m_input->setTextInputActive(inputActive);
     if (inputActive)
       app->setTextArea(m_mainInterface->paneManager()->keyboardCapturedWidget()->keyboardCaptureArea());
     else

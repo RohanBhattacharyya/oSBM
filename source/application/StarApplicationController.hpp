@@ -5,6 +5,9 @@
 #include "StarP2PNetworkingService.hpp"
 #include "StarUserGeneratedContentService.hpp"
 #include "StarDesktopService.hpp"
+#include "StarExternalFileAccessService.hpp"
+#include "StarMobileSystemUiService.hpp"
+#include "StarLaunchConfigService.hpp"
 #include "StarImage.hpp"
 #include "StarRect.hpp"
 
@@ -75,6 +78,9 @@ public:
   virtual P2PNetworkingServicePtr p2pNetworkingService() const = 0;
   virtual UserGeneratedContentServicePtr userGeneratedContentService() const = 0;
   virtual DesktopServicePtr desktopService() const = 0;
+  virtual ExternalFileAccessServicePtr externalFileAccessService() const = 0;
+  virtual MobileSystemUiServicePtr mobileSystemUiService() const = 0;
+  virtual LaunchConfigServicePtr launchConfigService() const = 0;
 
   // Signals the application to quit
   virtual void quit() = 0;

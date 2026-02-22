@@ -1064,6 +1064,18 @@ private:
       return {};
     }
 
+    ExternalFileAccessServicePtr externalFileAccessService() const override {
+      return {};
+    }
+
+    MobileSystemUiServicePtr mobileSystemUiService() const override {
+      return {};
+    }
+
+    LaunchConfigServicePtr launchConfigService() const override {
+      return {};
+    }
+
     void quit() override {
       parent->m_quitRequested = true;
     }

@@ -8,4 +8,8 @@ SET (star_platform_HEADERS
     StarP2PNetworkingService.hpp
     StarStatisticsService.hpp
     StarUserGeneratedContentService.hpp
+    StarDesktopService.hpp
+    StarExternalFileAccessService.hpp
+    StarMobileSystemUiService.hpp
+    StarLaunchConfigService.hpp
   )

@@ -7,6 +7,48 @@ namespace Star {
 
 size_t const MultiTextureCount = 4;
 
+#if defined(STAR_SYSTEM_ANDROID)
+char const* DefaultVertexShader = R"SHADER(
+#version 300 es
+
+uniform vec2 textureSize0;
+uniform vec2 textureSize1;
+uniform vec2 textureSize2;
+uniform vec2 textureSize3;
+uniform vec2 screenSize;
+uniform mat3 vertexTransform;
+
+in vec2 vertexPosition;
+in vec4 vertexColor;
+in vec2 vertexTextureCoordinate;
+in int vertexData;
+
+out vec2 fragmentTextureCoordinate;
+flat out int fragmentTextureIndex;
+out vec4 fragmentColor;
+
+void main() {
+  vec2 screenPosition = (vertexTransform * vec3(vertexPosition, 1.0)).xy;
+  gl_Position = vec4(screenPosition / screenSize * 2.0 - 1.0, 0.0, 1.0);
+  if (((vertexData >> 3) & 0x1) == 1)
+    screenPosition.x = round(screenPosition.x);
+  if (((vertexData >> 4) & 0x1) == 1)
+    screenPosition.y = round(screenPosition.y);
+  int vertexTextureIndex = vertexData & 0x3;
+  if (vertexTextureIndex == 3)
+    fragmentTextureCoordinate = vertexTextureCoordinate / textureSize3;
+  else if (vertexTextureIndex == 2)
+    fragmentTextureCoordinate = vertexTextureCoordinate / textureSize2;
+  else if (vertexTextureIndex == 1)
+    fragmentTextureCoordinate = vertexTextureCoordinate / textureSize1;
+  else
+    fragmentTextureCoordinate = vertexTextureCoordinate / textureSize0;
+
+  fragmentTextureIndex = vertexTextureIndex;
+  fragmentColor = vertexColor;
+}
+)SHADER";
+#else
 char const* DefaultVertexShader = R"SHADER(
 #version 140
 
@@ -47,7 +89,42 @@ void main() {
   fragmentColor = vertexColor;
 }
 )SHADER";
+#endif
 
+#if defined(STAR_SYSTEM_ANDROID)
+char const* DefaultFragmentShader = R"SHADER(
+#version 300 es
+precision mediump float;
+
+uniform sampler2D texture0;
+uniform sampler2D texture1;
+uniform sampler2D texture2;
+uniform sampler2D texture3;
+
+in vec2 fragmentTextureCoordinate;
+flat in int fragmentTextureIndex;
+in vec4 fragmentColor;
+
+out vec4 outColor;
+
+void main() {
+  vec4 texColor;
+  if (fragmentTextureIndex == 3)
+    texColor = texture(texture3, fragmentTextureCoordinate);
+  else if (fragmentTextureIndex == 2)
+    texColor = texture(texture2, fragmentTextureCoordinate);
+  else if (fragmentTextureIndex == 1)
+    texColor = texture(texture1, fragmentTextureCoordinate);
+  else
+    texColor = texture(texture0, fragmentTextureCoordinate);
+
+  if (texColor.a <= 0.0)
+    discard;
+
+  outColor = texColor * fragmentColor;
+}
+)SHADER";
+#else
 char const* DefaultFragmentShader = R"SHADER(
 #version 140
 
@@ -79,6 +156,7 @@ void main() {
   outColor = texColor * fragmentColor;
 }
 )SHADER";
+#endif
 
 /*
 static void GLAPIENTRY GlMessageCallback(GLenum, GLenum type, GLuint, GLenum, GLsizei, const GLchar* message, const void* renderer) {
@@ -242,6 +320,20 @@ void OpenGlRenderer::loadEffectConfig(String const& name, Json const& effectConf
     return shader;
   };
 
+  auto compileShaderSource = [&](GLenum type, char const* sourceText, char const* shaderName) -> GLuint {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &sourceText, NULL);
+    glCompileShader(shader);
+
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+    if (!status) {
+      glGetShaderInfoLog(shader, sizeof(logBuffer), NULL, logBuffer);
+      throw RendererException(strf("Failed to compile {} shader: {}\n", shaderName, logBuffer));
+    }
+
+    return shader;
+  };
+
   GLuint vertexShader = 0, fragmentShader = 0;
   try {
     vertexShader = compileShader(GL_VERTEX_SHADER, "vertex");
@@ -251,8 +343,8 @@ void OpenGlRenderer::loadEffectConfig(String const& name, Json const& effectConf
     Logger::error("Shader compile error, using default: {}", e.what());
     if (vertexShader) glDeleteShader(vertexShader);
     if (fragmentShader) glDeleteShader(fragmentShader);
-    vertexShader = compileShader(GL_VERTEX_SHADER, DefaultVertexShader);
-    fragmentShader = compileShader(GL_FRAGMENT_SHADER, DefaultFragmentShader);
+    vertexShader = compileShaderSource(GL_VERTEX_SHADER, DefaultVertexShader, "default-vertex");
+    fragmentShader = compileShaderSource(GL_FRAGMENT_SHADER, DefaultFragmentShader, "default-fragment");
   }
 
   GLuint program = glCreateProgram();

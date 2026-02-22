@@ -22,6 +22,13 @@
 #include "StarImageLuaBindings.hpp"
 #include "StarUtilityLuaBindings.hpp"
 
+#if defined(STAR_SYSTEM_ANDROID)
+#include <android/log.h>
+#define STAR_ASSETS_ANDROID_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "OpenStarbound", __VA_ARGS__)
+#else
+#define STAR_ASSETS_ANDROID_LOGI(...)
+#endif
+
 namespace Star {
 
 // if a ptr is returned, can be optionally used to format an error
@@ -385,51 +392,64 @@ Assets::Assets(Settings settings, StringList assetSources) {
 
     runLoadScripts("onLoad", sourcePath, source);
   }
+  STAR_ASSETS_ANDROID_LOGI("Assets: source scan complete (%zu sources)", (size_t)m_assetSources.size());
 
   for (auto& pair : sources)
     runLoadScripts("postLoad", pair.first, pair.second);
+  STAR_ASSETS_ANDROID_LOGI("Assets: postLoad scripts complete");
 
-  Sha256Hasher digest;
+  if (!m_settings.skipDigest) {
+    Sha256Hasher digest;
 
-  for (auto const& assetPath : m_files.keys().transformed([](String const& s) {
-        return s.toLower();
-      }).sorted()) {
-    bool digestFile = true;
-    for (auto const& pattern : m_settings.digestIgnore) {
-      if (assetPath.regexMatch(pattern, false, false)) {
-        digestFile = false;
-        break;
+    for (auto const& assetPath : m_files.keys().transformed([](String const& s) {
+          return s.toLower();
+        }).sorted()) {
+      bool digestFile = true;
+      for (auto const& pattern : m_settings.digestIgnore) {
+        if (assetPath.regexMatch(pattern, false, false)) {
+          digestFile = false;
+          break;
+        }
+      }
+
+      auto const& descriptor = m_files.get(assetPath);
+
+      if (digestFile) {
+        digest.push(assetPath);
+        digest.push(DataStreamBuffer::serialize(descriptor.source->open(descriptor.sourceName)->size()));
+        for (auto const& pair : descriptor.patchSources)
+          digest.push(DataStreamBuffer::serialize(pair.second->open(AssetPath::removeSubPath(pair.first))->size()));
       }
     }
-
-    auto const& descriptor = m_files.get(assetPath);
-
-    if (digestFile) {
-      digest.push(assetPath);
-      digest.push(DataStreamBuffer::serialize(descriptor.source->open(descriptor.sourceName)->size()));
-      for (auto const& pair : descriptor.patchSources)
-        digest.push(DataStreamBuffer::serialize(pair.second->open(AssetPath::removeSubPath(pair.first))->size()));
-    }
+    m_digest = digest.compute();
+    STAR_ASSETS_ANDROID_LOGI("Assets: digest complete");
+  } else {
+    m_digest = {};
+    STAR_ASSETS_ANDROID_LOGI("Assets: digest skipped");
   }
-
-  m_digest = digest.compute();
 
   int workerPoolSize = m_settings.workerPoolSize;
   for (int i = 0; i < workerPoolSize; i++)
     m_workerThreads.append(Thread::invoke("Assets::workerMain", mem_fn(&Assets::workerMain), this));
+  STAR_ASSETS_ANDROID_LOGI("Assets: worker pool ready (%d)", workerPoolSize);
 
-  // preload.config contains an array of files which will be loaded and then told to persist
-  Json preload = json("/preload.config");
-  Logger::info("Preloading assets");
-  for (auto script : preload.iterateArray()) {
-    auto type = AssetTypeNames.getLeft(script.getString("type"));
-    auto path = script.getString("path");
-    auto components = AssetPath::split(path);
-    validatePath(components, type == AssetType::Json || type == AssetType::Image, type == AssetType::Image);
+  if (!m_settings.skipPreload) {
+    // preload.config contains an array of files which will be loaded and then told to persist
+    Json preload = json("/preload.config");
+    Logger::info("Preloading assets");
+    for (auto script : preload.iterateArray()) {
+      auto type = AssetTypeNames.getLeft(script.getString("type"));
+      auto path = script.getString("path");
+      auto components = AssetPath::split(path);
+      validatePath(components, type == AssetType::Json || type == AssetType::Image, type == AssetType::Image);
 
-    auto asset = getAsset(AssetId{type, std::move(components)});
-    // make this asset never unload
-    asset->forcePersist = true;
+      auto asset = getAsset(AssetId{type, std::move(components)});
+      // make this asset never unload
+      asset->forcePersist = true;
+    }
+    STAR_ASSETS_ANDROID_LOGI("Assets: preload complete");
+  } else {
+    STAR_ASSETS_ANDROID_LOGI("Assets: preload skipped");
   }
 }
 

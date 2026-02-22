@@ -18,17 +18,38 @@ SET (star_application_SOURCES
   )
 
 SET (star_application_HEADERS ${star_application_HEADERS}
-    StarP2PNetworkingService_pc.hpp
-    StarPlatformServices_pc.hpp
     StarRenderer_opengl.hpp
   )
 
 SET (star_application_SOURCES ${star_application_SOURCES}
-    StarMainApplication_sdl.cpp
-    StarP2PNetworkingService_pc.cpp
-    StarPlatformServices_pc.cpp
     StarRenderer_opengl.cpp
   )
+
+IF (STAR_PLATFORM_MOBILE)
+  SET (star_application_HEADERS ${star_application_HEADERS}
+      StarPlatformServices_mobile.hpp
+      StarRenderer_gles.hpp
+      mobile/android/StarAndroidFileAccessBridge.hpp
+      mobile/ios/StarIosFileAccessBridge.hpp
+    )
+  SET (star_application_SOURCES ${star_application_SOURCES}
+      StarMainApplication_mobile_sdl.cpp
+      StarPlatformServices_mobile.cpp
+      mobile/android/StarAndroidFileAccessBridge.cpp
+      mobile/ios/StarIosFileAccessBridge.cpp
+      StarRenderer_gles.cpp
+    )
+ELSE ()
+  SET (star_application_HEADERS ${star_application_HEADERS}
+      StarP2PNetworkingService_pc.hpp
+      StarPlatformServices_pc.hpp
+    )
+  SET (star_application_SOURCES ${star_application_SOURCES}
+      StarMainApplication_sdl.cpp
+      StarP2PNetworkingService_pc.cpp
+      StarPlatformServices_pc.cpp
+    )
+ENDIF ()
 
 IF (STAR_ENABLE_STEAM_INTEGRATION)
   SET (star_application_HEADERS ${star_application_HEADERS}

@@ -199,7 +199,7 @@ SET (star_core_SOURCES
     scripting/StarUtilityLuaBindings.cpp
   )
 
-IF (STAR_SYSTEM_FAMILY_UNIX)
+IF (STAR_SYSTEM_FAMILY_UNIX OR STAR_SYSTEM_FAMILY_MOBILE)
   SET (star_core_SOURCES ${star_core_SOURCES}
       StarDynamicLib_unix.cpp
       StarException_unix.cpp

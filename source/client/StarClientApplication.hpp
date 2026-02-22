@@ -151,6 +151,10 @@ private:
   int64_t m_timeSinceJoin = 0;
 
   ByteArray m_immediateFont;
+  String m_windowTitle = "OpenStarbound";
+  unsigned m_maxFrameSkipSetting = 5;
+  float m_updateTrackWindowSetting = 1.0f;
+  bool m_assetsBootstrapReady = false;
 
   bool m_loggedUGCCheck;
 };

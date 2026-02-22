@@ -30,6 +30,39 @@ namespace {
   void* handleFromFd(int handle) {
     return (void*)(intptr_t)handle;
   }
+
+  String temporaryRootDirectory() {
+    if (auto tmpDir = getenv("TMPDIR")) {
+      if (tmpDir[0] != '\0')
+        return String(tmpDir);
+    }
+
+#ifdef STAR_SYSTEM_ANDROID
+    if (auto homeDir = getenv("HOME")) {
+      if (homeDir[0] != '\0')
+        return String(homeDir);
+    }
+    return ".";
+#else
+    return String(P_tmpdir);
+#endif
+  }
+
+  String ensuredTemporaryRootDirectory() {
+    auto directory = temporaryRootDirectory();
+    if (directory.empty())
+      directory = ".";
+
+    if (!File::isDirectory(directory)) {
+      try {
+        File::makeDirectoryRecursive(directory);
+      } catch (...) {
+        directory = ".";
+      }
+    }
+
+    return directory;
+  }
 }
 
 String File::convertDirSeparators(String const& path) {
@@ -119,7 +152,7 @@ String File::fullPath(const String& fileName) {
 }
 
 String File::temporaryFileName() {
-  return relativeTo(P_tmpdir, strf("starbound.tmpfile.{}", hexEncode(Random::randBytes(16))));
+  return relativeTo(ensuredTemporaryRootDirectory(), strf("starbound.tmpfile.{}", hexEncode(Random::randBytes(16))));
 }
 
 FilePtr File::temporaryFile() {
@@ -128,7 +161,7 @@ FilePtr File::temporaryFile() {
 
 FilePtr File::ephemeralFile() {
   auto file = make_shared<File>();
-  ByteArray path = ByteArray::fromCStringWithNull(relativeTo(P_tmpdir, "starbound.tmpfile.XXXXXXXX").utf8Ptr());
+  ByteArray path = ByteArray::fromCStringWithNull(relativeTo(ensuredTemporaryRootDirectory(), "starbound.tmpfile.XXXXXXXX").utf8Ptr());
   auto res = mkstemp(path.ptr());
   if (res < 0)
     throw IOException::format("tmpfile error: {}", strerror(errno));
@@ -140,7 +173,7 @@ FilePtr File::ephemeralFile() {
 }
 
 String File::temporaryDirectory() {
-  String dirname = relativeTo(P_tmpdir, strf("starbound.tmpdir.{}", hexEncode(Random::randBytes(16))));
+  String dirname = relativeTo(ensuredTemporaryRootDirectory(), strf("starbound.tmpdir.{}", hexEncode(Random::randBytes(16))));
   makeDirectory(dirname);
   return dirname;
 }

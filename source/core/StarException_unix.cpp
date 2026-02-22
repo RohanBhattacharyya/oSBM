@@ -2,7 +2,9 @@
 #include "StarCasting.hpp"
 #include "StarLogging.hpp"
 
+#if !STAR_SYSTEM_ANDROID
 #include <execinfo.h>
+#endif
 #include <cstdlib>
 #ifdef STAR_USE_CPPTRACE
 #include "cpptrace/cpptrace.hpp"
@@ -29,12 +31,20 @@ typedef pair<Array<void*, StackLimit>, size_t> StackCapture;
 
 inline StackCapture captureStack() {
   StackCapture stackCapture;
+#if STAR_SYSTEM_ANDROID
+  stackCapture.second = 0;
+#else
   stackCapture.second = backtrace(stackCapture.first.ptr(), StackLimit);
+#endif
   return stackCapture;
 }
 
 OutputProxy outputStack(StackCapture stack) {
   return OutputProxy([stack = std::move(stack)](std::ostream & os) {
+#if STAR_SYSTEM_ANDROID
+      (void)stack;
+      os << "[stack trace unavailable on android]";
+#else
       char** symbols = backtrace_symbols(stack.first.ptr(), stack.second);
       for (size_t i = 0; i < stack.second; ++i) {
         os << symbols[i];
@@ -46,6 +56,7 @@ OutputProxy outputStack(StackCapture stack) {
         os << std::endl << "[Stack Output Limit Reached]";
 
       ::free(symbols);
+#endif
     });
 }
 

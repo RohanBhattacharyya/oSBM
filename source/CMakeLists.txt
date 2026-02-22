@@ -78,6 +78,10 @@ if(NOT DEFINED STAR_SYSTEM)
     set(STAR_SYSTEM "macos")
   elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     set(STAR_SYSTEM "linux")
+  elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Android")
+    set(STAR_SYSTEM "android")
+  elseif(APPLE AND ${CMAKE_SYSTEM_NAME} STREQUAL "iOS")
+    set(STAR_SYSTEM "ios")
   elseif(${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD")
     set(STAR_SYSTEM "freebsd")
   elseif(${CMAKE_SYSTEM_NAME} STREQUAL "NetBSD")
@@ -92,6 +96,8 @@ endif()
 if(NOT DEFINED STAR_SYSTEM_FAMILY)
   if(WIN32)
     set(STAR_SYSTEM_FAMILY "windows")
+  elseif(STAR_SYSTEM STREQUAL "android" OR STAR_SYSTEM STREQUAL "ios")
+    set(STAR_SYSTEM_FAMILY "mobile")
   elseif(UNIX)
     set(STAR_SYSTEM_FAMILY "unix")
   else()
@@ -136,6 +142,11 @@ if(STAR_BUILD_GUI)
   option(STAR_ENABLE_DISCORD_INTEGRATION "Use Discord platform services" OFF)
 endif()
 
+if(STAR_SYSTEM STREQUAL "android" OR STAR_SYSTEM STREQUAL "ios")
+  set(STAR_ENABLE_STEAM_INTEGRATION OFF CACHE BOOL "Use Steam platform services" FORCE)
+  set(STAR_ENABLE_DISCORD_INTEGRATION OFF CACHE BOOL "Use Discord platform services" FORCE)
+endif()
+
 option(STAR_LUA_APICHECK "Use lua api checks" OFF)
 option(STAR_USE_JEMALLOC "Use jemalloc allocators" OFF)
 option(STAR_USE_MIMALLOC "Use mimalloc allocators" OFF)
@@ -149,6 +160,14 @@ message(STATUS "Little Endian: ${STAR_LITTLE_ENDIAN}")
 message(STATUS "System: ${STAR_SYSTEM}")
 message(STATUS "System family: ${STAR_SYSTEM_FAMILY}")
 message(STATUS "C/C++ compiler: ${STAR_COMPILER}")
+
+if(STAR_SYSTEM_FAMILY STREQUAL "mobile")
+  set(STAR_PRECOMPILED_HEADERS FALSE)
+endif()
+
+if(STAR_SYSTEM_ANDROID)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
 
 if(DEFINED STAR_ENABLE_STATIC_LIBGCC_LIBSTDCXX)
   message(STATUS "Statically linking to libgcc / libstdc++: ${STAR_ENABLE_STATIC_LIBGCC_LIBSTDCXX}")
@@ -208,6 +227,10 @@ elseif(STAR_SYSTEM STREQUAL "macos")
   set_flag(STAR_SYSTEM_MACOS)
 elseif(STAR_SYSTEM STREQUAL "linux")
   set_flag(STAR_SYSTEM_LINUX)
+elseif(STAR_SYSTEM STREQUAL "android")
+  set_flag(STAR_SYSTEM_ANDROID)
+elseif(STAR_SYSTEM STREQUAL "ios")
+  set_flag(STAR_SYSTEM_IOS)
 elseif(STAR_SYSTEM STREQUAL "freebsd")
   set_flag(STAR_SYSTEM_FREEBSD)
 elseif(STAR_SYSTEM STREQUAL "netbsd")
@@ -216,8 +239,16 @@ endif()
 
 if(STAR_SYSTEM_FAMILY STREQUAL "windows")
   set_flag(STAR_SYSTEM_FAMILY_WINDOWS)
+elseif(STAR_SYSTEM_FAMILY STREQUAL "mobile")
+  set_flag(STAR_SYSTEM_FAMILY_MOBILE)
 elseif(STAR_SYSTEM_FAMILY STREQUAL "unix")
   set_flag(STAR_SYSTEM_FAMILY_UNIX)
+endif()
+
+if(STAR_SYSTEM_FAMILY STREQUAL "mobile")
+  set_flag(STAR_PLATFORM_MOBILE)
+else()
+  set_flag(STAR_PLATFORM_PC)
 endif()
 
 if(STAR_COMPILER STREQUAL "gnu")
@@ -238,6 +269,8 @@ elseif(STAR_SYSTEM_MACOS)
   add_definitions(-DLUA_USE_MACOSX)
 elseif(STAR_SYSTEM_LINUX)
   add_definitions(-DLUA_USE_LINUX)
+elseif(STAR_SYSTEM_ANDROID OR STAR_SYSTEM_IOS)
+  add_definitions(-DLUA_USE_POSIX)
 elseif(STAR_SYSTEM_FAMILY_UNIX)
   add_definitions(-DLUA_USE_POSIX)
 endif()
@@ -476,7 +509,13 @@ find_package(ZLIB REQUIRED)
 find_package(PNG REQUIRED)
 find_package(Freetype REQUIRED)
 find_package(cpr CONFIG REQUIRED)
-find_package(Opus CONFIG REQUIRED)
+if(STAR_SYSTEM_ANDROID)
+  pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET GLOBAL opus)
+  set(STAR_OPUS_TARGET PkgConfig::OPUS)
+else()
+  find_package(Opus CONFIG REQUIRED)
+  set(STAR_OPUS_TARGET Opus::opus)
+endif()
 find_package(OggVorbis REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 find_package(re2 CONFIG REQUIRED)
@@ -489,10 +528,10 @@ include_directories(SYSTEM
 set(STAR_EXT_LIBS ${STAR_EXT_LIBS}
         ZLIB::ZLIB
         PNG::PNG
-        cpr::cpr
+    cpr::cpr
     $<IF:$<TARGET_EXISTS:Freetype::Freetype>,Freetype::Freetype,freetype>
     $<IF:$<TARGET_EXISTS:zstd::libzstd_shared>,zstd::libzstd_shared,zstd::libzstd_static>
-    Opus::opus
+    ${STAR_OPUS_TARGET}
     re2::re2
     imgui::imgui
     ${VORBISFILE_LIBRARY}
@@ -522,14 +561,28 @@ if(STAR_BUILD_GUI)
     $<IF:$<TARGET_EXISTS:SDL3::SDL3>,SDL3::SDL3,SDL3::SDL3-static>
   )
 
-  find_package(OpenGL REQUIRED)
-  find_package(GLEW REQUIRED)
+  if(STAR_SYSTEM_ANDROID)
+    find_library(ANDROID_EGL_LIBRARY EGL REQUIRED)
+    find_library(ANDROID_GLESV3_LIBRARY GLESv3 REQUIRED)
+    set(STAR_EXT_GUI_LIBS ${STAR_EXT_GUI_LIBS}
+        ${ANDROID_EGL_LIBRARY}
+        ${ANDROID_GLESV3_LIBRARY}
+    )
+  elseif(STAR_SYSTEM_FAMILY_MOBILE)
+    find_package(OpenGL REQUIRED)
+    set(STAR_EXT_GUI_LIBS ${STAR_EXT_GUI_LIBS}
+        ${OPENGL_LIBRARY}
+    )
+  else()
+    find_package(OpenGL REQUIRED)
+    find_package(GLEW REQUIRED)
 
-  include_directories(SYSTEM ${GLEW_INCLUDE_DIR})
-  set(STAR_EXT_GUI_LIBS ${STAR_EXT_GUI_LIBS}
-      ${OPENGL_LIBRARY}
-      GLEW::glew_s
-  )
+    include_directories(SYSTEM ${GLEW_INCLUDE_DIR})
+    set(STAR_EXT_GUI_LIBS ${STAR_EXT_GUI_LIBS}
+        ${OPENGL_LIBRARY}
+        GLEW::glew_s
+    )
+  endif()
 
   if(STAR_SYSTEM_MACOS)
     set(STAR_EXT_GUI_LIBS ${STAR_EXT_GUI_LIBS} "-framework CoreAudio")
@@ -603,7 +656,9 @@ if(BUILD_TESTING)
 endif()
 
 # Starbound stand-alone server.
-add_subdirectory(server)
+if(NOT STAR_SYSTEM_FAMILY STREQUAL "mobile")
+  add_subdirectory(server)
+endif()
 
 # cmdline utilities
 add_subdirectory(utility)
@@ -626,8 +681,53 @@ if(STAR_BUILD_GUI)
   set(STAR_FRONTEND_INCLUDES ${PROJECT_SOURCE_DIR}/frontend)
   add_subdirectory(frontend)
 
+  if(STAR_SYSTEM_ANDROID)
+    foreach(_star_obj_target IN ITEMS
+      star_extern
+      star_core
+      star_base
+      star_game
+      star_application
+      star_rendering
+      star_windowing
+      star_frontend
+    )
+      if(TARGET ${_star_obj_target})
+        set_target_properties(${_star_obj_target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+      endif()
+    endforeach()
+  endif()
+
   # Starbound game / client
   add_subdirectory(client)
+
+  if(STAR_SYSTEM_ANDROID)
+    set(STAR_ANDROID_HOST_DIR "${PROJECT_SOURCE_DIR}/application/mobile/android/host")
+    set(STAR_ANDROID_GRADLE_WRAPPER "${STAR_ANDROID_HOST_DIR}/gradlew")
+    set(STAR_ANDROID_GRADLE_USER_HOME "${CMAKE_BINARY_DIR}/.gradle")
+    file(GLOB STAR_ANDROID_SDL3_JAR_CANDIDATES
+      "${CMAKE_BINARY_DIR}/vcpkg_installed/*/share/java/SDL3/SDL3-*.jar"
+    )
+    list(FILTER STAR_ANDROID_SDL3_JAR_CANDIDATES EXCLUDE REGEX ".*-sources\\.jar$")
+    list(LENGTH STAR_ANDROID_SDL3_JAR_CANDIDATES STAR_ANDROID_SDL3_JAR_COUNT)
+    if(STAR_ANDROID_SDL3_JAR_COUNT GREATER 0)
+      list(GET STAR_ANDROID_SDL3_JAR_CANDIDATES 0 STAR_ANDROID_SDL3_JAR)
+    else()
+      set(STAR_ANDROID_SDL3_JAR "")
+    endif()
+    add_custom_target(android_apk ALL
+      COMMAND ${CMAKE_COMMAND} -E env
+        ANDROID_NDK_HOME=$ENV{ANDROID_NDK_HOME}
+        ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
+        GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
+        STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
+        bash -lc "if [ -z \"${JAVA_HOME}\" ]; then export JAVA_HOME=\"$(dirname \"$(dirname \"$(readlink -f \"$(command -v javac)\")\")\")\"; fi; if [ -x \"${STAR_ANDROID_GRADLE_WRAPPER}\" ]; then \"${STAR_ANDROID_GRADLE_WRAPPER}\" -p \"${STAR_ANDROID_HOST_DIR}\" :app:assembleDebug; elif command -v gradle >/dev/null 2>&1; then gradle -p \"${STAR_ANDROID_HOST_DIR}\" :app:assembleDebug; else echo \"Android packaging requires Gradle. Install 'gradle' or add a wrapper at ${STAR_ANDROID_GRADLE_WRAPPER}.\" >&2; exit 1; fi"
+      DEPENDS starbound
+      WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
+      COMMENT "Building Android APK (:app:assembleDebug)"
+      VERBATIM
+    )
+  endif()
 
   # Qt GUI tools
   if(STAR_BUILD_QT_TOOLS)
@@ -638,4 +738,3 @@ if(STAR_BUILD_GUI)
     endif()
   endif()
 endif()
-

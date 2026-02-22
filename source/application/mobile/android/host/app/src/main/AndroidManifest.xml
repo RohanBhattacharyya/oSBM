@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-feature android:glEsVersion="0x00020000" />
+  <uses-permission android:name="android.permission.VIBRATE" />
+
+  <application
+      android:allowBackup="true"
+      android:label="OpenStarbound Mobile"
+      android:hardwareAccelerated="true"
+      android:enableOnBackInvokedCallback="true"
+      android:resizeableActivity="false"
+      android:theme="@style/AppTheme"
+      android:supportsRtl="true">
+    <activity
+        android:name="io.github.openstarbound.mobile.MainActivity"
+        android:exported="true"
+        android:launchMode="singleTask"
+        android:screenOrientation="landscape"
+        android:windowLayoutInDisplayCutoutMode="shortEdges"
+        android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>

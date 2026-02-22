@@ -34,6 +34,7 @@ public:
   // An exception occurred from the actual WorldServer itself and the
   // WorldServerThread has stopped running.
   bool serverErrorOccurred();
+  String lastError() const;
   bool shouldExpire();
 
   bool spawnTargetValid(SpawnTarget const& spawnTarget);
@@ -82,6 +83,8 @@ protected:
   virtual void run();
 
 private:
+  void markError(String error) const;
+
   void update(WorldServerFidelity fidelity);
   void sync();
 
@@ -103,6 +106,8 @@ private:
   atomic<bool> m_stop;
   shared_ptr<const atomic<bool>> m_pause;
   mutable atomic<bool> m_errorOccurred;
+  mutable Mutex m_errorMutex;
+  mutable String m_lastError;
   mutable atomic<bool> m_shouldExpire;
 };
 

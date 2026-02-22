@@ -3,7 +3,57 @@
 #include "StarTextureAtlas.hpp"
 #include "StarRenderer.hpp"
 
+#if defined(STAR_SYSTEM_ANDROID)
+#include <GLES3/gl3.h>
+#include <GLES3/gl32.h>
+
+#ifndef GLEW_OK
+#define GLEW_OK 0
+#endif
+
+#ifndef GLEW_ERROR_NO_GLX_DISPLAY
+#define GLEW_ERROR_NO_GLX_DISPLAY 0
+#endif
+
+#ifndef GLEW_VERSION_2_0
+#define GLEW_VERSION_2_0 1
+#endif
+
+#ifndef GLEW_VERSION_4_0
+#define GLEW_VERSION_4_0 0
+#endif
+
+#ifndef GLEW_VERSION_4_3
+#define GLEW_VERSION_4_3 0
+#endif
+
+#ifndef GL_MULTISAMPLE
+#define GL_MULTISAMPLE 0x809D
+#endif
+
+#ifndef GL_BGR
+#define GL_BGR 0x80E0
+#endif
+
+#ifndef GL_BGRA
+#define GL_BGRA 0x80E1
+#endif
+
+inline void glTexImage2DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations) {
+  glTexStorage2DMultisample(target, samples, internalformat, width, height, fixedsamplelocations);
+}
+
+inline int glewInit() {
+  return GLEW_OK;
+}
+
+inline const GLubyte* glewGetErrorString(int) {
+  static const GLubyte kNoError[] = "GLEW shim: no error";
+  return kNoError;
+}
+#else
 #include "GL/glew.h"
+#endif
 
 namespace Star {
 

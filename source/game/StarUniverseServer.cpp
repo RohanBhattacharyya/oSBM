@@ -97,19 +97,52 @@ UniverseServer::UniverseServer(String const& storageDir)
 UniverseServer::~UniverseServer() {
   stop();
   stopLua();
-  join();
-  m_workerPool.stop();
+  try {
+    join();
+  } catch (std::exception const& e) {
+    Logger::warn("UniverseServer: join failed during destruction: {}", outputException(e, false));
+  } catch (...) {
+    Logger::warn("UniverseServer: join failed during destruction with unknown exception");
+  }
 
-  RecursiveMutexLocker locker(m_mainLock);
-  WriteLocker clientsLocker(m_clientsLock);
+  {
+    RecursiveMutexLocker acceptThreadsLocker(m_connectionAcceptThreadsMutex);
+    for (auto& function : m_connectionAcceptThreads) {
+      try {
+        function.finish();
+      } catch (std::exception const& e) {
+        Logger::warn("UniverseServer: accept thread failed during shutdown: {}", outputException(e, false));
+      } catch (...) {
+        Logger::warn("UniverseServer: accept thread failed during shutdown with unknown exception");
+      }
+    }
+    m_connectionAcceptThreads.clear();
+  }
 
-  m_connectionServer->removeAllConnections();
-  m_deadConnections.clear();
+  try {
+    m_workerPool.stop();
+  } catch (std::exception const& e) {
+    Logger::warn("UniverseServer: worker pool stop failed during destruction: {}", outputException(e, false));
+  } catch (...) {
+    Logger::warn("UniverseServer: worker pool stop failed during destruction with unknown exception");
+  }
 
-  // Make sure that all world threads and net sockets (and associated threads)
-  // are shutdown before other member destruction.
-  m_clients.clear();
-  m_worlds.clear();
+  try {
+    RecursiveMutexLocker locker(m_mainLock);
+    WriteLocker clientsLocker(m_clientsLock);
+
+    m_connectionServer->removeAllConnections();
+    m_deadConnections.clear();
+
+    // Make sure that all world threads and net sockets (and associated threads)
+    // are shutdown before other member destruction.
+    m_clients.clear();
+    m_worlds.clear();
+  } catch (std::exception const& e) {
+    Logger::warn("UniverseServer: cleanup failed during destruction: {}", outputException(e, false));
+  } catch (...) {
+    Logger::warn("UniverseServer: cleanup failed during destruction with unknown exception");
+  }
 }
 
 void UniverseServer::setListeningTcp(bool listenTcp) {
@@ -122,7 +155,13 @@ void UniverseServer::addClient(UniverseConnection remoteConnection) {
   // Binding requires us to make the given lambda copy constructible, so the
   // make_shared is requried here.
   m_connectionAcceptThreads.append(Thread::invoke("UniverseServer::acceptConnection", [this, conn = make_shared<UniverseConnection>(std::move(remoteConnection))]() {
-    acceptConnection(std::move(*conn), {});
+    try {
+      acceptConnection(std::move(*conn), {});
+    } catch (std::exception const& e) {
+      Logger::warn("UniverseServer: acceptConnection failed for local client: {}", outputException(e, false));
+    } catch (...) {
+      Logger::warn("UniverseServer: acceptConnection failed for local client with unknown exception");
+    }
   }));
 }
 
@@ -556,7 +595,13 @@ void UniverseServer::run() {
           if (m_connectionAcceptThreads.size() < maxPendingConnections) {
             Logger::info("UniverseServer: Connection received from: {}", socket->remoteAddress());
             m_connectionAcceptThreads.append(Thread::invoke("UniverseServer::acceptConnection", [this, socket]() {
-              acceptConnection(UniverseConnection(TcpPacketSocket::open(socket)), socket->remoteAddress().address());
+              try {
+                acceptConnection(UniverseConnection(TcpPacketSocket::open(socket)), socket->remoteAddress().address());
+              } catch (std::exception const& e) {
+                Logger::warn("UniverseServer: acceptConnection failed for remote client: {}", outputException(e, false));
+              } catch (...) {
+                Logger::warn("UniverseServer: acceptConnection failed for remote client with unknown exception");
+              }
             }));
           } else {
             Logger::warn("UniverseServer: maximum pending connections, dropping connection from: {}", socket->remoteAddress().address());
@@ -727,6 +772,20 @@ void UniverseServer::updateShips() {
         else
           shipWorld->setProperty("ship.species", species = p.second->shipSpecies());
 
+        if (!m_speciesShips.contains(species)) {
+          String fallbackSpecies;
+          if (m_speciesShips.contains("human"))
+            fallbackSpecies = "human";
+          else if (!m_speciesShips.empty())
+            fallbackSpecies = m_speciesShips.begin()->first;
+          else
+            throw UniverseServerException("UniverseServer: No speciesShips configured");
+
+          Logger::warn("UniverseServer: Unknown ship species '{}' while updating ships, falling back to '{}'", species, fallbackSpecies);
+          species = std::move(fallbackSpecies);
+          shipWorld->setProperty("ship.species", species);
+        }
+
         p.second->setShipSpecies(species);
         auto const& speciesShips = m_speciesShips.get(species);
         Json jOldShipLevel = shipWorld->getProperty("ship.level");
@@ -820,6 +879,8 @@ void UniverseServer::reapConnections() {
           function.finish();
         } catch (std::exception const& e) {
           Logger::error("UniverseServer: Exception caught accepting new connection: {}", outputException(e, true));
+        } catch (...) {
+          Logger::error("UniverseServer: Unknown exception caught accepting new connection");
         }
       }
       return function.isFinished();
@@ -925,6 +986,7 @@ void UniverseServer::warpPlayers() {
             m_chatProcessor->joinChannel(clientId, printWorldId(warpToWorld.world));
 
             if (warpToWorld.world.is<ClientShipWorldId>()) {
+              m_shipWorldRecoveryAttempts.remove(clientId);
               if (auto clientId = getClientForUuid(warpToWorld.world.get<ClientShipWorldId>())) {
                 if (auto systemWorld = m_clients.get(*clientId)->systemWorld())
                   clientContext->setOrbitWarpAction(systemWorld->clientWarpAction(*clientId));
@@ -1211,12 +1273,14 @@ void UniverseServer::shutdownInactiveWorlds() {
   // Shutdown idle and errored worlds.
   for (auto const& worldId : m_worlds.keys()) {
     if (auto world = getWorld(worldId)) {
+      bool worldErrored = false;
       clientsLocker.unlock();
       locker.unlock();
       if (world->serverErrorOccurred()) {
+        worldErrored = true;
         world->stop();
         Logger::error("UniverseServer: World {} has stopped due to an error", worldId);
-        worldDiedWithError(world->worldId());
+        worldDiedWithError(world->worldId(), world->lastError());
       } else if (world->noClients()) {
         bool anyPendingWarps = false;
         for (auto const& p : m_pendingPlayerWarps) {
@@ -1242,9 +1306,15 @@ void UniverseServer::shutdownInactiveWorlds() {
         }
 
         if (worldId.is<ClientShipWorldId>()) {
-          world->unloadAll(true);
-          if (auto clientId = getClientForUuid(worldId.get<ClientShipWorldId>()))
-            m_clients.get(*clientId)->updateShipChunks(world->readChunks());
+          if (auto clientId = getClientForUuid(worldId.get<ClientShipWorldId>())) {
+            if (worldErrored) {
+              Logger::warn("UniverseServer: Resetting stored ship chunks for {} after ship world error", worldId);
+              m_clients.get(*clientId)->updateShipChunks({});
+            } else {
+              world->unloadAll(true);
+              m_clients.get(*clientId)->updateShipChunks(world->readChunks());
+            }
+          }
         }
 
         m_worlds.remove(worldId);
@@ -1642,19 +1712,27 @@ void UniverseServer::packetsReceived(UniverseConnectionServer*, ConnectionId cli
 }
 
 void UniverseServer::acceptConnection(UniverseConnection connection, Maybe<HostAddress> remoteAddress) {
+  try {
   auto& root = Root::singleton();
   auto assets = root.assets();
   auto configuration = root.configuration();
   auto versioningDatabase = root.versioningDatabase();
 
   int clientWaitLimit = assets->json("/universe_server.config:clientWaitLimit").toInt();
+  if (!remoteAddress)
+    clientWaitLimit = max<int>(clientWaitLimit, 15000);
   String serverAssetsMismatchMessage = assets->json("/universe_server.config:serverAssetsMismatchMessage").toString();
   String clientAssetsMismatchMessage = assets->json("/universe_server.config:clientAssetsMismatchMessage").toString();
   auto connectionSettings = configuration->get("connectionSettings");
 
   RecursiveMutexLocker mainLocker(m_mainLock, false);
 
-  connection.receiveAny(clientWaitLimit);
+  auto receivedProtocolRequest = connection.receiveAny(clientWaitLimit);
+  if (!receivedProtocolRequest) {
+    Logger::warn("UniverseServer: client connection aborted, protocol request timed out");
+    return;
+  }
+
   auto protocolRequest = as<ProtocolRequestPacket>(connection.pullSingle());
   if (!protocolRequest) {
     Logger::warn("UniverseServer: client connection aborted, expected ProtocolRequestPacket");
@@ -1697,7 +1775,15 @@ void UniverseServer::acceptConnection(UniverseConnection connection, Maybe<HostA
   String remoteAddressString = remoteAddress ? toString(*remoteAddress) : "local";
   Logger::info("UniverseServer: Awaiting connection info from {} ({} client)", remoteAddressString, legacyClient ? "vanilla" : "custom");
 
-  connection.receiveAny(clientWaitLimit);
+  auto receivedClientConnect = connection.receiveAny(clientWaitLimit);
+  if (!receivedClientConnect) {
+    Logger::warn("UniverseServer: client connection aborted waiting for client connect packet");
+    connection.pushSingle(make_shared<ConnectFailurePacket>("connect timeout"));
+    mainLocker.lock();
+    m_deadConnections.append({std::move(connection), Time::monotonicMilliseconds()});
+    return;
+  }
+
   auto clientConnect = as<ClientConnectPacket>(connection.pullSingle());
   if (!clientConnect) {
     Logger::warn("UniverseServer: client connection aborted");
@@ -1748,7 +1834,11 @@ void UniverseServer::acceptConnection(UniverseConnection connection, Maybe<HostA
       Logger::info("UniverseServer: Sending Handshake Challenge");
       connection.pushSingle(make_shared<HandshakeChallengePacket>(passwordSalt));
       connection.sendAll(clientWaitLimit);
-      connection.receiveAny(clientWaitLimit);
+      auto receivedHandshakeResponse = connection.receiveAny(clientWaitLimit);
+      if (!receivedHandshakeResponse) {
+        connectionFail("Expected HandshakeResponsePacket.");
+        return;
+      }
       shared_ptr<HandshakeResponsePacket> handshakeResponsePacket = as<HandshakeResponsePacket>(connection.pullSingle());
       if (!handshakeResponsePacket) {
         connectionFail("Expected HandshakeResponsePacket.");
@@ -1915,6 +2005,13 @@ void UniverseServer::acceptConnection(UniverseConnection connection, Maybe<HostA
 
   for (auto& p : m_scriptContexts)
     p.second->invoke("acceptConnection", clientId);
+  } catch (std::exception const& e) {
+    String remoteAddressString = remoteAddress ? toString(*remoteAddress) : "local";
+    Logger::warn("UniverseServer: acceptConnection aborted for {}: {}", remoteAddressString, outputException(e, false));
+  } catch (...) {
+    String remoteAddressString = remoteAddress ? toString(*remoteAddress) : "local";
+    Logger::warn("UniverseServer: acceptConnection aborted for {} with unknown exception", remoteAddressString);
+  }
 }
 
 WarpToWorld UniverseServer::resolveWarpAction(WarpAction warpAction, ConnectionId clientId, bool deploy) const {
@@ -2031,6 +2128,7 @@ void UniverseServer::doDisconnection(ConnectionId clientId, String const& reason
     VersionedJson::writeFile(versioningDatabase->makeCurrentVersionedJson("ClientContext", clientContext->storeServerData()), clientContextFile);
 
     clientsLocker.lock();
+    m_shipWorldRecoveryAttempts.remove(clientId);
     m_clients.remove(clientId);
     m_deadConnections.append({m_connectionServer->removeConnection(clientId), Time::monotonicMilliseconds()});
     Logger::info("UniverseServer: Client {} disconnected for reason: {}", clientContext->descriptiveName(), reason);
@@ -2066,7 +2164,7 @@ WorldServerThreadPtr UniverseServer::getWorld(WorldId const& worldId) {
     } catch (std::exception const& e) {
       maybeWorldPromise.reset();
       Logger::error("UniverseServer: error during world create: {}", outputException(e, true));
-      worldDiedWithError(worldId);
+      worldDiedWithError(worldId, strf("{}", outputException(e, false)));
     }
   }
 
@@ -2089,7 +2187,7 @@ WorldServerThreadPtr UniverseServer::createWorld(WorldId const& worldId) {
   } catch (std::exception const& e) {
     maybeWorldPromise.reset();
     Logger::error("UniverseServer: error during world create: {}", outputException(e, true));
-    worldDiedWithError(worldId);
+    worldDiedWithError(worldId, strf("{}", outputException(e, false)));
     return {};
   }
 }
@@ -2117,7 +2215,7 @@ Maybe<WorldServerThreadPtr> UniverseServer::triggerWorldCreation(WorldId const& 
     } catch (std::exception const& e) {
       maybeWorldPromise.reset();
       Logger::error("UniverseServer: error during world create: {}", outputException(e, true));
-      worldDiedWithError(worldId);
+      worldDiedWithError(worldId, strf("{}", outputException(e, false)));
       return WorldServerThreadPtr();
     }
   }
@@ -2161,7 +2259,21 @@ Maybe<WorkerPoolPromise<WorldServerThreadPtr>> UniverseServer::shipWorldPromise(
 
     if (!shipWorld) {
       Logger::info("UniverseServer: Creating new client ship world {}", clientShipWorldId);
-      auto& species = clientContext->shipSpecies();
+      String species = clientContext->shipSpecies();
+      if (!speciesShips.contains(species)) {
+        String fallbackSpecies;
+        if (speciesShips.contains("human"))
+          fallbackSpecies = "human";
+        else if (!speciesShips.empty())
+          fallbackSpecies = speciesShips.begin()->first;
+        else
+          throw UniverseServerException("UniverseServer: No speciesShips configured");
+
+        Logger::warn("UniverseServer: Unknown ship species '{}', falling back to '{}'", species, fallbackSpecies);
+        species = std::move(fallbackSpecies);
+        clientContext->setShipSpecies(species);
+      }
+
       auto shipStructure = WorldStructure(speciesShips.get(species).first());
       Vec2U worldSize(2048, 2048);
       if (auto jWorldSize = shipStructure.configValue("worldSize"))
@@ -2418,10 +2530,30 @@ bool UniverseServer::instanceWorldStoredOrActive(InstanceWorldId const& worldId)
   return m_worlds.value(worldId).isValid() || m_tempWorldIndex.contains(worldId) || File::isFile(storageFile);
 }
 
-void UniverseServer::worldDiedWithError(WorldId world) {
+void UniverseServer::worldDiedWithError(WorldId world, String const& errorDetailRaw) {
+  String errorDetail = errorDetailRaw.replace("\n", " ").replace("\r", " ");
+  if (errorDetail.empty())
+    errorDetail = "No additional detail available";
+  else if (errorDetail.utf8Size() > 320)
+    errorDetail = errorDetail.substr(0, 320) + "...";
+
   if (world.is<ClientShipWorldId>()) {
-    if (auto clientId = getClientForUuid(world.get<ClientShipWorldId>()))
-      m_pendingDisconnections.add(*clientId, "Client ship world has errored");
+    if (auto clientId = getClientForUuid(world.get<ClientShipWorldId>())) {
+      uint8_t attempts = m_shipWorldRecoveryAttempts.value(*clientId, 0);
+      if (attempts < 1) {
+        m_shipWorldRecoveryAttempts[*clientId] = attempts + 1;
+        Logger::warn("UniverseServer: Ship world {} errored for client {} ({}), attempting automatic ship reset", world, *clientId, errorDetail);
+        if (auto clientContext = m_clients.value(*clientId))
+          clientContext->updateShipChunks({});
+        return;
+      }
+
+      m_pendingDisconnections.add(*clientId, strf("Client ship world has errored after automatic recovery: {}", errorDetail));
+    } else {
+      Logger::warn("UniverseServer: Ship world {} errored with no active owner ({})", world, errorDetail);
+    }
+  } else {
+    Logger::warn("UniverseServer: World {} errored ({})", world, errorDetail);
   }
 }
 

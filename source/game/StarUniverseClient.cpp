@@ -76,6 +76,9 @@ Maybe<String> UniverseClient::connect(UniverseConnection connection, bool allowA
     throw StarException("Cannot call UniverseClient::connect with no main player");
 
   unsigned timeout = assets->json("/client.config:serverConnectTimeout").toUInt();
+  bool localConnection = as<LocalPacketSocket>(&connection.packetSocket()) != nullptr;
+  if (localConnection)
+    timeout = max<unsigned>(timeout, 15000);
   Logger::info("UniverseClient: Connecting to server, packet timeout is {}ms", timeout);
 
   {
@@ -88,7 +91,14 @@ Maybe<String> UniverseClient::connect(UniverseConnection connection, bool allowA
     connection.pushSingle(protocolRequest);
   }
   connection.sendAll(timeout);
-  connection.receiveAny(timeout);
+  bool receivedProtocolResponse = connection.receiveAny(timeout);
+  if (!receivedProtocolResponse && localConnection) {
+    // On slower Android devices, the local accept thread can be delayed.
+    for (int attempt = 0; attempt < 5 && !receivedProtocolResponse; ++attempt) {
+      Thread::sleep(200);
+      receivedProtocolResponse = connection.receiveAny(1000);
+    }
+  }
 
   auto nextPacket = connection.pullSingle();
   auto protocolResponsePacket = as<ProtocolResponsePacket>(nextPacket);

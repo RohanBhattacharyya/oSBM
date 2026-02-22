@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'io.github.openstarbound.mobile'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "io.github.openstarbound.mobile"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+            assets.srcDirs = ['src/main/assets', '../../../../../../assets']
+        }
+    }
+}
+
+dependencies {
+    def sdlJar = System.getenv("STAR_SDL3_JAR")
+    if (sdlJar != null && !sdlJar.isEmpty() && file(sdlJar).exists()) {
+        // Prefer exact SDL Java glue from the matching vcpkg artifact.
+        implementation files(sdlJar)
+    } else {
+        // Fallback to checked-in org.libsdl.app sources.
+        logger.lifecycle("STAR_SDL3_JAR not set/found, using local SDL Java sources")
+    }
+}

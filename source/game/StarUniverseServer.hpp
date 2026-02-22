@@ -210,7 +210,7 @@ private:
   // Signal that a world either failed to load, or died due to an exception,
   // kicks clients if that world is a ship world.  Main lock and clients read
   // lock must be held when calling.
-  void worldDiedWithError(WorldId world);
+  void worldDiedWithError(WorldId world, String const& errorDetail = {});
 
   // Get SkyParameters if the coordinate is a valid world, and empty
   // SkyParameters otherwise.
@@ -255,6 +255,7 @@ private:
   HashMap<ConnectionId, pair<tuple<Vec3I, SystemLocation, Json>, Maybe<double>>> m_queuedFlights;
   HashMap<ConnectionId, tuple<Vec3I, SystemLocation, Json>> m_pendingFlights;
   HashMap<ConnectionId, CelestialCoordinate> m_pendingArrivals;
+  HashMap<ConnectionId, uint8_t> m_shipWorldRecoveryAttempts;
   HashMap<ConnectionId, String> m_pendingDisconnections;
   HashMap<ConnectionId, List<WorkerPoolPromise<CelestialResponse>>> m_pendingCelestialRequests;
   List<pair<WorldId, UniverseFlagAction>> m_pendingFlagActions;

@@ -69,6 +69,12 @@ public:
     // Same, but only ignores the file for the purposes of calculating the
     // digest.
     StringList digestIgnore;
+
+    // If true, skip calculating startup assets digest.
+    bool skipDigest = false;
+
+    // If true, skip reading /preload.config startup entries.
+    bool skipPreload = false;
   };
 
   enum class QueuePriority {
