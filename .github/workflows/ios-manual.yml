@@ -38,8 +38,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .cache/vcpkg/bincache
-          key: ${{ runner.os }}-ios-vcpkg-${{ hashFiles('source/vcpkg.json', 'source/vcpkg-configuration.json', 'triplets/**') }}
+          key: ${{ runner.os }}-ios-vcpkg-${{ hashFiles('source/vcpkg.json', 'source/vcpkg-configuration.json', 'triplets/**') }}-${{ github.run_id }}
           restore-keys: |
+            ${{ runner.os }}-ios-vcpkg-${{ hashFiles('source/vcpkg.json', 'source/vcpkg-configuration.json', 'triplets/**') }}-
             ${{ runner.os }}-ios-vcpkg-
 
       - name: Restore ccache
@@ -47,12 +48,14 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .cache/ccache
-          key: ${{ runner.os }}-ios-ccache-${{ hashFiles('.github/workflows/ios-manual.yml') }}
+          key: ${{ runner.os }}-ios-ccache-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
+            ${{ runner.os }}-ios-ccache-${{ github.ref_name }}-
             ${{ runner.os }}-ios-ccache-
 
       - name: Setup ccache
         run: |
+          mkdir -p "${GITHUB_WORKSPACE}/.cache/ccache" "${GITHUB_WORKSPACE}/.cache/vcpkg/bincache"
           if ! command -v ccache >/dev/null 2>&1; then
             brew install ccache
           fi
@@ -64,6 +67,11 @@ jobs:
         with:
           vcpkgJsonGlob: "**/source/vcpkg.json"
           vcpkgConfigurationJsonGlob: "**/source/vcpkg-configuration.json"
+
+      - name: Enforce vcpkg binary cache path
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/.cache/vcpkg/bincache"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=${GITHUB_WORKSPACE}/.cache/vcpkg/bincache" >> "${GITHUB_ENV}"
 
       - name: Configure CMake (iOS/Xcode)
         run: |
@@ -97,14 +105,14 @@ jobs:
         run: ccache --show-stats || true
 
       - name: Save ccache
-        if: ${{ always() && !cancelled() && steps.restore-ccache.outputs.cache-hit != 'true' }}
+        if: ${{ always() && !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: .cache/ccache
           key: ${{ steps.restore-ccache.outputs.cache-primary-key }}
 
       - name: Save vcpkg binary cache
-        if: ${{ always() && !cancelled() && steps.restore-vcpkg-cache.outputs.cache-hit != 'true' }}
+        if: ${{ always() && !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: .cache/vcpkg/bincache
@@ -114,13 +122,67 @@ jobs:
         run: |
           set -euo pipefail
 
-          APP_PATH="$(find "${GITHUB_WORKSPACE}/build/ios-arm64-ipa" "${GITHUB_WORKSPACE}/dist" -type d -name '*.app' | head -n 1 || true)"
+          APP_PATH=""
+          for CANDIDATE in \
+            "${GITHUB_WORKSPACE}/dist/starbound.app" \
+            "${GITHUB_WORKSPACE}/build/ios-arm64-ipa/build/Release-iphoneos/starbound.app" \
+            "${GITHUB_WORKSPACE}/build/ios-arm64-ipa/Release-iphoneos/starbound.app"; do
+            if [ -d "${CANDIDATE}" ]; then
+              APP_PATH="${CANDIDATE}"
+              break
+            fi
+          done
+
           if [ -z "${APP_PATH}" ]; then
-            echo "No .app bundle found after iOS build." >&2
+            SEARCH_ROOTS=()
+            if [ -d "${GITHUB_WORKSPACE}/build/ios-arm64-ipa" ]; then
+              SEARCH_ROOTS+=("${GITHUB_WORKSPACE}/build/ios-arm64-ipa")
+            fi
+            if [ -d "${GITHUB_WORKSPACE}/dist" ]; then
+              SEARCH_ROOTS+=("${GITHUB_WORKSPACE}/dist")
+            fi
+
+            if [ "${#SEARCH_ROOTS[@]}" -gt 0 ]; then
+              APP_PATH="$(find "${SEARCH_ROOTS[@]}" -type d \( -name 'starbound.app' -o -name 'OpenStarbound.app' \) | head -n 1 || true)"
+            fi
+          fi
+
+          if [ -z "${APP_PATH}" ]; then
+            echo "No starbound .app bundle found after iOS build." >&2
+            echo "Discovered .app bundles:" >&2
+            SEARCH_ROOTS=()
+            if [ -d "${GITHUB_WORKSPACE}/build/ios-arm64-ipa" ]; then
+              SEARCH_ROOTS+=("${GITHUB_WORKSPACE}/build/ios-arm64-ipa")
+            fi
+            if [ -d "${GITHUB_WORKSPACE}/dist" ]; then
+              SEARCH_ROOTS+=("${GITHUB_WORKSPACE}/dist")
+            fi
+            if [ "${#SEARCH_ROOTS[@]}" -gt 0 ]; then
+              find "${SEARCH_ROOTS[@]}" -type d -name '*.app' >&2 || true
+            fi
             exit 1
           fi
 
           echo "Using app bundle: ${APP_PATH}"
+
+          if [ ! -f "${APP_PATH}/Info.plist" ]; then
+            echo "Selected app bundle is missing Info.plist: ${APP_PATH}" >&2
+            exit 1
+          fi
+
+          APP_EXECUTABLE="$(
+            /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "${APP_PATH}/Info.plist" 2>/dev/null || true
+          )"
+          if [ -z "${APP_EXECUTABLE}" ] || [ ! -f "${APP_PATH}/${APP_EXECUTABLE}" ]; then
+            echo "Selected app bundle has no valid executable entry in Info.plist: ${APP_PATH}" >&2
+            exit 1
+          fi
+
+          APP_EXEC_SIZE="$(stat -f%z "${APP_PATH}/${APP_EXECUTABLE}")"
+          if [ "${APP_EXEC_SIZE}" -lt 500000 ]; then
+            echo "Selected app executable is unexpectedly small (${APP_EXEC_SIZE} bytes): ${APP_PATH}/${APP_EXECUTABLE}" >&2
+            exit 1
+          fi
 
           IPA_DIR="${GITHUB_WORKSPACE}/build/ios-arm64-ipa/ipa"
           PAYLOAD_DIR="${IPA_DIR}/Payload"
