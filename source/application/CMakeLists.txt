@@ -41,7 +41,9 @@ IF (STAR_PLATFORM_MOBILE)
     )
   IF (STAR_SYSTEM_IOS)
     SET (star_application_SOURCES ${star_application_SOURCES}
-        mobile/ios/StarIosFileAccessBridge.mm
+        # Keep a distinct basename from StarIosFileAccessBridge.cpp to avoid
+        # Xcode object-file name collisions in iOS builds.
+        mobile/ios/StarIosFileAccessBridgeObjC.mm
       )
   ENDIF ()
 ELSE ()
