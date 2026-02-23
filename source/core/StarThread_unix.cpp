@@ -1,4 +1,4 @@
-﻿#include "StarThread.hpp"
+#include "StarThread.hpp"
 #include "StarTime.hpp"
 #include "StarLogging.hpp"
 
@@ -22,7 +22,7 @@
 #define MAX_THREAD_NAMELEN 16
 #endif
 
-#ifndef STAR_SYSTEM_MACOS
+#if !defined(STAR_SYSTEM_MACOS) && !defined(STAR_SYSTEM_IOS)
 #define STAR_RECURSIVE_MUTEX_TIMED
 #endif
 
@@ -32,7 +32,7 @@ struct ThreadImpl {
   static void* runThread(void* data) {
     ThreadImpl* ptr = static_cast<ThreadImpl*>(data);
     try {
-#ifdef STAR_SYSTEM_MACOS
+#if defined(STAR_SYSTEM_MACOS) || defined(STAR_SYSTEM_IOS)
       // ensure the name is under the max allowed
       char tname[MAX_THREAD_NAMELEN];
       snprintf(tname, sizeof(tname), "%s", ptr->name.utf8Ptr());
@@ -80,7 +80,9 @@ struct ThreadImpl {
     pthread_set_name_np(pthread, tname);
 #elif defined(STAR_SYSTEM_NETBSD)
     pthread_setname_np(pthread, "%s", tname);
-#elif not defined STAR_SYSTEM_MACOS
+#elif defined(STAR_SYSTEM_IOS)
+    // iOS only supports naming the current thread; this is handled in runThread.
+#elif !defined(STAR_SYSTEM_MACOS)
     pthread_setname_np(pthread, tname);
 #endif
     return true;
@@ -137,7 +139,7 @@ struct MutexImpl {
   }
 
   void lock() {
-#ifdef STAR_MUTEX_TIMED
+#if defined(STAR_MUTEX_TIMED) && !defined(STAR_SYSTEM_IOS)
     timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 15;
@@ -215,7 +217,7 @@ struct RecursiveMutexImpl {
   }
 
   void lock() {
-#ifdef STAR_RECURSIVE_MUTEX_TIMED
+#if defined(STAR_RECURSIVE_MUTEX_TIMED) && !defined(STAR_SYSTEM_IOS)
     timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 15;
