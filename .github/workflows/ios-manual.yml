@@ -34,7 +34,8 @@ jobs:
           submodules: recursive
 
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        id: restore-vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: .cache/vcpkg/bincache
           key: ${{ runner.os }}-ios-vcpkg-${{ hashFiles('source/vcpkg.json', 'source/vcpkg-configuration.json', 'triplets/**') }}
@@ -42,7 +43,8 @@ jobs:
             ${{ runner.os }}-ios-vcpkg-
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        id: restore-ccache
+        uses: actions/cache/restore@v4
         with:
           path: .cache/ccache
           key: ${{ runner.os }}-ios-ccache-${{ hashFiles('.github/workflows/ios-manual.yml') }}
@@ -93,6 +95,20 @@ jobs:
       - name: ccache stats
         if: always()
         run: ccache --show-stats || true
+
+      - name: Save ccache
+        if: ${{ always() && !cancelled() && steps.restore-ccache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/ccache
+          key: ${{ steps.restore-ccache.outputs.cache-primary-key }}
+
+      - name: Save vcpkg binary cache
+        if: ${{ always() && !cancelled() && steps.restore-vcpkg-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/vcpkg/bincache
+          key: ${{ steps.restore-vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Package unsigned IPA
         run: |
