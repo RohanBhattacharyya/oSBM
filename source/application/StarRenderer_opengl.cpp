@@ -642,11 +642,15 @@ void OpenGlRenderer::setMultiSampling(unsigned multiSampling) {
   m_multiSampling = multiSampling;
   if (m_multiSampling) {
     glEnable(GL_MULTISAMPLE);
+#if !defined(STAR_SYSTEM_IOS)
     glEnable(GL_SAMPLE_SHADING);
     glMinSampleShading(1.f);
+#endif
   } else {
+#if !defined(STAR_SYSTEM_IOS)
     glMinSampleShading(0.f);
     glDisable(GL_SAMPLE_SHADING);
+#endif
     glDisable(GL_MULTISAMPLE);
   }
   loadConfig(m_config);
@@ -1064,10 +1068,14 @@ bool OpenGlRenderer::logGlErrorSummary(String prefix) {
         Logger::error("GL_INVALID_FRAMEBUFFER_OPERATION");
       } else if (error == GL_OUT_OF_MEMORY) {
         Logger::error("GL_OUT_OF_MEMORY");
+#ifdef GL_STACK_UNDERFLOW
       } else if (error == GL_STACK_UNDERFLOW) {
         Logger::error("GL_STACK_UNDERFLOW");
+#endif
+#ifdef GL_STACK_OVERFLOW
       } else if (error == GL_STACK_OVERFLOW) {
         Logger::error("GL_STACK_OVERFLOW");
+#endif
       } else {
         Logger::error("<UNRECOGNIZED GL ERROR>");
       }
