@@ -34,6 +34,21 @@ namespace Star {
     return Star::runMainApplication(Star::make_unique<ApplicationClass>(), Star::StringList(argc, argv));        \
   }
 
+#elif defined STAR_SYSTEM_IOS
+
+#ifndef SDL_MAIN_HANDLED
+#define SDL_MAIN_HANDLED
+#endif
+#include "SDL3/SDL_main.h"
+
+#define STAR_MAIN_APPLICATION(ApplicationClass)                                                                   \
+  static int starMainApplicationEntry(int argc, char** argv) {                                                    \
+    return Star::runMainApplication(Star::make_unique<ApplicationClass>(), Star::StringList(argc, argv));        \
+  }                                                                                                                \
+  int main(int argc, char** argv) {                                                                               \
+    return SDL_RunApp(argc, argv, starMainApplicationEntry, nullptr);                                             \
+  }
+
 #else
 
 #define STAR_MAIN_APPLICATION(ApplicationClass)                                                                   \

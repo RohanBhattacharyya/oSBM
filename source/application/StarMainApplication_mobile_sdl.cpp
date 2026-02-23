@@ -45,9 +45,32 @@ void androidLogInfo(char const* fmt, ...) {
   __android_log_vprint(ANDROID_LOG_INFO, "OpenStarbound", fmt, args);
   va_end(args);
 }
+#elif defined(STAR_SYSTEM_IOS)
+void androidLogInfo(char const* fmt, ...) {
+  if (!fmt)
+    return;
+  va_list args;
+  va_start(args, fmt);
+  fprintf(stderr, "[OpenStarbound] ");
+  vfprintf(stderr, fmt, args);
+  fprintf(stderr, "\n");
+  fflush(stderr);
+  va_end(args);
+}
 #else
 void androidLogInfo(char const*, ...) {}
 #endif
+
+static inline void convertEventToRenderCoordinatesIfPossible(SDL_Window* window, SDL_Event* event) {
+  if (!window || !event)
+    return;
+
+  // This app uses an OpenGL context directly (no SDL_Renderer), so on some
+  // mobile backends SDL_GetRenderer(window) returns null. Guard conversion.
+  SDL_Renderer* renderer = SDL_GetRenderer(window);
+  if (renderer)
+    SDL_ConvertEventToRenderCoordinates(renderer, event);
+}
 
 Maybe<Key> keyFromSdlKeyCode(SDL_Keycode sym) {
   switch (sym) {
@@ -808,6 +831,10 @@ private:
   };
 
   void setupSdl() {
+#ifdef STAR_SYSTEM_IOS
+    // We provide our own iOS main wrapper; mark main ready before SDL_Init.
+    SDL_SetMainReady();
+#endif
 #ifdef STAR_SYSTEM_ANDROID
     SDL_SetHint(SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY, "0");
     SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "1");
@@ -865,11 +892,21 @@ private:
     // Keep Android window mode stable to avoid Surface/VSync receiver races
     // observed during dynamic inset / resize transitions.
     Uint64 windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    int windowWidth = 1280;
+    int windowHeight = 720;
+#elif defined(STAR_SYSTEM_IOS)
+    // iOS SDL windows are effectively fullscreen already. Requesting explicit
+    // fullscreen mode here can fail on some devices during launch.
+    Uint64 windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    int windowWidth = 0;
+    int windowHeight = 0;
 #else
     Uint64 windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    int windowWidth = 1280;
+    int windowHeight = 720;
 #endif
 
-    m_window = SDL_CreateWindow("OpenStarbound", 1280, 720, windowFlags);
+    m_window = SDL_CreateWindow("OpenStarbound", windowWidth, windowHeight, windowFlags);
     if (!m_window)
       throw ApplicationException::format("Could not create SDL window: {}", SDL_GetError());
 
@@ -1354,7 +1391,7 @@ private:
       if (event.type != SDL_EVENT_FINGER_DOWN
           && event.type != SDL_EVENT_FINGER_UP
           && event.type != SDL_EVENT_FINGER_MOTION) {
-        SDL_ConvertEventToRenderCoordinates(SDL_GetRenderer(m_window), &event);
+        convertEventToRenderCoordinatesIfPossible(m_window, &event);
       }
       if (overlayEnabled)
         ImGui_ImplSDL3_ProcessEvent(&event);
@@ -1417,7 +1454,7 @@ private:
   void processWindowEvents() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-      SDL_ConvertEventToRenderCoordinates(SDL_GetRenderer(m_window), &event);
+      convertEventToRenderCoordinatesIfPossible(m_window, &event);
       ImGui_ImplSDL3_ProcessEvent(&event);
       if (event.type == SDL_EVENT_QUIT)
 #ifdef STAR_SYSTEM_ANDROID
