@@ -1,14 +1,23 @@
-name: iOS Build (Manual)
+name: iOS IPA Build (Manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      configuration:
+        description: iOS build configuration
+        required: true
+        type: choice
+        options:
+          - Release
+          - Debug
+        default: Release
 
 permissions:
   contents: read
 
 jobs:
-  build_ios:
-    name: Build iOS ARM64 (compile path)
+  build_ios_ipa:
+    name: Build iOS ARM64 IPA
     runs-on: macos-14
     steps:
       - name: Checkout
@@ -16,29 +25,77 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Ninja
-        run: brew install ninja
-
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgJsonGlob: "**/source/vcpkg.json"
           vcpkgConfigurationJsonGlob: "**/source/vcpkg-configuration.json"
 
-      - name: Configure CMake
-        working-directory: source
-        run: cmake --preset ios-arm64-debug
+      - name: Configure CMake (iOS/Xcode)
+        run: |
+          IOS_CONFIG="${{ inputs.configuration }}"
+          echo "IOS_CONFIG=${IOS_CONFIG}" >> "${GITHUB_ENV}"
 
-      - name: Build
-        working-directory: source
-        run: cmake --build --preset ios-arm64-debug --parallel
+          cmake -S source -B build/ios-arm64-ipa \
+            -G Xcode \
+            -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_OVERLAY_TRIPLETS="${GITHUB_WORKSPACE}/triplets" \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_BUILD_TYPE="${IOS_CONFIG}" \
+            -DVCPKG_TARGET_TRIPLET=arm64-ios-mixed \
+            -DSTAR_ENABLE_STEAM_INTEGRATION=OFF \
+            -DSTAR_ENABLE_DISCORD_INTEGRATION=OFF \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_IDENTITY=""
 
-      - name: Upload build logs
+      - name: Build iOS app bundle
+        run: cmake --build build/ios-arm64-ipa --config "${IOS_CONFIG}" --parallel --target starbound
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$(find "${GITHUB_WORKSPACE}/build/ios-arm64-ipa" "${GITHUB_WORKSPACE}/dist" -type d -name '*.app' | head -n 1 || true)"
+          if [ -z "${APP_PATH}" ]; then
+            echo "No .app bundle found after iOS build." >&2
+            exit 1
+          fi
+
+          echo "Using app bundle: ${APP_PATH}"
+
+          IPA_DIR="${GITHUB_WORKSPACE}/build/ios-arm64-ipa/ipa"
+          PAYLOAD_DIR="${IPA_DIR}/Payload"
+          APP_BASENAME="$(basename "${APP_PATH}")"
+          IPA_PATH="${IPA_DIR}/OpenStarbound-iOS-${IOS_CONFIG}-unsigned.ipa"
+
+          rm -rf "${IPA_DIR}"
+          mkdir -p "${PAYLOAD_DIR}"
+          cp -R "${APP_PATH}" "${PAYLOAD_DIR}/${APP_BASENAME}"
+
+          (
+            cd "${IPA_DIR}"
+            /usr/bin/zip -qry "${IPA_PATH}" Payload
+          )
+
+          echo "IPA_PATH=${IPA_PATH}" >> "${GITHUB_ENV}"
+          shasum -a 256 "${IPA_PATH}"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenStarbound-iOS-${{ inputs.configuration }}-unsigned-ipa
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+
+      - name: Upload iOS build logs
         uses: actions/upload-artifact@v4
         with:
           name: OpenStarbound-iOS-build-logs
           path: |
-            build/ios-arm64-debug/CMakeCache.txt
-            build/ios-arm64-debug/CMakeFiles/CMakeOutput.log
-            build/ios-arm64-debug/CMakeFiles/CMakeError.log
+            build/ios-arm64-ipa/CMakeCache.txt
+            build/ios-arm64-ipa/CMakeFiles/CMakeOutput.log
+            build/ios-arm64-ipa/CMakeFiles/CMakeError.log
           if-no-files-found: warn
