@@ -1175,23 +1175,6 @@ private:
       ImGui::SameLine();
       if (ImGui::Button("Refresh List"))
         state.modListDirty = true;
-      ImGui::SameLine();
-      if (ImGui::Button("Open Mods Folder")) {
-        runLauncherAction("Open mods directory", [&]() {
-          if (auto svc = m_platformServices->externalFileAccessService()) {
-            if (svc->openModsLocationInSystemBrowser()) {
-              state.lastStatus = "Opened current mods directory.";
-              state.lastError.clear();
-            } else {
-              state.lastStatus = "Could not open directory.";
-              state.lastError = "Could not open current mods directory in file manager.";
-            }
-          } else {
-            state.lastStatus = "Open directory unavailable.";
-            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
-          }
-        });
-      }
 
       ImGui::InputTextWithHint("##modsearch", "Search mods...", state.modSearchBuffer, sizeof(state.modSearchBuffer));
       ImGui::Checkbox("Show .pak mods", &state.modShowPackedPaks);
@@ -1251,6 +1234,7 @@ private:
       ImGui::Separator();
       String modSearch = String(state.modSearchBuffer).trim();
       size_t shownMods = 0;
+      bool requestDeletePopup = false;
       ImGui::Text("Installed mods: %u", (unsigned)state.modEntries.size());
       if (ImGui::BeginChild("ModManagerList", ImVec2(0, -90.0f), true)) {
         for (auto const& mod : state.modEntries) {
@@ -1272,7 +1256,7 @@ private:
             state.pendingDeletePath = mod.path;
             state.pendingDeleteName = mod.displayName;
             state.pendingDeleteIsDirectory = mod.isDirectory;
-            ImGui::OpenPopup("Delete Mod?");
+            requestDeletePopup = true;
           }
           ImGui::PopID();
         }
@@ -1285,6 +1269,9 @@ private:
         }
       }
       ImGui::EndChild();
+
+      if (requestDeletePopup)
+        ImGui::OpenPopup("Delete Mod?");
 
       if (ImGui::BeginPopupModal("Delete Mod?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextWrapped("Delete mod '%s'?", state.pendingDeleteName.utf8Ptr());
