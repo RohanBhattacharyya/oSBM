@@ -1018,13 +1018,8 @@ private:
     // in VsyncReceiver when swap interval state mutates while surfaces settle.
     m_vsync = false;
 
-    int w = 0, h = 0;
-    SDL_GetWindowSize(m_window, &w, &h);
-    m_windowSize = Vec2U((unsigned)w, (unsigned)h);
-
-    m_displayScale = SDL_GetWindowDisplayScale(m_window);
-
     m_renderer = make_shared<GlesRenderer>();
+    syncWindowMetrics(false);
     m_renderer->setScreenSize(m_windowSize);
   }
 
@@ -1130,7 +1125,9 @@ private:
   }
 
   bool runLauncher(LauncherState& state) {
+    syncWindowMetrics(false);
     processWindowEvents();
+    syncWindowMetrics(false);
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
@@ -1518,7 +1515,9 @@ private:
       int64_t startupWaitStart = Time::monotonicMilliseconds();
       int64_t lastProgressLog = startupWaitStart;
       while (!startupDone->load(std::memory_order_acquire) && !m_quitRequested) {
+        syncWindowMetrics(false);
         processWindowEvents();
+        syncWindowMetrics(false);
         String status;
         {
           MutexLocker locker(*startupStatusMutex);
@@ -1618,6 +1617,7 @@ private:
     m_renderTicker.reset();
 
     while (!m_quitRequested && !m_softQuitRequested) {
+      syncWindowMetrics(true);
       syncTextInputState();
       auto inputEvents = processEvents();
 
@@ -1720,9 +1720,12 @@ private:
       }
 
       if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
-        m_windowSize = Vec2U((unsigned)event.window.data1, (unsigned)event.window.data2);
-        m_renderer->setScreenSize(m_windowSize);
-        m_application->windowChanged(WindowMode::Normal, m_windowSize);
+        syncWindowMetrics(true);
+        continue;
+      }
+
+      if (event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
+        syncWindowMetrics(true);
         continue;
       }
 
@@ -1760,6 +1763,8 @@ private:
         events.append(input.take());
     }
 
+    syncWindowMetrics(true);
+
     m_touchAdapter->endFrame();
     m_touchAdapter->appendGeneratedEvents(events);
     return events;
@@ -1776,14 +1781,74 @@ private:
 #else
         m_quitRequested = true;
 #endif
-      if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
-        m_windowSize = Vec2U((unsigned)event.window.data1, (unsigned)event.window.data2);
-        refreshImGuiScale();
+      if (event.type == SDL_EVENT_WINDOW_RESIZED
+          || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
+          || event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
+        syncWindowMetrics(false);
       }
     }
+
+    syncWindowMetrics(false);
+  }
+
+  bool queryWindowPixelSize(Vec2U& outSize) const {
+    if (!m_window)
+      return false;
+
+    int width = 0;
+    int height = 0;
+
+    if (SDL_GetWindowSizeInPixels(m_window, &width, &height) && width > 0 && height > 0) {
+      outSize = Vec2U((unsigned)width, (unsigned)height);
+      return true;
+    }
+
+    width = 0;
+    height = 0;
+    if (SDL_GetWindowSize(m_window, &width, &height) && width > 0 && height > 0) {
+      outSize = Vec2U((unsigned)width, (unsigned)height);
+      return true;
+    }
+
+    return false;
+  }
+
+  bool syncWindowMetrics(bool notifyApplication) {
+    Vec2U queriedSize;
+    bool hasSize = queryWindowPixelSize(queriedSize);
+
+    bool sizeChanged = false;
+    if (hasSize && queriedSize != m_windowSize) {
+      m_windowSize = queriedSize;
+      sizeChanged = true;
+    }
+
+    if (m_window) {
+      float displayScale = SDL_GetWindowDisplayScale(m_window);
+      if (displayScale > 0.0f)
+        m_displayScale = displayScale;
+    }
+
+    if (sizeChanged) {
+      if (m_renderer)
+        m_renderer->setScreenSize(m_windowSize);
+
+      if (notifyApplication && m_application)
+        m_application->windowChanged(WindowMode::Normal, m_windowSize);
+
+      refreshImGuiScale();
+    } else if (ImGui::GetCurrentContext()) {
+      // Keep launcher/UI touch sizing aligned when only display scale changes.
+      refreshImGuiScale();
+    }
+
+    return sizeChanged;
   }
 
   void refreshImGuiScale() {
+    if (!ImGui::GetCurrentContext())
+      return;
+
     auto& io = ImGui::GetIO();
     float shortSide = (float)std::min(m_windowSize[0], m_windowSize[1]);
     io.FontGlobalScale = std::clamp(shortSide / 500.0f, 1.35f, 2.2f);
