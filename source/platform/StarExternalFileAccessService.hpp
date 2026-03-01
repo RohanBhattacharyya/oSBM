@@ -14,9 +14,18 @@ public:
   // Returns absolute imported path in app-local storage if selection succeeds.
   virtual Maybe<String> pickPackedPak() = 0;
 
-  // Imports one or more mod files/directories into app-local mods storage.
+  // Imports one .pak mod file into app-local mods storage.
   // Returns paths that were imported.
-  virtual StringList importModFiles() = 0;
+  virtual StringList importModPakFiles() = 0;
+
+  // Imports one unpacked mod folder into app-local mods storage.
+  // Returns paths that were imported.
+  virtual StringList importSingleModFolder() = 0;
+
+  // Imports all top-level .pak files and unpacked mod folders from a selected
+  // directory into app-local mods storage.
+  // Returns paths that were imported.
+  virtual StringList importModsDirectory() = 0;
 
   // Opens the app's mods folder in a native file browser if available.
   virtual bool openModsLocationInSystemBrowser() = 0;

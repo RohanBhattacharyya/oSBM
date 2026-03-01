@@ -34,14 +34,40 @@ public:
 #endif
   }
 
-  StringList importModFiles() override {
+  StringList importModPakFiles() override {
     auto modsDirectory = resolveModsDirectory();
     File::makeDirectoryRecursive(modsDirectory);
 
 #ifdef STAR_SYSTEM_ANDROID
-    return AndroidFileAccessBridge::importModFiles(modsDirectory);
+    return AndroidFileAccessBridge::importModPakFiles(modsDirectory);
 #elif defined(STAR_SYSTEM_IOS)
-    return IosFileAccessBridge::importModFiles(modsDirectory);
+    return IosFileAccessBridge::importModPakFiles(modsDirectory);
+#else
+    return {};
+#endif
+  }
+
+  StringList importSingleModFolder() override {
+    auto modsDirectory = resolveModsDirectory();
+    File::makeDirectoryRecursive(modsDirectory);
+
+#ifdef STAR_SYSTEM_ANDROID
+    return AndroidFileAccessBridge::importSingleModFolder(modsDirectory);
+#elif defined(STAR_SYSTEM_IOS)
+    return IosFileAccessBridge::importSingleModFolder(modsDirectory);
+#else
+    return {};
+#endif
+  }
+
+  StringList importModsDirectory() override {
+    auto modsDirectory = resolveModsDirectory();
+    File::makeDirectoryRecursive(modsDirectory);
+
+#ifdef STAR_SYSTEM_ANDROID
+    return AndroidFileAccessBridge::importModsDirectory(modsDirectory);
+#elif defined(STAR_SYSTEM_IOS)
+    return IosFileAccessBridge::importModsDirectory(modsDirectory);
 #else
     return {};
 #endif

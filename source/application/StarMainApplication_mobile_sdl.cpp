@@ -158,14 +158,28 @@ struct MobileTouchConfig {
   float deadzone = 0.15f;
 };
 
+struct LauncherModEntry {
+  String displayName;
+  String path;
+  bool isDirectory = false;
+  bool isPackedPak = false;
+};
+
 struct LauncherState {
   bool canLaunch = false;
   String packedPakPath;
-  String packedPakImportSource;
-  String modImportSource;
   String lastError;
   String lastStatus;
   MobileTouchConfig touchConfig;
+  bool modManagerOpen = false;
+  bool modListDirty = true;
+  bool modShowPackedPaks = true;
+  bool modShowUnpackedFolders = true;
+  char modSearchBuffer[256] = {};
+  List<LauncherModEntry> modEntries;
+  String pendingDeletePath;
+  String pendingDeleteName;
+  bool pendingDeleteIsDirectory = false;
 };
 
 class MobileTouchInputAdapter {
@@ -1061,6 +1075,44 @@ private:
       SDL_Quit();
   }
 
+  List<LauncherModEntry> scanInstalledMods(String const& modsPath) {
+    List<LauncherModEntry> mods;
+
+    if (!File::isDirectory(modsPath))
+      File::makeDirectoryRecursive(modsPath);
+
+    for (auto const& entry : File::dirList(modsPath)) {
+      String entryName = entry.first;
+      bool isDirectory = entry.second;
+
+      bool isPak = !isDirectory && entryName.endsWith(".pak", String::CaseInsensitive);
+      if (!isDirectory && !isPak)
+        continue;
+
+      LauncherModEntry mod;
+      mod.displayName = entryName;
+      mod.path = File::relativeTo(modsPath, entryName);
+      mod.isDirectory = isDirectory;
+      mod.isPackedPak = isPak;
+      mods.append(std::move(mod));
+    }
+
+    mods.sort([](LauncherModEntry const& a, LauncherModEntry const& b) {
+      auto aLower = a.displayName.toLower();
+      auto bLower = b.displayName.toLower();
+      if (aLower == bLower)
+        return a.displayName < b.displayName;
+      return aLower < bLower;
+    });
+
+    return mods;
+  }
+
+  void refreshModList(LauncherState& state, String const& modsPath) {
+    state.modEntries = scanInstalledMods(modsPath);
+    state.modListDirty = false;
+  }
+
   void loadLauncherState(LauncherState& state) {
     auto configService = m_platformServices->launchConfigService();
     Json config = configService ? configService->loadLauncherConfig() : JsonObject();
@@ -1093,11 +1145,6 @@ private:
       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar
     );
 
-    ImGui::TextWrapped("Configure assets and controls before launching.");
-    ImGui::Separator();
-
-    ImGui::Text("packed.pak: %s", state.packedPakPath.empty() ? "<not selected>" : state.packedPakPath.utf8Ptr());
-
     auto runLauncherAction = [&state](String const& actionName, std::function<void()> const& fn) {
       try {
         fn();
@@ -1112,83 +1159,219 @@ private:
       }
     };
 
-    if (ImGui::Button("Pick packed.pak")) {
-      runLauncherAction("Pick packed.pak", [&]() {
-        if (auto svc = m_platformServices->externalFileAccessService()) {
-          auto picked = svc->pickPackedPak();
-          if (picked) {
-            state.packedPakPath = *picked;
-            state.lastStatus = "Imported packed.pak";
-            state.lastError.clear();
-          } else {
-            state.lastStatus = "No file selected.";
-            state.lastError = "Native picker unavailable or canceled.";
-          }
-        } else {
-          state.lastStatus = "Native picker unavailable.";
-          state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
-        }
-      });
-    }
-
-    ImGui::Separator();
     auto modsPath = modsDirectoryPath();
-    ImGui::TextWrapped("Current mods directory: %s", modsPath.utf8Ptr());
+    if (!File::isDirectory(modsPath))
+      File::makeDirectoryRecursive(modsPath);
 
-    if (ImGui::Button("Import NEW Mods Folder (Replaces Current)")) {
-      runLauncherAction("Import mods", [&]() {
-        if (auto svc = m_platformServices->externalFileAccessService()) {
-          auto imported = svc->importModFiles();
-          state.lastStatus = imported.empty() ? "No new mods imported." : strf("Imported {} mod(s)", imported.size());
-          if (imported.empty())
-            state.lastError = "No folder selected or import failed.";
-          else
-            state.lastError.clear();
-        } else {
-          state.lastStatus = "Import unavailable.";
-          state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
-        }
-      });
-    }
+    bool launchPressed = false;
 
-    if (ImGui::Button("View Current Mods Directory")) {
-      runLauncherAction("Open mods directory", [&]() {
-        if (auto svc = m_platformServices->externalFileAccessService()) {
-          if (svc->openModsLocationInSystemBrowser()) {
-            state.lastStatus = "Opened current mods directory.";
-            state.lastError.clear();
+    if (state.modManagerOpen) {
+      if (state.modListDirty)
+        refreshModList(state, modsPath);
+
+      ImGui::Text("Mod Manager");
+      ImGui::TextWrapped("Browse installed mods, import new mods, and delete entries.");
+      ImGui::Separator();
+
+      if (ImGui::Button("Back to Launcher"))
+        state.modManagerOpen = false;
+      ImGui::SameLine();
+      if (ImGui::Button("Refresh List"))
+        state.modListDirty = true;
+      ImGui::SameLine();
+      if (ImGui::Button("Open Mods Folder")) {
+        runLauncherAction("Open mods directory", [&]() {
+          if (auto svc = m_platformServices->externalFileAccessService()) {
+            if (svc->openModsLocationInSystemBrowser()) {
+              state.lastStatus = "Opened current mods directory.";
+              state.lastError.clear();
+            } else {
+              state.lastStatus = "Could not open directory.";
+              state.lastError = "Could not open current mods directory in file manager.";
+            }
           } else {
-            state.lastStatus = "Could not open directory.";
-            state.lastError = "Could not open current mods directory in file manager.";
+            state.lastStatus = "Open directory unavailable.";
+            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
           }
-        } else {
-          state.lastStatus = "Open directory unavailable.";
-          state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+        });
+      }
+
+      ImGui::InputTextWithHint("##modsearch", "Search mods...", state.modSearchBuffer, sizeof(state.modSearchBuffer));
+      ImGui::Checkbox("Show .pak mods", &state.modShowPackedPaks);
+      ImGui::SameLine();
+      ImGui::Checkbox("Show unpacked folders", &state.modShowUnpackedFolders);
+      ImGui::TextWrapped("Mods directory: %s", modsPath.utf8Ptr());
+
+      if (ImGui::Button("Import mod (.pak)")) {
+        runLauncherAction("Import mod (.pak)", [&]() {
+          if (auto svc = m_platformServices->externalFileAccessService()) {
+            auto imported = svc->importModPakFiles();
+            state.lastStatus = imported.empty() ? "No mod imported." : strf("Imported {} mod(s)", imported.size());
+            if (imported.empty())
+              state.lastError = "No .pak selected or import failed.";
+            else
+              state.lastError.clear();
+            state.modListDirty = true;
+          } else {
+            state.lastStatus = "Import unavailable.";
+            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+          }
+        });
+      }
+      if (ImGui::Button("Import mod folder (single mod)")) {
+        runLauncherAction("Import mod folder", [&]() {
+          if (auto svc = m_platformServices->externalFileAccessService()) {
+            auto imported = svc->importSingleModFolder();
+            state.lastStatus = imported.empty() ? "No mod folder imported." : strf("Imported {} mod(s)", imported.size());
+            if (imported.empty())
+              state.lastError = "No folder selected or import failed.";
+            else
+              state.lastError.clear();
+            state.modListDirty = true;
+          } else {
+            state.lastStatus = "Import unavailable.";
+            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+          }
+        });
+      }
+      if (ImGui::Button("Import mods folder (all .pak and folders)")) {
+        runLauncherAction("Import mods folder", [&]() {
+          if (auto svc = m_platformServices->externalFileAccessService()) {
+            auto imported = svc->importModsDirectory();
+            state.lastStatus = imported.empty() ? "No mods imported." : strf("Imported {} mod(s)", imported.size());
+            if (imported.empty())
+              state.lastError = "No folder selected or no valid mods found.";
+            else
+              state.lastError.clear();
+            state.modListDirty = true;
+          } else {
+            state.lastStatus = "Import unavailable.";
+            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+          }
+        });
+      }
+
+      ImGui::Separator();
+      String modSearch = String(state.modSearchBuffer).trim();
+      size_t shownMods = 0;
+      ImGui::Text("Installed mods: %u", (unsigned)state.modEntries.size());
+      if (ImGui::BeginChild("ModManagerList", ImVec2(0, -90.0f), true)) {
+        for (auto const& mod : state.modEntries) {
+          if (mod.isPackedPak && !state.modShowPackedPaks)
+            continue;
+          if (mod.isDirectory && !state.modShowUnpackedFolders)
+            continue;
+          if (!modSearch.empty() && !mod.displayName.contains(modSearch, String::CaseInsensitive))
+            continue;
+
+          shownMods++;
+          ImGui::PushID(mod.path.utf8Ptr());
+          ImGui::TextUnformatted(mod.displayName.utf8Ptr());
+          ImGui::SameLine();
+          ImGui::TextDisabled("[%s]", mod.isDirectory ? "folder" : ".pak");
+          ImGui::SameLine();
+          ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - 110.0f));
+          if (ImGui::Button("Delete", ImVec2(90.0f, 0.0f))) {
+            state.pendingDeletePath = mod.path;
+            state.pendingDeleteName = mod.displayName;
+            state.pendingDeleteIsDirectory = mod.isDirectory;
+            ImGui::OpenPopup("Delete Mod?");
+          }
+          ImGui::PopID();
         }
-      });
+
+        if (shownMods == 0) {
+          if (!modSearch.empty())
+            ImGui::TextDisabled("No mods match your search.");
+          else
+            ImGui::TextDisabled("No mods are currently installed.");
+        }
+      }
+      ImGui::EndChild();
+
+      if (ImGui::BeginPopupModal("Delete Mod?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("Delete mod '%s'?", state.pendingDeleteName.utf8Ptr());
+        ImGui::TextWrapped("This removes it from the game's internal mods directory.");
+        if (ImGui::Button("Delete", ImVec2(140.0f, 0.0f))) {
+          runLauncherAction("Delete mod", [&]() {
+            if (!state.pendingDeletePath.empty()) {
+              if (state.pendingDeleteIsDirectory)
+                File::removeDirectoryRecursive(state.pendingDeletePath);
+              else
+                File::remove(state.pendingDeletePath);
+              state.lastStatus = strf("Deleted mod '{}'.", state.pendingDeleteName);
+              state.lastError.clear();
+              state.modListDirty = true;
+            }
+          });
+          state.pendingDeletePath.clear();
+          state.pendingDeleteName.clear();
+          state.pendingDeleteIsDirectory = false;
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(140.0f, 0.0f))) {
+          state.pendingDeletePath.clear();
+          state.pendingDeleteName.clear();
+          state.pendingDeleteIsDirectory = false;
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+      }
+    } else {
+      ImGui::TextWrapped("Configure assets and controls before launching.");
+      ImGui::Separator();
+
+      ImGui::Text("packed.pak: %s", state.packedPakPath.empty() ? "<not selected>" : state.packedPakPath.utf8Ptr());
+
+      if (ImGui::Button("Pick packed.pak")) {
+        runLauncherAction("Pick packed.pak", [&]() {
+          if (auto svc = m_platformServices->externalFileAccessService()) {
+            auto picked = svc->pickPackedPak();
+            if (picked) {
+              state.packedPakPath = *picked;
+              state.lastStatus = "Imported packed.pak";
+              state.lastError.clear();
+            } else {
+              state.lastStatus = "No file selected.";
+              state.lastError = "Native picker unavailable or canceled.";
+            }
+          } else {
+            state.lastStatus = "Native picker unavailable.";
+            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+          }
+        });
+      }
+
+      ImGui::Separator();
+      ImGui::TextWrapped("Current mods directory: %s", modsPath.utf8Ptr());
+      if (ImGui::Button("Mod Manager")) {
+        state.modManagerOpen = true;
+        state.modListDirty = true;
+      }
+
+      ImGui::Separator();
+      ImGui::Text("Touch Controls");
+      ImGui::Checkbox("Enable touch overlay", &state.touchConfig.enabled);
+      ImGui::SliderFloat("Overlay opacity", &state.touchConfig.opacity, 0.0f, 1.0f);
+      ImGui::SliderFloat("Overlay size", &state.touchConfig.size, 0.6f, 1.8f);
+      ImGui::SliderFloat("Joystick deadzone", &state.touchConfig.deadzone, 0.0f, 0.6f);
+
+      state.canLaunch = File::isFile(state.packedPakPath);
+      if (!state.canLaunch)
+        ImGui::TextColored(ImVec4(1, 0.6f, 0.4f, 1), "Launch is disabled until packed.pak is imported.");
+
+      if (!state.canLaunch)
+        ImGui::BeginDisabled();
+      launchPressed = ImGui::Button("Launch");
+      if (!state.canLaunch)
+        ImGui::EndDisabled();
     }
 
-    ImGui::Separator();
-    ImGui::Text("Touch Controls");
-    ImGui::Checkbox("Enable touch overlay", &state.touchConfig.enabled);
-    ImGui::SliderFloat("Overlay opacity", &state.touchConfig.opacity, 0.0f, 1.0f);
-    ImGui::SliderFloat("Overlay size", &state.touchConfig.size, 0.6f, 1.8f);
-    ImGui::SliderFloat("Joystick deadzone", &state.touchConfig.deadzone, 0.0f, 0.6f);
-
-    state.canLaunch = File::isFile(state.packedPakPath);
     if (!state.lastStatus.empty())
       ImGui::Text("Status: %s", state.lastStatus.utf8Ptr());
     if (!state.lastError.empty())
       ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", state.lastError.utf8Ptr());
-
-    if (!state.canLaunch)
-      ImGui::TextColored(ImVec4(1, 0.6f, 0.4f, 1), "Launch is disabled until packed.pak is imported.");
-
-    if (!state.canLaunch)
-      ImGui::BeginDisabled();
-    bool launchPressed = ImGui::Button("Launch");
-    if (!state.canLaunch)
-      ImGui::EndDisabled();
 
     ImGui::End();
 

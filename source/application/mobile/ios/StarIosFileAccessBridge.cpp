@@ -55,7 +55,7 @@ Maybe<String> IosFileAccessBridge::resolveModsDirectory(String const& fallbackMo
 #endif
 }
 
-StringList IosFileAccessBridge::importModFiles(String const& modsDirectory) {
+static StringList importModFilesInternal(String const& modsDirectory) {
 #ifdef STAR_SYSTEM_IOS
   StringList out;
   int count = 0;
@@ -77,6 +77,18 @@ StringList IosFileAccessBridge::importModFiles(String const& modsDirectory) {
   (void)modsDirectory;
   return {};
 #endif
+}
+
+StringList IosFileAccessBridge::importModPakFiles(String const& modsDirectory) {
+  return importModFilesInternal(modsDirectory);
+}
+
+StringList IosFileAccessBridge::importSingleModFolder(String const& modsDirectory) {
+  return importModFilesInternal(modsDirectory);
+}
+
+StringList IosFileAccessBridge::importModsDirectory(String const& modsDirectory) {
+  return importModFilesInternal(modsDirectory);
 }
 
 bool IosFileAccessBridge::openModsDirectory(String const& modsDirectory) {

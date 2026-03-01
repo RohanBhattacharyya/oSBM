@@ -33,7 +33,9 @@ import java.util.concurrent.TimeUnit;
 
 public final class MainActivity extends SDLActivity {
     private static final int REQUEST_PICK_PAK = 0x5001;
-    private static final int REQUEST_PICK_MODS = 0x5002;
+    private static final int REQUEST_PICK_MOD_PAK = 0x5002;
+    private static final int REQUEST_PICK_MOD_FOLDER = 0x5003;
+    private static final int REQUEST_PICK_MODS_FOLDER = 0x5004;
     private static final Object PICKER_LOCK = new Object();
     private static final long PICKER_TIMEOUT_SECONDS = 180;
 
@@ -226,8 +228,7 @@ public final class MainActivity extends SDLActivity {
         }
     }
 
-    public static String[] importMods(String modsDirectory) {
-        MainActivity activity = instance();
+    private static String[] runModImportRequest(MainActivity activity, String modsDirectory, int requestCode, Intent intent) {
         if (activity == null) {
             return new String[0];
         }
@@ -241,11 +242,7 @@ public final class MainActivity extends SDLActivity {
             sImportedMods = new ArrayList<>();
         }
 
-        activity.runOnUiThread(() -> {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-            activity.startActivityForResult(intent, REQUEST_PICK_MODS);
-        });
+        activity.runOnUiThread(() -> activity.startActivityForResult(intent, requestCode));
 
         try {
             latch.await(PICKER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
@@ -256,6 +253,30 @@ public final class MainActivity extends SDLActivity {
         synchronized (PICKER_LOCK) {
             return sImportedMods.toArray(new String[0]);
         }
+    }
+
+    public static String[] importModPak(String modsDirectory) {
+        MainActivity activity = instance();
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] { "*/*", "application/octet-stream" });
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        return runModImportRequest(activity, modsDirectory, REQUEST_PICK_MOD_PAK, intent);
+    }
+
+    public static String[] importSingleModFolder(String modsDirectory) {
+        MainActivity activity = instance();
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        return runModImportRequest(activity, modsDirectory, REQUEST_PICK_MOD_FOLDER, intent);
+    }
+
+    public static String[] importModsFolder(String modsDirectory) {
+        MainActivity activity = instance();
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        return runModImportRequest(activity, modsDirectory, REQUEST_PICK_MODS_FOLDER, intent);
     }
 
     private static Uri externalStorageDocumentUriForPath(String absolutePath) {
@@ -318,62 +339,53 @@ public final class MainActivity extends SDLActivity {
         return modsDir.getAbsolutePath();
     }
 
-    private static boolean deleteRecursively(File file) {
-        if (file == null || !file.exists()) {
-            return true;
-        }
+    private static boolean isPakFileName(String name) {
+        return name != null && name.toLowerCase().endsWith(".pak");
+    }
 
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    if (!deleteRecursively(child)) {
-                        return false;
-                    }
-                }
+    private static File uniqueTargetFile(File parent, String requestedName, boolean treatAsDirectory) {
+        String safeName = sanitizeFileName(requestedName, treatAsDirectory ? "mod_folder" : "mod.pak");
+        String baseName = safeName;
+        String extension = "";
+
+        if (!treatAsDirectory) {
+            int dot = safeName.lastIndexOf('.');
+            if (dot > 0 && dot < safeName.length() - 1) {
+                baseName = safeName.substring(0, dot);
+                extension = safeName.substring(dot);
             }
         }
 
-        return file.delete();
-    }
-
-    private static boolean clearDirectoryContents(File dir) {
-        if (dir == null) {
-            return false;
-        }
-        if (!dir.exists()) {
-            return dir.mkdirs();
-        }
-        if (!dir.isDirectory()) {
-            return false;
+        File candidate = new File(parent, safeName);
+        if (!candidate.exists()) {
+            return candidate;
         }
 
-        File[] children = dir.listFiles();
-        if (children == null) {
-            return true;
-        }
-
-        for (File child : children) {
-            if (!deleteRecursively(child)) {
-                return false;
+        for (int i = 2; i < 10000; ++i) {
+            String suffix = " (" + i + ")";
+            String nextName = baseName + suffix + extension;
+            candidate = new File(parent, nextName);
+            if (!candidate.exists()) {
+                return candidate;
             }
         }
-        return true;
+
+        return new File(parent, baseName + "_" + System.currentTimeMillis() + extension);
     }
 
-    private static void copyDocumentTreeIntoMods(
+    private static boolean copyDocumentTreeContents(
         MainActivity activity,
         DocumentFile sourceDir,
-        File targetDir,
-        ArrayList<String> importedMods
+        File targetDir
     ) {
         DocumentFile[] children;
         try {
             children = sourceDir.listFiles();
         } catch (Throwable ignored) {
-            return;
+            return false;
         }
 
+        boolean copiedAny = false;
         for (DocumentFile child : children) {
             if (child == null) {
                 continue;
@@ -390,9 +402,71 @@ public final class MainActivity extends SDLActivity {
                 if (!target.exists() && !target.mkdirs()) {
                     continue;
                 }
-                copyDocumentTreeIntoMods(activity, child, target, importedMods);
+                copiedAny |= copyDocumentTreeContents(activity, child, target);
             } else if (child.isFile()) {
                 String imported = copyUriToPath(activity, child.getUri(), target);
+                if (imported != null) {
+                    copiedAny = true;
+                }
+            }
+        }
+
+        return copiedAny;
+    }
+
+    private static void importSingleModFolderFromTree(
+        MainActivity activity,
+        DocumentFile pickedTree,
+        File modsDirFile,
+        ArrayList<String> importedMods
+    ) {
+        String rootName = pickedTree.getName();
+        if (rootName == null || rootName.isEmpty()) {
+            rootName = "mod_folder";
+        }
+
+        File targetModRoot = uniqueTargetFile(modsDirFile, rootName, true);
+        if (!targetModRoot.exists() && !targetModRoot.mkdirs()) {
+            return;
+        }
+
+        copyDocumentTreeContents(activity, pickedTree, targetModRoot);
+        importedMods.add(targetModRoot.getAbsolutePath());
+    }
+
+    private static void importAllModsFromFolderTree(
+        MainActivity activity,
+        DocumentFile pickedTree,
+        File modsDirFile,
+        ArrayList<String> importedMods
+    ) {
+        DocumentFile[] entries;
+        try {
+            entries = pickedTree.listFiles();
+        } catch (Throwable ignored) {
+            return;
+        }
+
+        for (DocumentFile entry : entries) {
+            if (entry == null) {
+                continue;
+            }
+
+            String entryName = entry.getName();
+            if (entryName == null || entryName.isEmpty()) {
+                entryName = entry.isDirectory() ? "mod_folder" : "mod_file";
+            }
+
+            if (entry.isDirectory()) {
+                File targetModRoot = uniqueTargetFile(modsDirFile, entryName, true);
+                if (!targetModRoot.exists() && !targetModRoot.mkdirs()) {
+                    continue;
+                }
+                copyDocumentTreeContents(activity, entry, targetModRoot);
+                importedMods.add(targetModRoot.getAbsolutePath());
+            } else if (entry.isFile() && isPakFileName(entryName)) {
+                File targetPak = uniqueTargetFile(modsDirFile, entryName, false);
+                String imported = copyUriToPath(activity, entry.getUri(), targetPak);
                 if (imported != null) {
                     importedMods.add(imported);
                 }
@@ -612,7 +686,41 @@ public final class MainActivity extends SDLActivity {
                         sPickedPakResult = imported;
                     }
                 }
-            } else if (requestCode == REQUEST_PICK_MODS) {
+            } else if (requestCode == REQUEST_PICK_MOD_PAK) {
+                String modsDir;
+                synchronized (PICKER_LOCK) {
+                    modsDir = sTargetModsDir;
+                }
+                if (modsDir == null) {
+                    return;
+                }
+
+                Uri pakUri = data.getData();
+                if (pakUri == null) {
+                    return;
+                }
+
+                File modsDirFile = new File(modsDir);
+                if (!modsDirFile.exists() && !modsDirFile.mkdirs()) {
+                    return;
+                }
+
+                String name = displayName(getContentResolver(), pakUri);
+                if (name == null || name.isEmpty()) {
+                    name = "mod.pak";
+                }
+                if (!isPakFileName(name)) {
+                    name = name + ".pak";
+                }
+
+                File targetPak = uniqueTargetFile(modsDirFile, name, false);
+                String imported = copyUriToPath(this, pakUri, targetPak);
+                if (imported != null) {
+                    synchronized (PICKER_LOCK) {
+                        sImportedMods.add(imported);
+                    }
+                }
+            } else if (requestCode == REQUEST_PICK_MOD_FOLDER || requestCode == REQUEST_PICK_MODS_FOLDER) {
                 String modsDir;
                 synchronized (PICKER_LOCK) {
                     modsDir = sTargetModsDir;
@@ -638,14 +746,16 @@ public final class MainActivity extends SDLActivity {
                 } catch (Throwable ignored) {
                 }
 
-                if (clearDirectoryContents(modsDirFile)) {
-                    DocumentFile pickedTree = DocumentFile.fromTreeUri(this, treeUri);
-                    if (pickedTree != null && pickedTree.isDirectory()) {
-                        ArrayList<String> imported = new ArrayList<>();
-                        copyDocumentTreeIntoMods(this, pickedTree, modsDirFile, imported);
-                        synchronized (PICKER_LOCK) {
-                            sImportedMods.addAll(imported);
-                        }
+                DocumentFile pickedTree = DocumentFile.fromTreeUri(this, treeUri);
+                if (pickedTree != null && pickedTree.isDirectory()) {
+                    ArrayList<String> imported = new ArrayList<>();
+                    if (requestCode == REQUEST_PICK_MOD_FOLDER) {
+                        importSingleModFolderFromTree(this, pickedTree, modsDirFile, imported);
+                    } else {
+                        importAllModsFromFolderTree(this, pickedTree, modsDirFile, imported);
+                    }
+                    synchronized (PICKER_LOCK) {
+                        sImportedMods.addAll(imported);
                     }
                 }
             }

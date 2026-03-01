@@ -31,6 +31,47 @@ String toStarString(JNIEnv* env, jstring value) {
   return out;
 }
 
+StringList callJavaStringArrayMethod(char const* methodName, String const& argValue) {
+  StringList out;
+
+  JNIEnv* env = jniEnv();
+  if (!env)
+    return out;
+
+  jclass cls = mainActivityClass(env);
+  if (!cls)
+    return out;
+
+  jmethodID method = env->GetStaticMethodID(cls, methodName, "(Ljava/lang/String;)[Ljava/lang/String;");
+  if (!method)
+    return out;
+
+  jstring arg = env->NewStringUTF(argValue.utf8Ptr());
+  jobjectArray result = (jobjectArray)env->CallStaticObjectMethod(cls, method, arg);
+  env->DeleteLocalRef(arg);
+
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return out;
+  }
+
+  if (!result)
+    return out;
+
+  jsize count = env->GetArrayLength(result);
+  for (jsize i = 0; i < count; ++i) {
+    jstring item = (jstring)env->GetObjectArrayElement(result, i);
+    String value = toStarString(env, item);
+    if (!value.empty())
+      out.append(value);
+    if (item)
+      env->DeleteLocalRef(item);
+  }
+
+  env->DeleteLocalRef(result);
+  return out;
+}
+
 }
 #endif
 
@@ -139,44 +180,27 @@ Maybe<String> AndroidFileAccessBridge::resolveModsDirectory(String const& fallba
 #endif
 }
 
-StringList AndroidFileAccessBridge::importModFiles(String const& modsDirectory) {
+StringList AndroidFileAccessBridge::importModPakFiles(String const& modsDirectory) {
 #ifdef STAR_SYSTEM_ANDROID
-  StringList out;
-  JNIEnv* env = jniEnv();
-  if (!env)
-    return out;
+  return callJavaStringArrayMethod("importModPak", modsDirectory);
+#else
+  (void)modsDirectory;
+  return {};
+#endif
+}
 
-  jclass cls = mainActivityClass(env);
-  if (!cls)
-    return out;
+StringList AndroidFileAccessBridge::importSingleModFolder(String const& modsDirectory) {
+#ifdef STAR_SYSTEM_ANDROID
+  return callJavaStringArrayMethod("importSingleModFolder", modsDirectory);
+#else
+  (void)modsDirectory;
+  return {};
+#endif
+}
 
-  jmethodID method = env->GetStaticMethodID(cls, "importMods", "(Ljava/lang/String;)[Ljava/lang/String;");
-  if (!method)
-    return out;
-
-  jstring arg = env->NewStringUTF(modsDirectory.utf8Ptr());
-  jobjectArray result = (jobjectArray)env->CallStaticObjectMethod(cls, method, arg);
-  env->DeleteLocalRef(arg);
-
-  if (env->ExceptionCheck()) {
-    env->ExceptionClear();
-    return out;
-  }
-
-  if (!result)
-    return out;
-
-  jsize count = env->GetArrayLength(result);
-  for (jsize i = 0; i < count; ++i) {
-    jstring item = (jstring)env->GetObjectArrayElement(result, i);
-    String value = toStarString(env, item);
-    if (!value.empty())
-      out.append(value);
-    if (item)
-      env->DeleteLocalRef(item);
-  }
-  env->DeleteLocalRef(result);
-  return out;
+StringList AndroidFileAccessBridge::importModsDirectory(String const& modsDirectory) {
+#ifdef STAR_SYSTEM_ANDROID
+  return callJavaStringArrayMethod("importModsFolder", modsDirectory);
 #else
   (void)modsDirectory;
   return {};
