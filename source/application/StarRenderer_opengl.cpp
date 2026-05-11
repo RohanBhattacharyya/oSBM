@@ -7,6 +7,37 @@ namespace Star {
 
 size_t const MultiTextureCount = 4;
 
+namespace {
+
+String normalizeShaderSource(String const& sourceText, GLenum type) {
+  String adjusted = sourceText.trimBeg();
+
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+  size_t newline = adjusted.find('\n');
+  String versionLine = newline == NPos ? adjusted : adjusted.substr(0, newline);
+  if (versionLine.beginsWith("#version ") && !versionLine.contains("es")) {
+    if (newline == NPos)
+      adjusted = "#version 300 es\n";
+    else
+      adjusted = String("#version 300 es\n") + adjusted.substr(newline + 1);
+  }
+
+  if (type == GL_FRAGMENT_SHADER && !adjusted.contains("precision ")) {
+    size_t firstLineEnd = adjusted.find('\n');
+    if (firstLineEnd == NPos)
+      adjusted += "\nprecision mediump float;\n";
+    else
+      adjusted = adjusted.substr(0, firstLineEnd + 1) + "precision mediump float;\n" + adjusted.substr(firstLineEnd + 1);
+  }
+#else
+  _unused(type);
+#endif
+
+  return adjusted;
+}
+
+}
+
 #if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
 char const* DefaultVertexShader = R"SHADER(
 #version 300 es
@@ -302,65 +333,28 @@ void OpenGlRenderer::loadEffectConfig(String const& name, Json const& effectConf
   GLint status = 0;
   char logBuffer[1024];
 
-  auto adaptShaderSourceForMobile = [&](String const& sourceText, GLenum type) -> String {
-#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
-    String adjusted = sourceText;
-
-    size_t newline = adjusted.find('\n');
-    String versionLine = newline == NPos ? adjusted : adjusted.substr(0, newline);
-    if (versionLine.beginsWith("#version ") && !versionLine.contains("es")) {
-      if (newline == NPos)
-        adjusted = "#version 300 es\n";
-      else
-        adjusted = String("#version 300 es\n") + adjusted.substr(newline + 1);
-    }
-
-    if (type == GL_FRAGMENT_SHADER && !adjusted.contains("precision ")) {
-      size_t firstLineEnd = adjusted.find('\n');
-      if (firstLineEnd == NPos)
-        adjusted += "\nprecision mediump float;\n";
-      else
-        adjusted = adjusted.substr(0, firstLineEnd + 1) + "precision mediump float;\n" + adjusted.substr(firstLineEnd + 1);
-    }
-
-    return adjusted;
-#else
-    _unused(type);
-    return sourceText;
-#endif
-  };
-
-  auto compileShader = [&](GLenum type, String const& name) -> GLuint {
-    GLuint shader = glCreateShader(type);
-    auto* source = shaders.ptr(name);
-    if (!source)
-      return 0;
-    String shaderSource = adaptShaderSourceForMobile(*source, type);
+  auto compileShaderSource = [&](GLenum type, String const& sourceText, char const* shaderName) -> GLuint {
+    String shaderSource = normalizeShaderSource(sourceText, type);
     char const* sourcePtr = shaderSource.utf8Ptr();
+    GLuint shader = glCreateShader(type);
     glShaderSource(shader, 1, &sourcePtr, NULL);
     glCompileShader(shader);
 
     glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
     if (!status) {
       glGetShaderInfoLog(shader, sizeof(logBuffer), NULL, logBuffer);
-      throw RendererException(strf("Failed to compile {} shader: {}\n", name, logBuffer));
+      glDeleteShader(shader);
+      throw RendererException(strf("Failed to compile {} shader: {}\n", shaderName, logBuffer));
     }
 
     return shader;
   };
 
-  auto compileShaderSource = [&](GLenum type, char const* sourceText, char const* shaderName) -> GLuint {
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &sourceText, NULL);
-    glCompileShader(shader);
-
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
-    if (!status) {
-      glGetShaderInfoLog(shader, sizeof(logBuffer), NULL, logBuffer);
-      throw RendererException(strf("Failed to compile {} shader: {}\n", shaderName, logBuffer));
-    }
-
-    return shader;
+  auto compileShader = [&](GLenum type, String const& name) -> GLuint {
+    auto const* source = shaders.ptr(name);
+    if (!source)
+      return 0;
+    return compileShaderSource(type, *source, name.utf8Ptr());
   };
 
   GLuint vertexShader = 0, fragmentShader = 0;
