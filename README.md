@@ -17,10 +17,10 @@ You **must** own a copy of Starbound. Base game assets are not provided for very
 The code is worked on whenever I feel like it. Contributions are welcome!
 
 ## Installation
-### Download the [latest stable release](https://github.com/OpenStarbound/OpenStarbound/releases/latest).
+### Download the [latest release](https://github.com/RohanBhattacharyya/oSBM/releases).
 The latest stable release is recommended, as the nightly build can have bugs.
 
-At the moment, you must copy the game assets (**packed.pak**) from your normal Starbound install to the OpenStarbound assets directory before playing.
+At the moment, you must have a copy of the game assets (**packed.pak**) to upload to the app.
 
 OpenStarbound is a separate installation/executable than Starbound. You can copy your `storage` folder from Starbound to transfer your save data and settings. Launching OpenStarbound with Steam open will load your subscribed Steam mods.
 
