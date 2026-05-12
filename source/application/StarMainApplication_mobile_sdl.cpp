@@ -240,12 +240,10 @@ public:
     float radius = controlRadius();
     updateButtonCenters(radius);
 
-    // ImGui operates in logical pixels. On HiDPI displays (iOS Retina) the
-    // window size is in physical pixels, so divide by the pixel scale before
-    // handing any position or radius to the ImGui draw list.
-    float ps = drawPixelScale();
-    float dr = radius / ps;
-    auto ip = [ps](Vec2F const& v) { return ImVec2(v[0] / ps, v[1] / ps); };
+    Vec2F drawScale = physicalToDrawScale();
+    float radiusScale = std::max(1.0f, std::min(drawScale[0], drawScale[1]));
+    float dr = radius / radiusScale;
+    auto ip = [drawScale](Vec2F const& v) { return ImVec2(v[0] / drawScale[0], v[1] / drawScale[1]); };
 
     ImDrawList* draw = ImGui::GetForegroundDrawList();
     ImU32 base = IM_COL32(255, 255, 255, (int)(180.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
@@ -291,18 +289,38 @@ private:
     return (p - center).magnitudeSquared() <= radius * radius;
   }
 
-  // Returns the scale factor between physical pixels (m_windowSize) and the
-  // logical pixels that ImGui's draw list expects. On standard-density displays
-  // (Android, desktop) this is 1.0; on Retina iOS devices it is typically 2 or 3.
-  float drawPixelScale() const {
-    if (!m_displayScalePtr)
-      return 1.0f;
-    return std::max(1.0f, std::round(*m_displayScalePtr));
+  // ImGui draw lists use SDL window coordinates, while the game renderer and
+  // generated input events use physical pixels. Measure that relationship from
+  // ImGui itself instead of assuming SDL's display density is the right value:
+  // Android commonly reports a density of 2-3 while ImGui is still in physical
+  // pixels, whereas iOS usually renders ImGui in logical points.
+  Vec2F physicalToDrawScale() const {
+    if (ImGui::GetCurrentContext()) {
+      ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+      if (displaySize.x > 0.0f && displaySize.y > 0.0f)
+        return {
+          std::max(1.0f, (float)(*m_windowSize)[0] / displaySize.x),
+          std::max(1.0f, (float)(*m_windowSize)[1] / displaySize.y)
+        };
+    }
+
+#ifdef STAR_SYSTEM_IOS
+    if (m_displayScalePtr)
+      return Vec2F::filled(std::max(1.0f, std::round(*m_displayScalePtr)));
+#endif
+
+    return Vec2F::filled(1.0f);
   }
 
   float controlRadius() const {
-    float shortSide = (float)std::min((*m_windowSize)[0], (*m_windowSize)[1]);
-    return 56.0f * m_config.size * std::max(1.0f, shortSide / 720.0f);
+    Vec2F drawScale = physicalToDrawScale();
+    float radiusScale = std::max(1.0f, std::min(drawScale[0], drawScale[1]));
+    Vec2F drawSize = {
+      (float)(*m_windowSize)[0] / drawScale[0],
+      (float)(*m_windowSize)[1] / drawScale[1]
+    };
+    float shortSide = std::min(drawSize[0], drawSize[1]);
+    return 56.0f * radiusScale * m_config.size * std::max(1.0f, shortSide / 720.0f);
   }
 
   float tapMovementThreshold() const {
@@ -331,6 +349,18 @@ private:
         x * (float)(*m_windowSize)[0],
         y * (float)(*m_windowSize)[1]
       };
+    }
+
+    if (ImGui::GetCurrentContext()) {
+      ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+      Vec2F drawScale = physicalToDrawScale();
+      if (displaySize.x > 0.0f && displaySize.y > 0.0f && (drawScale[0] > 1.0f || drawScale[1] > 1.0f)
+          && x >= 0.0f && x <= displaySize.x && y >= 0.0f && y <= displaySize.y) {
+        return {
+          x * drawScale[0],
+          y * drawScale[1]
+        };
+      }
     }
 
     return {
@@ -601,7 +631,7 @@ private:
   }
 
   Vec2U* m_windowSize;
-  float* m_displayScalePtr = nullptr;
+  [[maybe_unused]] float* m_displayScalePtr = nullptr;
   MobileTouchConfig m_config;
   List<InputEvent> m_generatedEvents;
 
