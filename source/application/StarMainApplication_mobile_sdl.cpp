@@ -817,10 +817,8 @@ private:
     }
 
     void setTextArea(Maybe<pair<RectI, int>> area = {}) override {
-#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
-      _unused(parent);
-      _unused(area);
-#else
+      if (!parent->m_window)
+        return;
       if (area) {
         SDL_Rect rect{
           area->first.xMin(),
@@ -828,11 +826,21 @@ private:
           area->first.width(),
           area->first.height()
         };
+#ifdef STAR_SYSTEM_IOS
+        // SDL3 window coordinates on iOS are in logical pixels (points);
+        // game interface coordinates are physical pixels, so scale down.
+        float scale = std::max(1.0f, std::round(parent->m_displayScale));
+        rect.x = (int)std::round((float)rect.x / scale);
+        rect.y = (int)std::round((float)rect.y / scale);
+        rect.w = (int)std::round((float)rect.w / scale);
+        rect.h = (int)std::round((float)rect.h / scale);
+        SDL_SetTextInputArea(parent->m_window, &rect, (int)std::round((float)area->second / scale));
+#else
         SDL_SetTextInputArea(parent->m_window, &rect, area->second);
+#endif
       } else {
         SDL_SetTextInputArea(parent->m_window, nullptr, 0);
       }
-#endif
     }
 
     AudioFormat enableAudio() override {
@@ -1734,7 +1742,7 @@ private:
       m_application->shutdown();
     } catch (...) {
     }
-#ifdef STAR_SYSTEM_ANDROID
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
     if (m_textInputApplied && m_window)
       SDL_StopTextInput(m_window);
     m_textInputApplied = false;
@@ -1930,7 +1938,7 @@ private:
   }
 
   void syncTextInputState() {
-#ifdef STAR_SYSTEM_ANDROID
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
     if (!m_window)
       return;
     if (!m_textInputDirty && m_textInputApplied == m_textInput)
