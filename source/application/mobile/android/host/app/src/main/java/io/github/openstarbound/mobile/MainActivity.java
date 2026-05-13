@@ -3,7 +3,9 @@ package io.github.openstarbound.mobile;
 import android.app.AlertDialog;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.pm.ResolveInfo;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
@@ -11,8 +13,10 @@ import android.os.Bundle;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
+import android.view.DisplayCutout;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Toast;
 import android.window.OnBackInvokedCallback;
@@ -37,7 +41,9 @@ public final class MainActivity extends SDLActivity {
     private static final int REQUEST_PICK_MOD_FOLDER = 0x5003;
     private static final int REQUEST_PICK_MODS_FOLDER = 0x5004;
     private static final Object PICKER_LOCK = new Object();
+    private static final Object SAFE_AREA_LOCK = new Object();
     private static final long PICKER_TIMEOUT_SECONDS = 180;
+    private static final int[] sSafeAreaInsets = new int[] { 0, 0, 0, 0 };
 
     private static MainActivity sInstance;
     private static CountDownLatch sLatch;
@@ -55,7 +61,47 @@ public final class MainActivity extends SDLActivity {
 
     @Override
     public void setOrientationBis(int w, int h, boolean resizable, String hint) {
-        // Keep orientation static from manifest.
+        if (w <= 1 || h <= 1) {
+            return;
+        }
+
+        boolean allowLandscapeLeft = hint.contains("LandscapeLeft");
+        boolean allowLandscapeRight = hint.contains("LandscapeRight");
+        boolean allowPortrait = hint.contains("Portrait ") || hint.endsWith("Portrait");
+        boolean allowPortraitUpsideDown = hint.contains("PortraitUpsideDown");
+        boolean allowLandscapeFamily = allowLandscapeLeft || allowLandscapeRight;
+        boolean allowPortraitFamily = allowPortrait || allowPortraitUpsideDown;
+
+        int requestedOrientation;
+        if (allowLandscapeFamily && allowPortraitFamily) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
+        } else if (allowLandscapeFamily) {
+            requestedOrientation = allowLandscapeLeft && allowLandscapeRight
+                ? ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+                : allowLandscapeLeft
+                    ? ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                    : ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE;
+        } else if (allowPortraitFamily) {
+            requestedOrientation = allowPortrait && allowPortraitUpsideDown
+                ? ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
+                : allowPortrait
+                    ? ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    : ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT;
+        } else if (resizable) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
+        } else {
+            requestedOrientation = w > h
+                ? ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
+                : ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT;
+        }
+
+        setRequestedOrientation(requestedOrientation);
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        applyStableDisplayConfig();
     }
 
     @Override
@@ -104,6 +150,40 @@ public final class MainActivity extends SDLActivity {
         return sInstance;
     }
 
+    public static int[] getSafeAreaInsets() {
+        synchronized (SAFE_AREA_LOCK) {
+            return sSafeAreaInsets.clone();
+        }
+    }
+
+    private static void setSafeAreaInsets(int top, int left, int bottom, int right) {
+        synchronized (SAFE_AREA_LOCK) {
+            sSafeAreaInsets[0] = Math.max(0, top);
+            sSafeAreaInsets[1] = Math.max(0, left);
+            sSafeAreaInsets[2] = Math.max(0, bottom);
+            sSafeAreaInsets[3] = Math.max(0, right);
+        }
+    }
+
+    private void updateSafeAreaInsets(WindowInsets insets) {
+        if (Build.VERSION.SDK_INT < 28 || insets == null) {
+            setSafeAreaInsets(0, 0, 0, 0);
+            return;
+        }
+
+        DisplayCutout cutout = insets.getDisplayCutout();
+        if (cutout == null) {
+            setSafeAreaInsets(0, 0, 0, 0);
+            return;
+        }
+
+        setSafeAreaInsets(
+            cutout.getSafeInsetTop(),
+            cutout.getSafeInsetLeft(),
+            cutout.getSafeInsetBottom(),
+            cutout.getSafeInsetRight());
+    }
+
     private void applyStableDisplayConfig() {
         try {
             Window window = getWindow();
@@ -119,6 +199,13 @@ public final class MainActivity extends SDLActivity {
 
             View decor = window.getDecorView();
             if (decor != null) {
+                decor.setOnApplyWindowInsetsListener((view, insets) -> {
+                    updateSafeAreaInsets(insets);
+                    return insets;
+                });
+                updateSafeAreaInsets(decor.getRootWindowInsets());
+                decor.requestApplyInsets();
+
                 int flags = View.SYSTEM_UI_FLAG_FULLSCREEN
                     | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                     | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY

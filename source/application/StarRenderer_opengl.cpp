@@ -668,16 +668,12 @@ void OpenGlRenderer::setScissorRect(Maybe<RectI> const& scissorRect) {
   m_scissorRect = scissorRect;
   if (m_scissorRect) {
     glEnable(GL_SCISSOR_TEST);
-#ifdef STAR_SYSTEM_IOS
     glScissor(
       m_scissorRect->xMin() + (GLint)m_screenOffset[0],
       m_scissorRect->yMin() + (GLint)m_screenOffset[1],
       m_scissorRect->width(),
       m_scissorRect->height()
     );
-#else
-    glScissor(m_scissorRect->xMin(), m_scissorRect->yMin(), m_scissorRect->width(), m_scissorRect->height());
-#endif
   } else {
     glDisable(GL_SCISSOR_TEST);
   }
@@ -783,9 +779,7 @@ void OpenGlRenderer::startFrame() {
   if (m_scissorRect)
     glDisable(GL_SCISSOR_TEST);
 
-#ifdef STAR_SYSTEM_IOS
   glViewport(m_screenOffset[0], m_screenOffset[1], m_screenSize[0], m_screenSize[1]);
-#endif
 
   for (auto& frameBuffer : m_frameBuffers) {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer.second->id);

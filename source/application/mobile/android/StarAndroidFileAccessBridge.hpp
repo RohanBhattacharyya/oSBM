@@ -17,6 +17,7 @@ public:
   static void showToast(String const& message);
   static void showDialog(String const& title, String const& message);
   static bool openAppSettings();
+  static void getSafeAreaInsets(unsigned* top, unsigned* left, unsigned* bottom, unsigned* right);
 };
 
 }

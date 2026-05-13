@@ -2,6 +2,7 @@
 
 #ifdef STAR_SYSTEM_ANDROID
 #include "SDL3/SDL_system.h"
+#include <algorithm>
 #include <jni.h>
 #endif
 
@@ -310,6 +311,64 @@ bool AndroidFileAccessBridge::openAppSettings() {
   return result == JNI_TRUE;
 #else
   return false;
+#endif
+}
+
+void AndroidFileAccessBridge::getSafeAreaInsets(unsigned* top, unsigned* left, unsigned* bottom, unsigned* right) {
+  if (top)
+    *top = 0;
+  if (left)
+    *left = 0;
+  if (bottom)
+    *bottom = 0;
+  if (right)
+    *right = 0;
+
+#ifdef STAR_SYSTEM_ANDROID
+  JNIEnv* env = jniEnv();
+  if (!env)
+    return;
+
+  jclass cls = mainActivityClass(env);
+  if (!cls)
+    return;
+
+  jmethodID method = env->GetStaticMethodID(cls, "getSafeAreaInsets", "()[I");
+  if (!method)
+    return;
+
+  jintArray result = (jintArray)env->CallStaticObjectMethod(cls, method);
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return;
+  }
+
+  if (!result)
+    return;
+
+  jint values[4] = {0, 0, 0, 0};
+  jsize count = env->GetArrayLength(result);
+  env->GetIntArrayRegion(result, 0, std::min<jsize>(count, 4), values);
+  env->DeleteLocalRef(result);
+
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return;
+  }
+
+  if (top)
+    *top = (unsigned)std::max(0, values[0]);
+  if (left)
+    *left = (unsigned)std::max(0, values[1]);
+  if (bottom)
+    *bottom = (unsigned)std::max(0, values[2]);
+  if (right)
+    *right = (unsigned)std::max(0, values[3]);
+#else
+  (void)top;
+  (void)left;
+  (void)bottom;
+  (void)right;
 #endif
 }
 

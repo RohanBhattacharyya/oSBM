@@ -119,8 +119,8 @@ public:
   void setScreenSize(Vec2U screenSize);
 
   // Pixel offset of the rendered viewport within the physical framebuffer.
-  // On iOS this is set to the UIKit safe-area insets so the game renders
-  // within the rounded-corner / notch-free region. Defaults to (0, 0).
+  // On mobile this is set to the platform safe-area insets so the game renders
+  // within the rounded-corner / cutout-free region. Defaults to (0, 0).
   void setScreenOffset(Vec2U offset) { m_screenOffset = offset; }
   Vec2U screenOffset() const { return m_screenOffset; }
 

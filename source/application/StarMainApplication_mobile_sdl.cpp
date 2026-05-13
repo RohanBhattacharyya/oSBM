@@ -44,7 +44,7 @@ String getMobileStartupStatus();
 void setMobileStartupStatus(String const& status);
 
 // Physical-pixel safe-area insets (distance from each screen edge).
-// Non-zero only on iOS where UIKit rounds corners and hosts a notch/island.
+// Non-zero on devices whose fullscreen surface overlaps a display cutout.
 struct SafeAreaInsets {
   unsigned top = 0, left = 0, bottom = 0, right = 0;
   bool operator==(SafeAreaInsets const& o) const {
@@ -1053,8 +1053,11 @@ private:
 #ifdef STAR_SYSTEM_IOS
     // We provide our own iOS main wrapper; mark main ready before SDL_Init.
     SDL_SetMainReady();
-    // Declare all four orientations so SDL's UIViewController honours rotation.
-    // Must be set before SDL_Init; Info.plist alone is not enough for SDL3.
+#endif
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+    // Declare all four orientations so SDL's platform orientation handler honours rotation.
+    // Must be set before SDL_Init; platform manifests alone are not enough for
+    // SDL3 to request both portrait and landscape families.
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait PortraitUpsideDown LandscapeLeft LandscapeRight");
 #endif
 #ifdef STAR_SYSTEM_ANDROID
@@ -1776,7 +1779,7 @@ private:
     m_updateTicker.reset();
     m_renderTicker.reset();
 
-#ifdef STAR_SYSTEM_IOS
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
     // Notify the game of the canvas size before the first frame.  syncWindowMetrics
     // won't fire windowChanged when the safe area is already stable from
     // setupWindowAndRenderer, so the game would otherwise use the full physical
@@ -1893,7 +1896,9 @@ private:
 #endif
       }
 
-      if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+      if (event.type == SDL_EVENT_WINDOW_RESIZED
+          || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
+          || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) {
         syncWindowMetrics(true);
         continue;
       }
@@ -1957,7 +1962,8 @@ private:
 #endif
       if (event.type == SDL_EVENT_WINDOW_RESIZED
           || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
-          || event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
+          || event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED
+          || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) {
         syncWindowMetrics(false);
       }
     }
@@ -2013,9 +2019,14 @@ private:
         m_displayScale = displayScale;
     }
 
-#ifdef STAR_SYSTEM_IOS
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
     // Re-query safe-area insets every time (they change on rotation).
     {
+#ifdef STAR_SYSTEM_ANDROID
+      unsigned saTop = 0, saLeft = 0, saBottom = 0, saRight = 0;
+      AndroidFileAccessBridge::getSafeAreaInsets(&saTop, &saLeft, &saBottom, &saRight);
+      SafeAreaInsets newSA{saTop, saLeft, saBottom, saRight};
+#else
       float saTop = 0, saLeft = 0, saBottom = 0, saRight = 0;
       StarIosBridge_getSafeAreaInsets(&saTop, &saLeft, &saBottom, &saRight);
 
@@ -2057,6 +2068,7 @@ private:
           (unsigned)std::round(saBottom * scale),
           (unsigned)std::round(saRight  * scale)
       };
+#endif
       if (!(newSA == m_safeArea)) {
         m_safeArea = newSA;
         sizeChanged = true;
