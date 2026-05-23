@@ -20,6 +20,8 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSSupportsGameMode</key>
+	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>UIFileSharingEnabled</key>
