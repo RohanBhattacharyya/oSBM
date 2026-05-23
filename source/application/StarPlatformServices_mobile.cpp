@@ -86,6 +86,14 @@ public:
 #endif
   }
 
+  bool exportDiagnostics() override {
+#ifdef STAR_SYSTEM_ANDROID
+    return AndroidFileAccessBridge::exportDiagnostics(m_storageRoot);
+#else
+    return false;
+#endif
+  }
+
 private:
   String resolveModsDirectory() const {
     auto fallbackModsDirectory = File::relativeTo(m_storageRoot, "mods");

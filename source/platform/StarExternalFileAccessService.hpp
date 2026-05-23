@@ -29,6 +29,9 @@ public:
 
   // Opens the app's mods folder in a native file browser if available.
   virtual bool openModsLocationInSystemBrowser() = 0;
+
+  // Exports logs and lightweight runtime diagnostics through the native share sheet.
+  virtual bool exportDiagnostics() = 0;
 };
 
 }

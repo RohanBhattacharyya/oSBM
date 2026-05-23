@@ -15,11 +15,51 @@ JNIEnv* jniEnv() {
   return reinterpret_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
 }
 
-jclass mainActivityClass(JNIEnv* env) {
+template <typename T>
+class JniLocalRef {
+public:
+  JniLocalRef(JNIEnv* env = nullptr, T ref = nullptr)
+    : m_env(env), m_ref(ref) {}
+
+  JniLocalRef(JniLocalRef const&) = delete;
+  JniLocalRef& operator=(JniLocalRef const&) = delete;
+
+  JniLocalRef(JniLocalRef&& rhs) noexcept
+    : m_env(rhs.m_env), m_ref(rhs.m_ref) {
+    rhs.m_env = nullptr;
+    rhs.m_ref = nullptr;
+  }
+
+  ~JniLocalRef() {
+    reset();
+  }
+
+  explicit operator bool() const {
+    return m_ref != nullptr;
+  }
+
+  T get() const {
+    return m_ref;
+  }
+
+  void reset(T ref = nullptr) {
+    if (m_env && m_ref)
+      m_env->DeleteLocalRef(m_ref);
+    m_ref = ref;
+  }
+
+private:
+  JNIEnv* m_env;
+  T m_ref;
+};
+
+JniLocalRef<jclass> mainActivityClass(JNIEnv* env) {
   jobject activity = reinterpret_cast<jobject>(SDL_GetAndroidActivity());
   if (!activity)
-    return nullptr;
-  return env->GetObjectClass(activity);
+    return {};
+
+  JniLocalRef<jobject> activityRef(env, activity);
+  return JniLocalRef<jclass>(env, env->GetObjectClass(activity));
 }
 
 String toStarString(JNIEnv* env, jstring value) {
@@ -39,16 +79,16 @@ StringList callJavaStringArrayMethod(char const* methodName, String const& argVa
   if (!env)
     return out;
 
-  jclass cls = mainActivityClass(env);
+  auto cls = mainActivityClass(env);
   if (!cls)
     return out;
 
-  jmethodID method = env->GetStaticMethodID(cls, methodName, "(Ljava/lang/String;)[Ljava/lang/String;");
+  jmethodID method = env->GetStaticMethodID(cls.get(), methodName, "(Ljava/lang/String;)[Ljava/lang/String;");
   if (!method)
     return out;
 
   jstring arg = env->NewStringUTF(argValue.utf8Ptr());
-  jobjectArray result = (jobjectArray)env->CallStaticObjectMethod(cls, method, arg);
+  jobjectArray result = (jobjectArray)env->CallStaticObjectMethod(cls.get(), method, arg);
   env->DeleteLocalRef(arg);
 
   if (env->ExceptionCheck()) {
@@ -76,22 +116,57 @@ StringList callJavaStringArrayMethod(char const* methodName, String const& argVa
 }
 #endif
 
+Maybe<String> AndroidFileAccessBridge::resolveStorageRoot(String const& fallbackStorageRootDirectory) {
+#ifdef STAR_SYSTEM_ANDROID
+  JNIEnv* env = jniEnv();
+  if (!env)
+    return {};
+
+  auto cls = mainActivityClass(env);
+  if (!cls)
+    return {};
+
+  jmethodID method = env->GetStaticMethodID(cls.get(), "resolveStorageRoot", "(Ljava/lang/String;)Ljava/lang/String;");
+  if (!method)
+    return {};
+
+  jstring arg = env->NewStringUTF(fallbackStorageRootDirectory.utf8Ptr());
+  jstring result = (jstring)env->CallStaticObjectMethod(cls.get(), method, arg);
+  env->DeleteLocalRef(arg);
+
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return {};
+  }
+
+  String value = toStarString(env, result);
+  if (result)
+    env->DeleteLocalRef(result);
+  if (value.empty())
+    return {};
+  return value;
+#else
+  (void)fallbackStorageRootDirectory;
+  return {};
+#endif
+}
+
 Maybe<String> AndroidFileAccessBridge::syncBundledAssets(String const& targetRootDirectory) {
 #ifdef STAR_SYSTEM_ANDROID
   JNIEnv* env = jniEnv();
   if (!env)
     return {};
 
-  jclass cls = mainActivityClass(env);
+  auto cls = mainActivityClass(env);
   if (!cls)
     return {};
 
-  jmethodID method = env->GetStaticMethodID(cls, "syncBundledAssets", "(Ljava/lang/String;)Ljava/lang/String;");
+  jmethodID method = env->GetStaticMethodID(cls.get(), "syncBundledAssets", "(Ljava/lang/String;)Ljava/lang/String;");
   if (!method)
     return {};
 
   jstring arg = env->NewStringUTF(targetRootDirectory.utf8Ptr());
-  jstring result = (jstring)env->CallStaticObjectMethod(cls, method, arg);
+  jstring result = (jstring)env->CallStaticObjectMethod(cls.get(), method, arg);
   env->DeleteLocalRef(arg);
 
   if (env->ExceptionCheck()) {
@@ -117,16 +192,16 @@ Maybe<String> AndroidFileAccessBridge::pickAndImportPackedPak(String const& targ
   if (!env)
     return {};
 
-  jclass cls = mainActivityClass(env);
+  auto cls = mainActivityClass(env);
   if (!cls)
     return {};
 
-  jmethodID method = env->GetStaticMethodID(cls, "pickPackedPakAndImport", "(Ljava/lang/String;)Ljava/lang/String;");
+  jmethodID method = env->GetStaticMethodID(cls.get(), "pickPackedPakAndImport", "(Ljava/lang/String;)Ljava/lang/String;");
   if (!method)
     return {};
 
   jstring arg = env->NewStringUTF(targetPath.utf8Ptr());
-  jstring result = (jstring)env->CallStaticObjectMethod(cls, method, arg);
+  jstring result = (jstring)env->CallStaticObjectMethod(cls.get(), method, arg);
   env->DeleteLocalRef(arg);
 
   if (env->ExceptionCheck()) {
@@ -152,16 +227,16 @@ Maybe<String> AndroidFileAccessBridge::resolveModsDirectory(String const& fallba
   if (!env)
     return {};
 
-  jclass cls = mainActivityClass(env);
+  auto cls = mainActivityClass(env);
   if (!cls)
     return {};
 
-  jmethodID method = env->GetStaticMethodID(cls, "resolveModsDirectory", "(Ljava/lang/String;)Ljava/lang/String;");
+  jmethodID method = env->GetStaticMethodID(cls.get(), "resolveModsDirectory", "(Ljava/lang/String;)Ljava/lang/String;");
   if (!method)
     return {};
 
   jstring arg = env->NewStringUTF(fallbackModsDirectory.utf8Ptr());
-  jstring result = (jstring)env->CallStaticObjectMethod(cls, method, arg);
+  jstring result = (jstring)env->CallStaticObjectMethod(cls.get(), method, arg);
   env->DeleteLocalRef(arg);
 
   if (env->ExceptionCheck()) {
@@ -214,16 +289,16 @@ bool AndroidFileAccessBridge::openModsDirectory(String const& modsDirectory) {
   if (!env)
     return false;
 
-  jclass cls = mainActivityClass(env);
+  auto cls = mainActivityClass(env);
   if (!cls)
     return false;
 
-  jmethodID method = env->GetStaticMethodID(cls, "openModsDirectory", "(Ljava/lang/String;)Z");
+  jmethodID method = env->GetStaticMethodID(cls.get(), "openModsDirectory", "(Ljava/lang/String;)Z");
   if (!method)
     return false;
 
   jstring arg = env->NewStringUTF(modsDirectory.utf8Ptr());
-  jboolean result = env->CallStaticBooleanMethod(cls, method, arg);
+  jboolean result = env->CallStaticBooleanMethod(cls.get(), method, arg);
   env->DeleteLocalRef(arg);
 
   if (env->ExceptionCheck()) {
@@ -238,22 +313,52 @@ bool AndroidFileAccessBridge::openModsDirectory(String const& modsDirectory) {
 #endif
 }
 
+bool AndroidFileAccessBridge::exportDiagnostics(String const& storageRootDirectory) {
+#ifdef STAR_SYSTEM_ANDROID
+  JNIEnv* env = jniEnv();
+  if (!env)
+    return false;
+
+  auto cls = mainActivityClass(env);
+  if (!cls)
+    return false;
+
+  jmethodID method = env->GetStaticMethodID(cls.get(), "exportDiagnostics", "(Ljava/lang/String;)Z");
+  if (!method)
+    return false;
+
+  jstring arg = env->NewStringUTF(storageRootDirectory.utf8Ptr());
+  jboolean result = env->CallStaticBooleanMethod(cls.get(), method, arg);
+  env->DeleteLocalRef(arg);
+
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return false;
+  }
+
+  return result == JNI_TRUE;
+#else
+  (void)storageRootDirectory;
+  return false;
+#endif
+}
+
 void AndroidFileAccessBridge::showToast(String const& message) {
 #ifdef STAR_SYSTEM_ANDROID
   JNIEnv* env = jniEnv();
   if (!env)
     return;
 
-  jclass cls = mainActivityClass(env);
+  auto cls = mainActivityClass(env);
   if (!cls)
     return;
 
-  jmethodID method = env->GetStaticMethodID(cls, "showToast", "(Ljava/lang/String;)V");
+  jmethodID method = env->GetStaticMethodID(cls.get(), "showToast", "(Ljava/lang/String;)V");
   if (!method)
     return;
 
   jstring arg = env->NewStringUTF(message.utf8Ptr());
-  env->CallStaticVoidMethod(cls, method, arg);
+  env->CallStaticVoidMethod(cls.get(), method, arg);
   env->DeleteLocalRef(arg);
   if (env->ExceptionCheck())
     env->ExceptionClear();
@@ -268,17 +373,17 @@ void AndroidFileAccessBridge::showDialog(String const& title, String const& mess
   if (!env)
     return;
 
-  jclass cls = mainActivityClass(env);
+  auto cls = mainActivityClass(env);
   if (!cls)
     return;
 
-  jmethodID method = env->GetStaticMethodID(cls, "showDialog", "(Ljava/lang/String;Ljava/lang/String;)V");
+  jmethodID method = env->GetStaticMethodID(cls.get(), "showDialog", "(Ljava/lang/String;Ljava/lang/String;)V");
   if (!method)
     return;
 
   jstring jTitle = env->NewStringUTF(title.utf8Ptr());
   jstring jMessage = env->NewStringUTF(message.utf8Ptr());
-  env->CallStaticVoidMethod(cls, method, jTitle, jMessage);
+  env->CallStaticVoidMethod(cls.get(), method, jTitle, jMessage);
   env->DeleteLocalRef(jTitle);
   env->DeleteLocalRef(jMessage);
   if (env->ExceptionCheck())
@@ -295,15 +400,15 @@ bool AndroidFileAccessBridge::openAppSettings() {
   if (!env)
     return false;
 
-  jclass cls = mainActivityClass(env);
+  auto cls = mainActivityClass(env);
   if (!cls)
     return false;
 
-  jmethodID method = env->GetStaticMethodID(cls, "openAppSettings", "()Z");
+  jmethodID method = env->GetStaticMethodID(cls.get(), "openAppSettings", "()Z");
   if (!method)
     return false;
 
-  jboolean result = env->CallStaticBooleanMethod(cls, method);
+  jboolean result = env->CallStaticBooleanMethod(cls.get(), method);
   if (env->ExceptionCheck()) {
     env->ExceptionClear();
     return false;
@@ -329,15 +434,15 @@ void AndroidFileAccessBridge::getSafeAreaInsets(unsigned* top, unsigned* left, u
   if (!env)
     return;
 
-  jclass cls = mainActivityClass(env);
+  auto cls = mainActivityClass(env);
   if (!cls)
     return;
 
-  jmethodID method = env->GetStaticMethodID(cls, "getSafeAreaInsets", "()[I");
+  jmethodID method = env->GetStaticMethodID(cls.get(), "getSafeAreaInsets", "()[I");
   if (!method)
     return;
 
-  jintArray result = (jintArray)env->CallStaticObjectMethod(cls, method);
+  jintArray result = (jintArray)env->CallStaticObjectMethod(cls.get(), method);
   if (env->ExceptionCheck()) {
     env->ExceptionClear();
     return;

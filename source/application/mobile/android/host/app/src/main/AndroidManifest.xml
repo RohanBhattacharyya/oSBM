@@ -19,7 +19,7 @@
         android:name="io.github.openstarbound.mobile.MainActivity"
         android:exported="true"
         android:launchMode="singleTask"
-        android:screenOrientation="fullUser"
+        android:screenOrientation="userLandscape"
         android:windowLayoutInDisplayCutoutMode="shortEdges"
         android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation">
       <intent-filter>

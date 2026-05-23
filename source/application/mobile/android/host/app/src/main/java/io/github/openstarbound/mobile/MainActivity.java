@@ -28,12 +28,16 @@ import androidx.documentfile.provider.DocumentFile;
 import org.libsdl.app.SDLActivity;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 public final class MainActivity extends SDLActivity {
     private static final int REQUEST_PICK_PAK = 0x5001;
@@ -107,6 +111,7 @@ public final class MainActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         sInstance = this;
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE);
         super.onCreate(savedInstanceState);
         applyStableDisplayConfig();
 
@@ -399,6 +404,57 @@ public final class MainActivity extends SDLActivity {
         }
     }
 
+    private static boolean ensureWritableDirectory(File directory) {
+        if (directory == null) {
+            return false;
+        }
+
+        try {
+            if (!directory.exists() && !directory.mkdirs()) {
+                return false;
+            }
+            if (!directory.isDirectory()) {
+                return false;
+            }
+
+            File test = File.createTempFile(".osbm-write-test", ".tmp", directory);
+            try (FileOutputStream out = new FileOutputStream(test, false)) {
+                out.write(1);
+            }
+            return test.delete() || !test.exists();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static String resolveStorageRoot(String fallbackStorageRoot) {
+        MainActivity activity = instance();
+        if (activity != null) {
+            try {
+                File externalFiles = activity.getExternalFilesDir(null);
+                if (ensureWritableDirectory(externalFiles)) {
+                    return externalFiles.getAbsolutePath();
+                }
+            } catch (Throwable ignored) {
+            }
+
+            try {
+                File internalFiles = activity.getFilesDir();
+                if (ensureWritableDirectory(internalFiles)) {
+                    return internalFiles.getAbsolutePath();
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        if (fallbackStorageRoot == null || fallbackStorageRoot.isEmpty()) {
+            return null;
+        }
+
+        File fallback = new File(fallbackStorageRoot);
+        return ensureWritableDirectory(fallback) ? fallback.getAbsolutePath() : fallbackStorageRoot;
+    }
+
     public static String resolveModsDirectory(String fallbackModsDirectory) {
         MainActivity activity = instance();
 
@@ -626,6 +682,126 @@ public final class MainActivity extends SDLActivity {
                 }
                 activity.startActivity(fallback);
             } catch (Throwable ignored) {
+            }
+        });
+        return true;
+    }
+
+    private static void writeZipText(ZipOutputStream zip, String name, String text) throws IOException {
+        zip.putNextEntry(new ZipEntry(name));
+        byte[] bytes = text.getBytes("UTF-8");
+        zip.write(bytes, 0, bytes.length);
+        zip.closeEntry();
+    }
+
+    private static void addFileToZip(ZipOutputStream zip, File file, String entryName) throws IOException {
+        if (file == null || !file.isFile()) {
+            return;
+        }
+
+        zip.putNextEntry(new ZipEntry(entryName));
+        try (FileInputStream in = new FileInputStream(file)) {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                zip.write(buffer, 0, read);
+            }
+        }
+        zip.closeEntry();
+    }
+
+    private static void addDirectoryToZip(ZipOutputStream zip, File root, File directory, String prefix) throws IOException {
+        if (directory == null || !directory.isDirectory()) {
+            return;
+        }
+
+        File[] children = directory.listFiles();
+        if (children == null) {
+            return;
+        }
+
+        for (File child : children) {
+            String relative = root.toURI().relativize(child.toURI()).getPath();
+            String entryName = prefix + "/" + relative;
+            if (child.isDirectory()) {
+                addDirectoryToZip(zip, root, child, prefix);
+            } else if (child.isFile()) {
+                addFileToZip(zip, child, entryName);
+            }
+        }
+    }
+
+    private static String diagnosticsDeviceSummary() {
+        StringBuilder builder = new StringBuilder();
+        builder.append("manufacturer=").append(Build.MANUFACTURER).append('\n');
+        builder.append("brand=").append(Build.BRAND).append('\n');
+        builder.append("model=").append(Build.MODEL).append('\n');
+        builder.append("device=").append(Build.DEVICE).append('\n');
+        builder.append("product=").append(Build.PRODUCT).append('\n');
+        builder.append("hardware=").append(Build.HARDWARE).append('\n');
+        builder.append("board=").append(Build.BOARD).append('\n');
+        builder.append("supportedAbis=");
+        for (String abi : Build.SUPPORTED_ABIS) {
+            builder.append(abi).append(' ');
+        }
+        builder.append('\n');
+        builder.append("sdk=").append(Build.VERSION.SDK_INT).append('\n');
+        builder.append("release=").append(Build.VERSION.RELEASE).append('\n');
+        int[] insets = getSafeAreaInsets();
+        builder.append("safeArea=").append(insets[0]).append(',')
+            .append(insets[1]).append(',')
+            .append(insets[2]).append(',')
+            .append(insets[3]).append('\n');
+        return builder.toString();
+    }
+
+    public static boolean exportDiagnostics(String storageRoot) {
+        MainActivity activity = instance();
+        if (activity == null || storageRoot == null || storageRoot.isEmpty()) {
+            return false;
+        }
+
+        activity.runOnUiThread(() -> {
+            try {
+                File root = new File(storageRoot);
+                File diagnosticsDir = new File(activity.getFilesDir(), "diagnostics");
+                if (!diagnosticsDir.exists() && !diagnosticsDir.mkdirs()) {
+                    Toast.makeText(activity, "Could not create diagnostics folder.", Toast.LENGTH_LONG).show();
+                    return;
+                }
+
+                File zipFile = new File(diagnosticsDir, "openstarbound-diagnostics-" + System.currentTimeMillis() + ".zip");
+                try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(zipFile, false))) {
+                    writeZipText(zip, "device.txt", diagnosticsDeviceSummary());
+                    File logs = new File(root, "logs");
+                    addDirectoryToZip(zip, logs, logs, "logs");
+                    addFileToZip(zip, new File(root, "mobile_launcher.json"), "mobile_launcher.json");
+                    addFileToZip(zip, new File(root, "sbinit.mobile.config"), "sbinit.mobile.config");
+                }
+
+                Uri uri = FileProvider.getUriForFile(
+                    activity,
+                    activity.getPackageName() + ".fileprovider",
+                    zipFile
+                );
+
+                Intent intent = new Intent(Intent.ACTION_SEND);
+                intent.setType("application/zip");
+                intent.putExtra(Intent.EXTRA_STREAM, uri);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+                List<ResolveInfo> targets = activity.getPackageManager().queryIntentActivities(intent, 0);
+                for (ResolveInfo target : targets) {
+                    activity.grantUriPermission(
+                        target.activityInfo.packageName,
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    );
+                }
+
+                activity.startActivity(Intent.createChooser(intent, "Share OpenStarbound diagnostics"));
+            } catch (Throwable t) {
+                Toast.makeText(activity, "Could not export diagnostics: " + t.getMessage(), Toast.LENGTH_LONG).show();
             }
         });
         return true;

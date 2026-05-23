@@ -7,6 +7,7 @@ namespace Star {
 
 class AndroidFileAccessBridge {
 public:
+  static Maybe<String> resolveStorageRoot(String const& fallbackStorageRootDirectory);
   static Maybe<String> syncBundledAssets(String const& targetRootDirectory);
   static Maybe<String> pickAndImportPackedPak(String const& targetPath);
   static Maybe<String> resolveModsDirectory(String const& fallbackModsDirectory);
@@ -14,6 +15,7 @@ public:
   static StringList importSingleModFolder(String const& modsDirectory);
   static StringList importModsDirectory(String const& modsDirectory);
   static bool openModsDirectory(String const& modsDirectory);
+  static bool exportDiagnostics(String const& storageRootDirectory);
   static void showToast(String const& message);
   static void showDialog(String const& title, String const& message);
   static bool openAppSettings();

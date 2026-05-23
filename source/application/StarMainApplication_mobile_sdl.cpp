@@ -30,6 +30,7 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -77,6 +78,117 @@ void androidLogInfo(char const* fmt, ...) {
 #else
 void androidLogInfo(char const*, ...) {}
 #endif
+
+bool samePath(String const& a, String const& b) {
+  return File::convertDirSeparators(a).trimEnd("/") == File::convertDirSeparators(b).trimEnd("/");
+}
+
+bool filesMatch(String const& leftPath, String const& rightPath) {
+  if (!File::isFile(leftPath) || !File::isFile(rightPath))
+    return false;
+  if (File::fileSize(leftPath) != File::fileSize(rightPath))
+    return false;
+
+  auto left = File::open(leftPath, IOMode::Read);
+  auto right = File::open(rightPath, IOMode::Read);
+  char leftBuffer[64 * 1024];
+  char rightBuffer[64 * 1024];
+  while (!left->atEnd()) {
+    size_t leftRead = left->read(leftBuffer, sizeof(leftBuffer));
+    size_t rightRead = right->read(rightBuffer, sizeof(rightBuffer));
+    if (leftRead != rightRead || std::memcmp(leftBuffer, rightBuffer, leftRead) != 0)
+      return false;
+  }
+
+  return right->atEnd();
+}
+
+void removeIfEmptyDirectory(String const& directory) {
+  try {
+    if (File::isDirectory(directory) && File::dirList(directory).empty())
+      File::remove(directory);
+  } catch (...) {
+  }
+}
+
+void migrateDirectoryFiles(String const& sourceDirectory, String const& targetDirectory) {
+  if (!File::isDirectory(sourceDirectory))
+    return;
+
+  File::makeDirectoryRecursive(targetDirectory);
+
+  static StringSet const ignoredTopLevelEntries{"bundled_assets", "diagnostics", "logs", "tmp"};
+  for (auto const& entry : File::dirList(sourceDirectory)) {
+    auto const& name = entry.first;
+    if (ignoredTopLevelEntries.contains(name))
+      continue;
+
+    auto sourcePath = File::relativeTo(sourceDirectory, name);
+    auto targetPath = File::relativeTo(targetDirectory, name);
+    try {
+      if (entry.second) {
+        migrateDirectoryFiles(sourcePath, targetPath);
+        removeIfEmptyDirectory(sourcePath);
+      } else {
+        if (!File::exists(targetPath)) {
+          File::makeDirectoryRecursive(File::dirName(targetPath));
+          File::copy(sourcePath, targetPath);
+        }
+
+        if (filesMatch(sourcePath, targetPath))
+          File::remove(sourcePath);
+      }
+    } catch (std::exception const& e) {
+      androidLogInfo("Storage migration skipped %s: %s", sourcePath.utf8Ptr(), e.what());
+    } catch (...) {
+      androidLogInfo("Storage migration skipped %s: unknown error", sourcePath.utf8Ptr());
+    }
+  }
+}
+
+String defaultMobileStorageRoot() {
+  String fallbackStorageRoot = SDL_GetPrefPath("OpenStarbound", "OpenStarbound");
+  if (fallbackStorageRoot.empty())
+    fallbackStorageRoot = "./";
+  return fallbackStorageRoot;
+}
+
+String writableMobileStorageRoot(String const& fallbackStorageRoot) {
+  String storageRoot = fallbackStorageRoot;
+#ifdef STAR_SYSTEM_ANDROID
+  if (auto resolved = AndroidFileAccessBridge::resolveStorageRoot(fallbackStorageRoot))
+    storageRoot = *resolved;
+#endif
+
+  try {
+    File::makeDirectoryRecursive(storageRoot);
+  } catch (std::exception const& e) {
+    androidLogInfo("Could not create storage root %s: %s", storageRoot.utf8Ptr(), e.what());
+    storageRoot = fallbackStorageRoot;
+    File::makeDirectoryRecursive(storageRoot);
+  }
+
+#ifdef STAR_SYSTEM_ANDROID
+  if (!samePath(fallbackStorageRoot, storageRoot)) {
+    androidLogInfo("Storage root resolved to %s; migrating from %s", storageRoot.utf8Ptr(), fallbackStorageRoot.utf8Ptr());
+    migrateDirectoryFiles(fallbackStorageRoot, storageRoot);
+  }
+#endif
+
+  auto tempRoot = File::relativeTo(storageRoot, "tmp");
+  try {
+    File::makeDirectoryRecursive(tempRoot);
+#ifdef STAR_SYSTEM_ANDROID
+    setenv("TMPDIR", tempRoot.utf8Ptr(), 1);
+    setenv("HOME", storageRoot.utf8Ptr(), 1);
+#endif
+  } catch (std::exception const& e) {
+    androidLogInfo("Could not prepare temp root %s: %s", tempRoot.utf8Ptr(), e.what());
+  }
+
+  androidLogInfo("Using mobile storage root %s", storageRoot.utf8Ptr());
+  return storageRoot;
+}
 
 static inline void convertEventToRenderCoordinatesIfPossible(SDL_Window* window, SDL_Event* event) {
   if (!window || !event)
@@ -1095,10 +1207,8 @@ public:
     setupWindowAndRenderer();
     setupImGui();
 
-    m_storageRoot = SDL_GetPrefPath("OpenStarbound", "OpenStarbound");
-    if (m_storageRoot.empty())
-      m_storageRoot = "./";
-
+    m_legacyStorageRoot = defaultMobileStorageRoot();
+    m_storageRoot = writableMobileStorageRoot(m_legacyStorageRoot);
     m_platformServices = MobilePlatformServices::create(m_storageRoot);
 
     LauncherState launcher;
@@ -1417,6 +1527,9 @@ private:
   };
 
   void setupSdl() {
+    m_signalHandler.setHandleInterrupt(true);
+    m_signalHandler.setHandleFatal(true);
+
 #ifdef STAR_SYSTEM_IOS
     // We provide our own iOS main wrapper; mark main ready before SDL_Init.
     SDL_SetMainReady();
@@ -1635,6 +1748,18 @@ private:
 
     state.packedPakPath = config.optString("packedPakPath").value(""
     );
+    if (!samePath(m_legacyStorageRoot, m_storageRoot)) {
+      auto legacyRoot = File::convertDirSeparators(m_legacyStorageRoot).trimEnd("/");
+      auto currentRoot = File::convertDirSeparators(m_storageRoot).trimEnd("/");
+      auto packedPakPath = File::convertDirSeparators(state.packedPakPath);
+      if (packedPakPath.beginsWith(legacyRoot + "/")) {
+        auto migratedPath = currentRoot + packedPakPath.substr(legacyRoot.size());
+        if (File::isFile(migratedPath)) {
+          state.packedPakPath = migratedPath;
+          androidLogInfo("Rebased packed.pak path to migrated storage root: %s", migratedPath.utf8Ptr());
+        }
+      }
+    }
 
     state.touchConfig.enabled = config.queryBool("touch.enabled", true);
     state.touchConfig.opacity = config.queryFloat("touch.opacity", 0.35f);
@@ -2087,6 +2212,23 @@ private:
       if (ImGui::Button("Touch Controls")) {
         state.touchManagerOpen = true;
         state.selectedTouchElement = std::clamp(state.selectedTouchElement, 0, (int)state.touchElements.size() - 1);
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Export Diagnostics")) {
+        runLauncherAction("Export diagnostics", [&]() {
+          if (auto svc = m_platformServices->externalFileAccessService()) {
+            if (svc->exportDiagnostics()) {
+              state.lastStatus = "Diagnostics export opened.";
+              state.lastError.clear();
+            } else {
+              state.lastStatus = "Diagnostics export unavailable.";
+              state.lastError = "Could not open the native diagnostics share sheet.";
+            }
+          } else {
+            state.lastStatus = "Diagnostics export unavailable.";
+            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+          }
+        });
       }
 
       ImGui::Separator();
@@ -2806,6 +2948,7 @@ private:
   float m_displayScale = 1.0f;
 
   String m_storageRoot;
+  String m_legacyStorageRoot;
   String m_bootConfigPath;
 
   TickRateApproacher m_updateTicker{60.0f, 1.0f};
