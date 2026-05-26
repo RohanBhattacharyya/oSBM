@@ -46,6 +46,9 @@ void TilePainter::adjustLighting(WorldRenderData& renderData) const {
       auto lightIndex = Vec2U(pos - renderData.lightMinPosition);
       auto lightValue = renderData.lightMap.get(lightIndex.x(), lightIndex.y());
 
+      if (tile.liquidId >= m_liquids.size() || !m_liquids[tile.liquidId].texture)
+        return;
+
       auto const& liquid = m_liquids[tile.liquidId];
       float darknessLevel = (1.f - (lightValue.sum() / 3.0f)) * drawLevel;
       lightValue = lightValue.piecewiseMultiply(Vec3F::filled(1.f - darknessLevel) + liquid.bottomLightMix * darknessLevel);
@@ -121,31 +124,32 @@ size_t TilePainter::TextureKeyHash::operator()(TextureKey const& key) const {
 
 TilePainter::ChunkHash TilePainter::terrainChunkHash(WorldRenderData& renderData, Vec2I chunkIndex) {
   //XXHash3 hasher;
-  static ByteArray buffer;
-  buffer.clear();
   RectI tileRange = RectI::withSize(chunkIndex * RenderChunkSize, Vec2I::filled(RenderChunkSize)).padded(MaterialRenderProfileMaxNeighborDistance);
+  m_terrainHashBuffer.clear();
+  m_terrainHashBuffer.reserve((size_t)tileRange.volume() * offsetof(RenderTile, liquidId));
   forEachRenderTile(renderData, tileRange, [&](Vec2I const&, RenderTile const& renderTile) {
     //renderTile.hashPushTerrain(hasher);
-    buffer.append((char*)&renderTile, offsetof(RenderTile, liquidId));
+    m_terrainHashBuffer.append((char const*)&renderTile, offsetof(RenderTile, liquidId));
   });
 
   //return hasher.digest();
-  return XXH3_64bits(buffer.ptr(), buffer.size());
+  return XXH3_64bits(m_terrainHashBuffer.ptr(), m_terrainHashBuffer.size());
 }
 
 TilePainter::ChunkHash TilePainter::liquidChunkHash(WorldRenderData& renderData, Vec2I chunkIndex) {
   ///XXHash3 hasher;
   RectI tileRange = RectI::withSize(chunkIndex * RenderChunkSize, Vec2I::filled(RenderChunkSize)).padded(MaterialRenderProfileMaxNeighborDistance);
-  static ByteArray buffer;
-  buffer.clear();
+  m_liquidHashBuffer.clear();
+  m_liquidHashBuffer.reserve((size_t)tileRange.volume() * (sizeof(LiquidId) + sizeof(uint8_t)));
 
   forEachRenderTile(renderData, tileRange, [&](Vec2I const&, RenderTile const& renderTile) {
     //renderTile.hashPushLiquid(hasher);
-    buffer.append((char*)&renderTile.liquidId, sizeof(LiquidId) + sizeof(LiquidLevel));
+    m_liquidHashBuffer.append((char const*)&renderTile.liquidId, sizeof(renderTile.liquidId));
+    m_liquidHashBuffer.append((char const*)&renderTile.liquidLevel, sizeof(renderTile.liquidLevel));
   });
 
   //return hasher.digest();
-  return XXH3_64bits(buffer.ptr(), buffer.size());
+  return XXH3_64bits(m_liquidHashBuffer.ptr(), m_liquidHashBuffer.size());
 }
 
 void TilePainter::renderTerrainChunks(WorldCamera const& camera, TerrainLayer terrainLayer) {
@@ -376,6 +380,9 @@ void TilePainter::produceLiquidPrimitives(HashMap<LiquidId, List<RenderPrimitive
     worldRect = RectF::withSize(Vec2F(pos), Vec2F(1.0f, drawLevel));
 
   auto texRect = worldRect.scaled(TilePixels);
+
+  if (tile.liquidId >= m_liquids.size() || !m_liquids[tile.liquidId].texture)
+    return;
 
   auto const& liquid = m_liquids[tile.liquidId];
   primitives[tile.liquidId].emplace_back(std::in_place_type_t<RenderQuad>(), liquid.texture,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "StarTtlCache.hpp"
+#include "StarByteArray.hpp"
 #include "StarWorldRenderData.hpp"
 #include "StarMaterialRenderProfile.hpp"
 #include "StarRenderer.hpp"
@@ -74,8 +75,8 @@ private:
   // RenderChunkSize results in the coordinate of the lower left most tile in
   // the render chunk.
 
-  static ChunkHash terrainChunkHash(WorldRenderData& renderData, Vec2I chunkIndex);
-  static ChunkHash liquidChunkHash(WorldRenderData& renderData, Vec2I chunkIndex);
+  ChunkHash terrainChunkHash(WorldRenderData& renderData, Vec2I chunkIndex);
+  ChunkHash liquidChunkHash(WorldRenderData& renderData, Vec2I chunkIndex);
 
   void renderTerrainChunks(WorldCamera const& camera, TerrainLayer terrainLayer);
 
@@ -92,6 +93,9 @@ private:
 
   RendererPtr m_renderer;
   TextureGroupPtr m_textureGroup;
+
+  ByteArray m_terrainHashBuffer;
+  ByteArray m_liquidHashBuffer;
 
   HashTtlCache<TextureKey, TexturePtr, TextureKeyHash> m_textureCache;
   HashTtlCache<pair<Vec2I, ChunkHash>, shared_ptr<TerrainChunk const>> m_terrainChunkCache;
