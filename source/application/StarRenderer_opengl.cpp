@@ -3,6 +3,7 @@
 #include "StarCasting.hpp"
 #include "StarLogging.hpp"
 
+#include <cstring>
 #include <cmath>
 
 namespace Star {
@@ -24,6 +25,46 @@ Vec2U framebufferTextureSize(Vec2U size, unsigned sizeDiv) {
     std::max(1u, size[0] / std::max(1u, sizeDiv)),
     std::max(1u, size[1] / std::max(1u, sizeDiv))
   };
+}
+
+bool isFloatTextureFormat(PixelFormat pixelFormat) {
+  return pixelFormat == PixelFormat::RGB_F || pixelFormat == PixelFormat::RGBA_F;
+}
+
+bool supportsLinearFloatTextures() {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+  static bool initialized = false;
+  static bool supported = false;
+
+  if (!initialized) {
+    initialized = true;
+    if (auto extensions = reinterpret_cast<char const*>(glGetString(GL_EXTENSIONS)))
+      supported = std::strstr(extensions, "GL_OES_texture_float_linear") != nullptr;
+
+    if (!supported)
+      Logger::warn("OpenGL ES device does not report GL_OES_texture_float_linear; using nearest-filtered float textures");
+  }
+
+  return supported;
+#else
+  return true;
+#endif
+}
+
+TextureFiltering effectiveTextureFiltering(PixelFormat pixelFormat, TextureFiltering filtering) {
+  if (filtering == TextureFiltering::Linear && isFloatTextureFormat(pixelFormat) && !supportsLinearFloatTextures())
+    return TextureFiltering::Nearest;
+  return filtering;
+}
+
+void setTextureFiltering(TextureFiltering filtering) {
+  if (filtering == TextureFiltering::Nearest) {
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  } else {
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  }
 }
 
 String normalizeShaderSource(String const& sourceText, GLenum type) {
@@ -598,6 +639,8 @@ void OpenGlRenderer::setEffectTexture(String const& textureName, ImageView const
   } else {
     glBindTexture(GL_TEXTURE_2D, ptr->textureValue->textureId);
     ptr->textureValue->textureSize = image.size;
+    ptr->textureValue->textureFiltering = effectiveTextureFiltering(image.format, ptr->textureFiltering);
+    setTextureFiltering(ptr->textureValue->textureFiltering);
     uploadTextureImage(image.format, image.size, image.data);
   }
 
@@ -632,11 +675,7 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
     m_currentFrameBuffer.reset();
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
     // Restore the screen viewport (canvas positioned at its safe-area offset).
-<<<<<<< HEAD
     glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
-=======
-    glViewport(m_screenOffset[0], m_screenOffset[1], m_screenSize[0], m_screenSize[1]);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   }
 
   glUseProgram(m_program = effect.program);
@@ -674,7 +713,6 @@ void OpenGlRenderer::setScissorRect(Maybe<RectI> const& scissorRect) {
   m_scissorRect = scissorRect;
   if (m_scissorRect) {
     glEnable(GL_SCISSOR_TEST);
-<<<<<<< HEAD
     float xScale = m_screenSize[0] ? (float)m_screenViewportSize[0] / (float)m_screenSize[0] : 1.0f;
     float yScale = m_screenSize[1] ? (float)m_screenViewportSize[1] / (float)m_screenSize[1] : 1.0f;
     glScissor(
@@ -682,13 +720,6 @@ void OpenGlRenderer::setScissorRect(Maybe<RectI> const& scissorRect) {
       (GLint)std::round(m_scissorRect->yMin() * yScale) + (GLint)m_screenOffset[1],
       (GLsizei)std::round(m_scissorRect->width() * xScale),
       (GLsizei)std::round(m_scissorRect->height() * yScale)
-=======
-    glScissor(
-      m_scissorRect->xMin() + (GLint)m_screenOffset[0],
-      m_scissorRect->yMin() + (GLint)m_screenOffset[1],
-      m_scissorRect->width(),
-      m_scissorRect->height()
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     );
   } else {
     glDisable(GL_SCISSOR_TEST);
@@ -775,13 +806,9 @@ void OpenGlRenderer::flush(Mat3F const& transformation) {
 
 void OpenGlRenderer::setScreenSize(Vec2U screenSize) {
   m_screenSize = screenSize;
-<<<<<<< HEAD
   if (m_screenViewportSize[0] == 0 || m_screenViewportSize[1] == 0)
     m_screenViewportSize = screenSize;
   glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
-=======
-  glViewport(m_screenOffset[0], m_screenOffset[1], m_screenSize[0], m_screenSize[1]);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   glUniform2f(m_screenSizeUniform, m_screenSize[0], m_screenSize[1]);
 
   for (auto& frameBuffer : m_frameBuffers) {
@@ -806,11 +833,7 @@ void OpenGlRenderer::startFrame() {
   if (m_scissorRect)
     glDisable(GL_SCISSOR_TEST);
 
-<<<<<<< HEAD
   glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
-=======
-  glViewport(m_screenOffset[0], m_screenOffset[1], m_screenSize[0], m_screenSize[1]);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 
   for (auto& frameBuffer : m_frameBuffers) {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer.second->id);
@@ -1234,13 +1257,8 @@ auto OpenGlRenderer::createGlTexture(ImageView const& image, TextureAddressing a
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
   }
 
-  if (filtering == TextureFiltering::Nearest) {
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  } else {
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  }
+  glLoneTexture->textureFiltering = effectiveTextureFiltering(image.format, filtering);
+  setTextureFiltering(glLoneTexture->textureFiltering);
 
 
   if (!image.empty())
@@ -1349,20 +1367,13 @@ void OpenGlRenderer::blitGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer)
     return;
 
   auto& size = m_screenSize;
-<<<<<<< HEAD
   auto& viewport = m_screenViewportSize;
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   auto& off  = m_screenOffset;
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
   glBindFramebuffer(GL_READ_FRAMEBUFFER, frameBuffer->id);
   glBlitFramebuffer(
     0, 0, size[0], size[1],
-<<<<<<< HEAD
     off[0], off[1], off[0] + viewport[0], off[1] + viewport[1],
-=======
-    off[0], off[1], off[0] + size[0], off[1] + size[1],
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     GL_COLOR_BUFFER_BIT, GL_NEAREST
   );
 

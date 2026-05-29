@@ -1074,10 +1074,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
                                             float y, float p);
     public static native void onNativePen(int penId, int button, int action, float x, float y, float p);
     public static native void onNativeAccel(float x, float y, float z);
-<<<<<<< HEAD
     public static native void onNativeGyro(float x, float y, float z);
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     public static native void onNativeClipboardChanged();
     public static native void onNativeSurfaceCreated();
     public static native void onNativeSurfaceChanged();
@@ -2247,7 +2244,3 @@ class SDLClipboardHandler implements
         SDLActivity.onNativeClipboardChanged();
     }
 }
-<<<<<<< HEAD
-=======
-
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca

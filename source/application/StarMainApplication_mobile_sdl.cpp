@@ -39,7 +39,6 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #include <vector>
 #ifdef STAR_SYSTEM_ANDROID
 #include <android/log.h>
-<<<<<<< HEAD
 #include <jni.h>
 #endif
 
@@ -67,8 +66,6 @@ static bool takeAndroidGyroData(std::array<float, 3>& data) {
   g_androidGyroHasData = false;
   return true;
 }
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 #endif
 
 namespace Star {
@@ -177,7 +174,6 @@ void migrateDirectoryFiles(String const& sourceDirectory, String const& targetDi
   }
 }
 
-<<<<<<< HEAD
 #ifdef STAR_SYSTEM_ANDROID
 bool setAndroidGyroSensorEnabled(bool enabled) {
   JNIEnv* env = reinterpret_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
@@ -210,8 +206,6 @@ bool setAndroidGyroSensorEnabled(bool enabled) {
 }
 #endif
 
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 String defaultMobileStorageRoot() {
   String fallbackStorageRoot = SDL_GetPrefPath("OpenStarbound", "OpenStarbound");
   if (fallbackStorageRoot.empty())
@@ -615,7 +609,6 @@ KeyMod noMods() {
 struct MobileTouchConfig {
   bool enabled = true;
   bool directTouchGestures = true;
-<<<<<<< HEAD
   bool gyroEnabled = false;
   float opacity = 0.35f;
   float size = 1.0f;
@@ -623,11 +616,6 @@ struct MobileTouchConfig {
   float gyroSensitivity = 1.0f;
   bool gyroInvertX = false;
   bool gyroInvertY = false;
-=======
-  float opacity = 0.35f;
-  float size = 1.0f;
-  float deadzone = 0.15f;
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 };
 
 enum class MobileTouchElementKind {
@@ -643,10 +631,7 @@ enum class MobileTouchActionKind {
   MouseButton,
   MouseWheelUp,
   MouseWheelDown,
-<<<<<<< HEAD
   GyroToggle,
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   None
 };
 
@@ -701,11 +686,8 @@ static String actionName(MobileTouchAction const& action) {
       return "Scroll Up";
     case MobileTouchActionKind::MouseWheelDown:
       return "Scroll Down";
-<<<<<<< HEAD
     case MobileTouchActionKind::GyroToggle:
       return "Gyro Toggle";
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     default:
       return "None";
   }
@@ -738,15 +720,12 @@ static MobileTouchAction wheelAction(bool up) {
   return action;
 }
 
-<<<<<<< HEAD
 static MobileTouchAction gyroToggleAction() {
   MobileTouchAction action;
   action.kind = MobileTouchActionKind::GyroToggle;
   return action;
 }
 
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 static MobileTouchAction noneAction() {
   MobileTouchAction action;
   action.kind = MobileTouchActionKind::None;
@@ -791,10 +770,7 @@ static std::vector<MobileTouchElement> defaultTouchElements() {
     {"tech", "F", MobileTouchElementKind::Button, true, {0.92f, 0.58f}, 0.86f, keyAction(Key::F), {}, {}, {}, {}},
     {"shift", "Shift", MobileTouchElementKind::Button, false, {0.66f, 0.88f}, 0.82f, keyAction(Key::LShift), {}, {}, {}, {}},
     {"ctrl", "Ctrl", MobileTouchElementKind::Button, false, {0.58f, 0.88f}, 0.82f, keyAction(Key::LCtrl), {}, {}, {}, {}},
-<<<<<<< HEAD
     {"gyroToggle", "Gyro", MobileTouchElementKind::Button, false, {0.74f, 0.88f}, 0.82f, gyroToggleAction(), {}, {}, {}, {}, MobileTouchPressMode::SinglePress},
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     {"dpad", "D-PAD", MobileTouchElementKind::DPad, false, {0.16f, 0.74f}, 1.05f, keyAction(Key::Space),
       keyAction(Key::W), keyAction(Key::S), keyAction(Key::A), keyAction(Key::D)}
   };
@@ -870,11 +846,8 @@ static Json jsonFromTouchAction(MobileTouchAction const& action) {
     return JsonObject{{"type", "wheel"}, {"direction", "up"}};
   if (action.kind == MobileTouchActionKind::MouseWheelDown)
     return JsonObject{{"type", "wheel"}, {"direction", "down"}};
-<<<<<<< HEAD
   if (action.kind == MobileTouchActionKind::GyroToggle)
     return JsonObject{{"type", "gyroToggle"}};
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   if (action.kind == MobileTouchActionKind::None)
     return JsonObject{{"type", "none"}};
   return JsonObject{{"type", "key"}, {"key", KeyNames.getRight(action.key)}};
@@ -890,11 +863,8 @@ static MobileTouchAction touchActionFromJson(Json const& json, MobileTouchAction
     return mouseAction(MouseButtonNames.valueLeft(json.getString("button", MouseButtonNames.getRight(def.mouseButton)), def.mouseButton));
   if (type.equals("wheel", String::CaseInsensitive))
     return wheelAction(!json.getString("direction", "up").equals("down", String::CaseInsensitive));
-<<<<<<< HEAD
   if (type.equals("gyroToggle", String::CaseInsensitive) || type.equals("gyro", String::CaseInsensitive))
     return gyroToggleAction();
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   if (type.equals("none", String::CaseInsensitive))
     return noneAction();
   auto keyName = json.getString("key", KeyNames.getRight(def.key));
@@ -1005,18 +975,12 @@ struct LauncherState {
 
 class MobileTouchInputAdapter {
 public:
-<<<<<<< HEAD
   explicit MobileTouchInputAdapter(Vec2U* windowSize, Vec2U* renderCanvasSize = nullptr, float* displayScale = nullptr, SafeAreaInsets* safeArea = nullptr)
     : m_windowSize(windowSize), m_renderCanvasSize(renderCanvasSize), m_displayScalePtr(displayScale), m_safeAreaPtr(safeArea) {}
-=======
-  explicit MobileTouchInputAdapter(Vec2U* windowSize, float* displayScale = nullptr, SafeAreaInsets* safeArea = nullptr)
-    : m_windowSize(windowSize), m_displayScalePtr(displayScale), m_safeAreaPtr(safeArea) {}
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 
   void setConfig(MobileTouchConfig config) {
     if (!config.directTouchGestures && m_config.directTouchGestures)
       cancelDirectTouchGestures();
-<<<<<<< HEAD
     if (config.gyroEnabled && !m_config.gyroEnabled) {
       m_gyroRuntimeEnabled = true;
       m_lastGyroFrameMs = 0;
@@ -1025,8 +989,6 @@ public:
       m_lastGyroFrameMs = 0;
       m_hasGyroInput = false;
     }
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     m_config = config;
   }
 
@@ -1050,7 +1012,6 @@ public:
     m_generatedEvents.clear();
   }
 
-<<<<<<< HEAD
   bool gyroSensorRequested() const {
     return m_config.gyroEnabled;
   }
@@ -1069,8 +1030,6 @@ public:
     m_gyroOrientation = orientation;
   }
 
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   bool processSdlEvent(SDL_Event const& event) {
     if (!m_config.enabled)
       return false;
@@ -1105,15 +1064,10 @@ public:
         emitEvent(KeyUpEvent{pair.first});
     }
     for (auto const& pair : m_mouseHoldCounts.pairs()) {
-<<<<<<< HEAD
       if (pair.second > 0) {
         syncVirtualAimCursor();
         emitEvent(MouseButtonUpEvent{pair.first, mouseActionPosition()});
       }
-=======
-      if (pair.second > 0)
-        emitEvent(MouseButtonUpEvent{pair.first, mouseActionPosition()});
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     }
 
     m_fingers.clear();
@@ -1188,25 +1142,12 @@ public:
         draw->AddCircle(ip(center), drawRadius, base, 48, 3.0f);
         if (m_aimJoystickActive && m_aimJoystickElementId == element.id)
           draw->AddCircleFilled(ip(m_aimJoystickCurrent), drawRadius * 0.35f, fill, 32);
-<<<<<<< HEAD
       } else if (element.kind == MobileTouchElementKind::DPad) {
         drawDPad(draw, ip(center), drawRadius, element.id, base, fill);
       } else {
         bool held = heldElement(element.id)
             || (element.action.kind == MobileTouchActionKind::GyroToggle && m_config.gyroEnabled && m_gyroRuntimeEnabled);
         drawButton(draw, ip(center), drawRadius * 0.55f, held, element.label.utf8Ptr(), base, fill);
-=======
-        if (m_hasAimJoystickTarget) {
-          ImVec2 target = ip(m_aimJoystickTarget);
-          float cross = drawRadius * 0.18f;
-          draw->AddLine(ImVec2(target.x - cross, target.y), ImVec2(target.x + cross, target.y), fill, 2.0f);
-          draw->AddLine(ImVec2(target.x, target.y - cross), ImVec2(target.x, target.y + cross), fill, 2.0f);
-        }
-      } else if (element.kind == MobileTouchElementKind::DPad) {
-        drawDPad(draw, ip(center), drawRadius, element.id, base, fill);
-      } else {
-        drawButton(draw, ip(center), drawRadius * 0.55f, heldElement(element.id), element.label.utf8Ptr(), base, fill);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
       }
     }
   }
@@ -1362,7 +1303,6 @@ private:
   }
 
   Vec2F toInputSpace(Vec2F const& pos) const {
-<<<<<<< HEAD
     Vec2F physicalCanvas = canvasSize();
     Vec2F renderCanvas = m_renderCanvasSize ? Vec2F(*m_renderCanvasSize) : physicalCanvas;
     Vec2F scaled{
@@ -1382,14 +1322,6 @@ private:
       renderCanvas[0] > 0.0f ? pos[0] * physicalCanvas[0] / renderCanvas[0] : pos[0],
       renderCanvas[1] > 0.0f ? (renderCanvas[1] - pos[1]) * physicalCanvas[1] / renderCanvas[1] : pos[1]
     };
-=======
-    // Y-flip: game input space has y=0 at bottom; screen space has y=0 at top.
-    // Use game-canvas height (window minus safe area) to match the renderer.
-    unsigned gameH = (*m_windowSize)[1];
-    if (m_safeAreaPtr && (*m_windowSize)[1] > m_safeAreaPtr->top + m_safeAreaPtr->bottom)
-      gameH -= m_safeAreaPtr->top + m_safeAreaPtr->bottom;
-    return { pos[0], (float)gameH - pos[1] };
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   }
 
   void assignFinger(uint64_t finger, Vec2F const& pos) {
@@ -1446,15 +1378,7 @@ private:
         m_aimJoystickElementId = element.id;
         m_aimJoystickOrigin = center;
         m_aimJoystickCurrent = pos;
-<<<<<<< HEAD
         ensureAimTarget();
-=======
-        if (!m_hasAimJoystickTarget) {
-          Vec2F canvas = canvasSize();
-          m_aimJoystickTarget = {canvas[0] * 0.5f, canvas[1] * 0.5f};
-          m_hasAimJoystickTarget = true;
-        }
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
         updateAimJoystickFinger(state, pos);
         claimedControl = true;
         break;
@@ -1736,11 +1660,7 @@ private:
     setKeyOwner("joystick:left", Key::A, m_moveVec[0] < -0.30f);
     setKeyOwner("joystick:up", Key::W, m_moveVec[1] < -0.30f);
     setKeyOwner("joystick:down", Key::S, m_moveVec[1] > 0.30f);
-<<<<<<< HEAD
     updateVirtualAimTarget();
-=======
-    updateAimJoystickTarget();
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     releaseExpiredPulsedActions();
     repeatActionButtons();
     repeatDPadWheelActions();
@@ -1755,7 +1675,6 @@ private:
     }
   }
 
-<<<<<<< HEAD
   void ensureAimTarget() {
     if (m_hasAimJoystickTarget)
       return;
@@ -1845,22 +1764,6 @@ private:
     m_aimJoystickTarget[1] = std::clamp(m_aimJoystickTarget[1], 0.0f, canvas[1]);
     m_hasAimJoystickTarget = true;
     syncVirtualAimCursor(true);
-=======
-  void updateAimJoystickTarget() {
-    if (!m_aimJoystickActive || m_aimVec.magnitudeSquared() <= 0.0001f)
-      return;
-
-    Vec2F canvas = canvasSize();
-    float sensitivity = 1.0f;
-    if (auto element = findElement(m_aimJoystickElementId))
-      sensitivity = std::clamp(element->aimSensitivity, 0.25f, 4.0f);
-    float speed = controlRadius() * 0.22f * sensitivity * std::clamp(m_aimVec.magnitude(), 0.25f, 1.0f);
-    m_aimJoystickTarget += m_aimVec * speed;
-    m_aimJoystickTarget[0] = std::clamp(m_aimJoystickTarget[0], 0.0f, canvas[0]);
-    m_aimJoystickTarget[1] = std::clamp(m_aimJoystickTarget[1], 0.0f, canvas[1]);
-    m_hasAimJoystickTarget = true;
-    emitMouseMove(m_aimJoystickTarget);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   }
 
   void repeatActionButtons() {
@@ -1879,7 +1782,6 @@ private:
 
   void pressActionButton(MobileTouchElement const& element) {
     m_heldElements.add(element.id);
-<<<<<<< HEAD
     if (element.action.kind == MobileTouchActionKind::GyroToggle) {
       if (m_config.gyroEnabled) {
         m_gyroRuntimeEnabled = !m_gyroRuntimeEnabled;
@@ -1890,8 +1792,6 @@ private:
       return;
     }
 
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     if (element.pressMode == MobileTouchPressMode::Toggle) {
       if (m_toggledElements.contains(element.id)) {
         m_toggledElements.remove(element.id);
@@ -1948,24 +1848,16 @@ private:
       m_mouseActionOwners.add(token);
       unsigned count = m_mouseHoldCounts.value(button, 0);
       m_mouseHoldCounts.set(button, count + 1);
-<<<<<<< HEAD
       if (count == 0) {
         syncVirtualAimCursor();
         emitEvent(MouseButtonDownEvent{button, mouseActionPosition()});
       }
-=======
-      if (count == 0)
-        emitEvent(MouseButtonDownEvent{button, mouseActionPosition()});
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     } else if (!desired && m_mouseActionOwners.contains(token)) {
       m_mouseActionOwners.remove(token);
       unsigned count = m_mouseHoldCounts.value(button, 0);
       if (count <= 1) {
         m_mouseHoldCounts.remove(button);
-<<<<<<< HEAD
         syncVirtualAimCursor();
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
         emitEvent(MouseButtonUpEvent{button, mouseActionPosition()});
       } else {
         m_mouseHoldCounts.set(button, count - 1);
@@ -1982,15 +1874,10 @@ private:
     } else if (action.kind == MobileTouchActionKind::MouseButton) {
       setMouseOwner(owner, action.mouseButton, desired);
     } else if (desired && action.kind == MobileTouchActionKind::MouseWheelUp) {
-<<<<<<< HEAD
       syncVirtualAimCursor();
       emitEvent(MouseWheelEvent{MouseWheel::Up, mouseActionPosition()});
     } else if (desired && action.kind == MobileTouchActionKind::MouseWheelDown) {
       syncVirtualAimCursor();
-=======
-      emitEvent(MouseWheelEvent{MouseWheel::Up, mouseActionPosition()});
-    } else if (desired && action.kind == MobileTouchActionKind::MouseWheelDown) {
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
       emitEvent(MouseWheelEvent{MouseWheel::Down, mouseActionPosition()});
     }
   }
@@ -2036,7 +1923,6 @@ private:
       cancelPulsedAction(owner);
   }
 
-<<<<<<< HEAD
   void syncVirtualAimCursor(bool force = false) {
     if (!m_hasAimJoystickTarget)
       return;
@@ -2050,8 +1936,6 @@ private:
     emitEvent(MouseMoveEvent{{0, 0}, m_cursorInputPosition});
   }
 
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   Vec2F mouseActionPosition() const {
     return m_hasCursorInputPosition ? m_cursorInputPosition : m_lastPointerInput;
   }
@@ -2059,11 +1943,8 @@ private:
   void emitMouseMove(Vec2F const& pos) {
     m_cursorInputPosition = toInputSpace(pos);
     m_hasCursorInputPosition = true;
-<<<<<<< HEAD
     m_aimJoystickTarget = pos;
     m_hasAimJoystickTarget = true;
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     emitEvent(MouseMoveEvent{{0, 0}, m_cursorInputPosition});
   }
 
@@ -2109,10 +1990,7 @@ private:
   }
 
   Vec2U* m_windowSize;
-<<<<<<< HEAD
   Vec2U* m_renderCanvasSize = nullptr;
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   [[maybe_unused]] float* m_displayScalePtr = nullptr;
   SafeAreaInsets* m_safeAreaPtr = nullptr;
   MobileTouchConfig m_config;
@@ -2148,15 +2026,12 @@ private:
   Vec2F m_aimJoystickTarget;
   Vec2F m_aimVec;
   bool m_hasAimJoystickTarget = false;
-<<<<<<< HEAD
   std::array<float, 3> m_gyroInput{};
   bool m_hasGyroInput = false;
   bool m_gyroRuntimeEnabled = false;
   int64_t m_lastGyroInputMs = 0;
   int64_t m_lastGyroFrameMs = 0;
   SDL_DisplayOrientation m_gyroOrientation = SDL_ORIENTATION_UNKNOWN;
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 
   bool m_primaryHeld = false;
   bool m_primaryMouseHeld = false;
@@ -2296,7 +2171,6 @@ private:
 #endif
     }
 
-<<<<<<< HEAD
     void setFullscreenWindow(Vec2U size) override {
       // Mobile surfaces stay fullscreen; the Starbound resolution setting maps
       // to the logical render canvas that is upscaled into the safe area.
@@ -2313,28 +2187,6 @@ private:
 
     void setBorderlessWindow() override {
       parent->setRequestedRenderResolution({});
-=======
-    void setFullscreenWindow(Vec2U) override {
-      // Android manages the native surface/window bounds; forcing fullscreen
-      // transitions here can race with surface recreation.
-      _unused(parent);
-    }
-
-    void setNormalWindow(Vec2U size) override {
-      // Ignore desktop-style window sizing on mobile.
-      _unused(parent);
-      _unused(size);
-    }
-
-    void setMaximizedWindow() override {
-      // Ignore desktop-style maximize on mobile.
-      _unused(parent);
-    }
-
-    void setBorderlessWindow() override {
-      // Ignore desktop-style borderless/maximize on mobile.
-      _unused(parent);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     }
 
     void setVSyncEnabled(bool enabled) override {
@@ -2554,11 +2406,7 @@ private:
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
 #endif
 #endif
-<<<<<<< HEAD
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD | SDL_INIT_SENSOR))
-=======
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD))
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
       throw ApplicationException::format("Could not initialize SDL: {}", SDL_GetError());
 
     SDL_AudioSpec desired = {SDL_AUDIO_S16, 2, 44100};
@@ -2653,18 +2501,11 @@ private:
 #endif
 
     syncWindowMetrics(false);
-<<<<<<< HEAD
     // syncWindowMetrics already set the viewport and logical render size when
     // metrics changed; repeat it here to cover first startup with stable sizes.
     m_renderer->setScreenOffset(Vec2U(m_safeArea.left, m_safeArea.bottom));
     m_renderer->setScreenViewportSize(gameCanvasSize());
     m_renderer->setScreenSize(m_renderCanvasSize);
-=======
-    // syncWindowMetrics already called setScreenSize; this is redundant but
-    // harmless — leave it in case syncWindowMetrics had no size change yet.
-    m_renderer->setScreenOffset(Vec2U(m_safeArea.left, m_safeArea.bottom));
-    m_renderer->setScreenSize(gameCanvasSize());
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   }
 
   void setupImGui() {
@@ -2776,7 +2617,6 @@ private:
 
     state.touchConfig.enabled = config.queryBool("touch.enabled", true);
     state.touchConfig.directTouchGestures = config.queryBool("touch.directTouchGestures", true);
-<<<<<<< HEAD
     state.touchConfig.gyroEnabled = config.queryBool("touch.gyroEnabled", false);
     state.touchConfig.opacity = config.queryFloat("touch.opacity", 0.35f);
     state.touchConfig.size = config.queryFloat("touch.size", 1.0f);
@@ -2784,11 +2624,6 @@ private:
     state.touchConfig.gyroSensitivity = config.queryFloat("touch.gyroSensitivity", 1.0f);
     state.touchConfig.gyroInvertX = config.queryBool("touch.gyroInvertX", false);
     state.touchConfig.gyroInvertY = config.queryBool("touch.gyroInvertY", false);
-=======
-    state.touchConfig.opacity = config.queryFloat("touch.opacity", 0.35f);
-    state.touchConfig.size = config.queryFloat("touch.size", 1.0f);
-    state.touchConfig.deadzone = config.queryFloat("touch.deadzone", 0.15f);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     state.touchElements = touchElementsFromConfig(config);
 
     state.canLaunch = File::isFile(state.packedPakPath);
@@ -2822,10 +2657,7 @@ private:
       {"Action Bar 5", keyAction(Key::Five)},
       {"Scroll Up", wheelAction(true)},
       {"Scroll Down", wheelAction(false)},
-<<<<<<< HEAD
       {"Gyro Toggle", gyroToggleAction()},
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
       {"No Action", noneAction()}
     };
   }
@@ -2954,14 +2786,6 @@ private:
     } else if (element.kind == MobileTouchElementKind::Joystick || element.kind == MobileTouchElementKind::AimJoystick) {
       draw->AddCircle(center, radius, base, 48, 3.0f);
       draw->AddCircleFilled(center, radius * 0.34f, fill, 32);
-<<<<<<< HEAD
-=======
-      if (element.kind == MobileTouchElementKind::AimJoystick) {
-        float cross = radius * 0.18f;
-        draw->AddLine(ImVec2(center.x - cross, center.y), ImVec2(center.x + cross, center.y), base, 2.0f);
-        draw->AddLine(ImVec2(center.x, center.y - cross), ImVec2(center.x, center.y + cross), base, 2.0f);
-      }
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     } else {
       draw->AddCircleFilled(center, radius * 0.55f, fill, 32);
       draw->AddCircle(center, radius * 0.55f, base, 48, 3.0f);
@@ -2978,11 +2802,6 @@ private:
     ImDrawList* draw = ImGui::GetWindowDrawList();
     ImVec2 min = ImGui::GetWindowPos();
     draw->AddRectFilled(min, ImVec2(min.x + displaySize.x, min.y + displaySize.y), IM_COL32(15, 18, 24, 235));
-<<<<<<< HEAD
-=======
-    for (int i = 0; i < (int)state.touchElements.size(); ++i)
-      renderTouchElementPreview(state, draw, min, displaySize, i);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 
     ImGui::SetCursorScreenPos(ImVec2(min.x + 16.0f, min.y + 16.0f));
     ImGui::BeginChild("TouchPreviewToolbar", ImVec2(std::min(520.0f, displaySize.x - 32.0f), 150.0f), true);
@@ -2995,15 +2814,12 @@ private:
     if (ImGui::Button("Done"))
       state.touchPreviewOpen = false;
     ImGui::EndChild();
-<<<<<<< HEAD
 
     // Register control drag hitboxes after the toolbar so overlapping controls
     // can always be pulled out from underneath it.
     for (int i = 0; i < (int)state.touchElements.size(); ++i)
       renderTouchElementPreview(state, draw, min, displaySize, i);
 
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     ImGui::End();
   }
 
@@ -3021,7 +2837,6 @@ private:
 
     ImGui::Checkbox("Enable touch overlay", &state.touchConfig.enabled);
     ImGui::Checkbox("Enable direct screen touch gestures", &state.touchConfig.directTouchGestures);
-<<<<<<< HEAD
     ImGui::Checkbox("Enable gyro aim", &state.touchConfig.gyroEnabled);
     ImGui::SliderFloat("Overlay opacity", &state.touchConfig.opacity, 0.0f, 1.0f);
     ImGui::SliderFloat("Global control size", &state.touchConfig.size, 0.6f, 1.8f);
@@ -3029,11 +2844,6 @@ private:
     ImGui::SliderFloat("Gyro sensitivity", &state.touchConfig.gyroSensitivity, 0.10f, 5.0f);
     ImGui::Checkbox("Invert gyro X axis", &state.touchConfig.gyroInvertX);
     ImGui::Checkbox("Invert gyro Y axis", &state.touchConfig.gyroInvertY);
-=======
-    ImGui::SliderFloat("Overlay opacity", &state.touchConfig.opacity, 0.0f, 1.0f);
-    ImGui::SliderFloat("Global control size", &state.touchConfig.size, 0.6f, 1.8f);
-    ImGui::SliderFloat("Joystick deadzone", &state.touchConfig.deadzone, 0.0f, 0.6f);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 
     if (ImGui::Button("New Button")) {
       state.newTouchButtonPopup = true;
@@ -3411,7 +3221,6 @@ private:
       {"touch", JsonObject{
         {"enabled", state.touchConfig.enabled},
         {"directTouchGestures", state.touchConfig.directTouchGestures},
-<<<<<<< HEAD
         {"gyroEnabled", state.touchConfig.gyroEnabled},
         {"opacity", state.touchConfig.opacity},
         {"size", state.touchConfig.size},
@@ -3419,11 +3228,6 @@ private:
         {"gyroSensitivity", state.touchConfig.gyroSensitivity},
         {"gyroInvertX", state.touchConfig.gyroInvertX},
         {"gyroInvertY", state.touchConfig.gyroInvertY},
-=======
-        {"opacity", state.touchConfig.opacity},
-        {"size", state.touchConfig.size},
-        {"deadzone", state.touchConfig.deadzone},
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
         {"elements", jsonFromTouchElements(state.touchElements)}
       }}
     };
@@ -3486,7 +3290,6 @@ private:
           {"touchControls", JsonObject{
             {"enabled", state.touchConfig.enabled},
             {"directTouchGestures", state.touchConfig.directTouchGestures},
-<<<<<<< HEAD
             {"gyroEnabled", state.touchConfig.gyroEnabled},
             {"opacity", state.touchConfig.opacity},
             {"size", state.touchConfig.size},
@@ -3494,11 +3297,6 @@ private:
             {"gyroSensitivity", state.touchConfig.gyroSensitivity},
             {"gyroInvertX", state.touchConfig.gyroInvertX},
             {"gyroInvertY", state.touchConfig.gyroInvertY},
-=======
-            {"opacity", state.touchConfig.opacity},
-            {"size", state.touchConfig.size},
-            {"deadzone", state.touchConfig.deadzone},
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
             {"elements", jsonFromTouchElements(state.touchElements)},
             {"invertLook", false}
           }}
@@ -3609,18 +3407,13 @@ private:
       setMobileStartupStatus("Initializing touch controls...");
       renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: create touch adapter");
-<<<<<<< HEAD
       m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize, &m_renderCanvasSize, &m_displayScale, &m_safeArea);
-=======
-      m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize, &m_displayScale, &m_safeArea);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 
       if (auto configService = m_platformServices->launchConfigService()) {
         auto cfg = configService->loadLauncherConfig();
         MobileTouchConfig touch;
         touch.enabled = cfg.queryBool("touch.enabled", true);
         touch.directTouchGestures = cfg.queryBool("touch.directTouchGestures", true);
-<<<<<<< HEAD
         touch.gyroEnabled = cfg.queryBool("touch.gyroEnabled", false);
         touch.opacity = cfg.queryFloat("touch.opacity", 0.35f);
         touch.size = cfg.queryFloat("touch.size", 1.0f);
@@ -3631,13 +3424,6 @@ private:
         m_touchAdapter->setConfig(touch);
         m_touchAdapter->setElements(touchElementsFromConfig(cfg));
         syncGyroSensor(touch.gyroEnabled);
-=======
-        touch.opacity = cfg.queryFloat("touch.opacity", 0.35f);
-        touch.size = cfg.queryFloat("touch.size", 1.0f);
-        touch.deadzone = cfg.queryFloat("touch.deadzone", 0.15f);
-        m_touchAdapter->setConfig(touch);
-        m_touchAdapter->setElements(touchElementsFromConfig(cfg));
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
       }
 
       if (m_softQuitRequested || m_quitRequested) {
@@ -3701,11 +3487,7 @@ private:
     // setupWindowAndRenderer, so the game would otherwise use the full physical
     // screen size for UI layout while the shader clips to the smaller canvas.
     if (m_application)
-<<<<<<< HEAD
       m_application->windowChanged(WindowMode::Normal, m_renderCanvasSize);
-=======
-      m_application->windowChanged(WindowMode::Normal, gameCanvasSize());
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 #endif
 
     while (!m_quitRequested && !m_softQuitRequested) {
@@ -3782,10 +3564,7 @@ private:
     m_textInputApplied = false;
     m_textInputDirty = false;
 #endif
-<<<<<<< HEAD
     syncGyroSensor(false);
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     // Do not reset m_application: startup() can be called again for a new
     // session without rebuilding the entire object.
   }
@@ -3794,7 +3573,6 @@ private:
     // External mice report physical window coordinates, while the game is
     // rendered into the safe-area canvas. Touch input already goes through the
     // touch adapter's canvas conversion; keep this path for real mouse devices.
-<<<<<<< HEAD
     Vec2U physicalCanvas = gameCanvasSize();
     Vec2U renderCanvas = m_renderCanvasSize;
     Vec2F physical{
@@ -3808,12 +3586,6 @@ private:
     return {
       logical[0],
       (float)renderCanvas[1] - logical[1]
-=======
-    Vec2U canvas = gameCanvasSize();
-    return {
-      x - (float)m_safeArea.left,
-      (float)canvas[1] - (y - (float)m_safeArea.top)
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     };
   }
 
@@ -3825,7 +3597,6 @@ private:
     return touchDerivedMouse ? legacyWindowMouseInputPosition(x, y) : externalMouseInputPosition(x, y);
   }
 
-<<<<<<< HEAD
   SDL_DisplayOrientation currentDisplayOrientation() const {
     if (!m_window)
       return SDL_ORIENTATION_UNKNOWN;
@@ -3914,8 +3685,6 @@ private:
     m_touchAdapter->setGyroInput(data, hasData, currentDisplayOrientation());
   }
 
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   List<InputEvent> processEvents() {
     List<InputEvent> events;
 
@@ -4008,10 +3777,7 @@ private:
 
     syncWindowMetrics(true);
 
-<<<<<<< HEAD
     updateGyroInput();
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     m_touchAdapter->endFrame();
     m_touchAdapter->appendGeneratedEvents(events);
     return events;
@@ -4071,7 +3837,6 @@ private:
     return s;
   }
 
-<<<<<<< HEAD
   Vec2U requestedRenderCanvasSize(Vec2U physicalCanvas) const {
     if (physicalCanvas[0] == 0 || physicalCanvas[1] == 0)
       return physicalCanvas;
@@ -4098,8 +3863,6 @@ private:
     syncWindowMetrics(true);
   }
 
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   bool syncWindowMetrics(bool notifyApplication) {
     Vec2U queriedSize;
     bool hasSize = queryWindowPixelSize(queriedSize);
@@ -4173,7 +3936,6 @@ private:
     }
 #endif
 
-<<<<<<< HEAD
     Vec2U physicalCanvas = gameCanvasSize();
     Vec2U renderCanvas = requestedRenderCanvasSize(physicalCanvas);
     if (renderCanvas != m_renderCanvasSize) {
@@ -4182,28 +3944,16 @@ private:
     }
 
     if (sizeChanged) {
-=======
-    if (sizeChanged) {
-      Vec2U canvas = gameCanvasSize();
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
       if (m_renderer) {
         // Viewport origin: safe-area left offset (x) and bottom offset (y) in
         // OpenGL convention where y=0 is the physical bottom of the screen.
         m_renderer->setScreenOffset(Vec2U(m_safeArea.left, m_safeArea.bottom));
-<<<<<<< HEAD
         m_renderer->setScreenViewportSize(physicalCanvas);
         m_renderer->setScreenSize(renderCanvas);
       }
 
       if (notifyApplication && m_application)
         m_application->windowChanged(WindowMode::Normal, renderCanvas);
-=======
-        m_renderer->setScreenSize(canvas);
-      }
-
-      if (notifyApplication && m_application)
-        m_application->windowChanged(WindowMode::Normal, canvas);
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 
       refreshImGuiScale();
     } else if (ImGui::GetCurrentContext()) {
@@ -4291,7 +4041,6 @@ private:
 
   SDL_Window* m_window = nullptr;
   SDL_GLContext m_glContext = nullptr;
-<<<<<<< HEAD
   SDL_Sensor* m_gyroSensor = nullptr;
 #ifdef STAR_SYSTEM_ANDROID
   bool m_androidGyroSensorEnabled = false;
@@ -4302,11 +4051,6 @@ private:
   Vec2U m_windowSize = {1280, 720};
   Vec2U m_renderCanvasSize = {1280, 720};
   Vec2U m_requestedRenderResolution = {0, 0};
-=======
-
-  String m_windowTitle = "OpenStarbound";
-  Vec2U m_windowSize = {1280, 720};
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   SafeAreaInsets m_safeArea;
   bool m_vsync = true;
   bool m_cursorVisible = true;

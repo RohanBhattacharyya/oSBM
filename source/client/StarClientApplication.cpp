@@ -614,6 +614,12 @@ void ClientApplication::render() {
 
   if (auto interfaceScale = config->get("interfaceScale").optFloat().value(); interfaceScale != 0)
     m_guiContext->setInterfaceScale(interfaceScale);
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
+  else {
+    float shortSide = std::min(m_guiContext->windowWidth(), m_guiContext->windowHeight());
+    m_guiContext->setInterfaceScale(std::clamp(shortSide / 500.0f, 1.35f, 2.4f));
+  }
+#else
   else if (m_guiContext->windowWidth() >= m_crossoverRes[0] && m_guiContext->windowHeight() >= m_crossoverRes[1])
     m_guiContext->setInterfaceScale(m_maxInterfaceScale);
   else

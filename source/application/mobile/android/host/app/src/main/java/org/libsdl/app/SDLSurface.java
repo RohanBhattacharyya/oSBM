@@ -36,7 +36,6 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     // Sensors
     protected SensorManager mSensorManager;
     protected Display mDisplay;
-<<<<<<< HEAD
     protected boolean mGyroscopeEnabled;
     protected Sensor mGyroscopeSensor;
     protected int mGyroscopeSensorType;
@@ -50,8 +49,6 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     protected boolean mHasFilteredAccelerometer;
     protected final float[] mFilteredAccelerometer = new float[3];
     protected long mLastNonAccelerometerGyroTimestamp;
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 
     // Keep track of the surface size to normalize touch events
     protected float mWidth, mHeight;
@@ -85,12 +82,9 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
 
     public void handlePause() {
         enableSensor(Sensor.TYPE_ACCELEROMETER, false);
-<<<<<<< HEAD
         boolean gyroscopeEnabled = mGyroscopeEnabled;
         enableSensor(Sensor.TYPE_GYROSCOPE, false);
         mGyroscopeEnabled = gyroscopeEnabled;
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     }
 
     public void handleResume() {
@@ -101,12 +95,9 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         setOnKeyListener(this);
         setOnTouchListener(this);
         enableSensor(Sensor.TYPE_ACCELEROMETER, true);
-<<<<<<< HEAD
         if (mGyroscopeEnabled) {
             enableSensor(Sensor.TYPE_GYROSCOPE, true);
         }
-=======
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     }
 
     public Surface getNativeSurface() {
@@ -328,7 +319,6 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     }
 
     // Sensor events
-<<<<<<< HEAD
     public boolean enableSensor(int sensortype, boolean enabled) {
         if (sensortype == Sensor.TYPE_GYROSCOPE) {
             return enableGyroSensor(enabled);
@@ -536,20 +526,6 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
                 false);
     }
 
-=======
-    public void enableSensor(int sensortype, boolean enabled) {
-        // TODO: This uses getDefaultSensor - what if we have >1 accels?
-        if (enabled) {
-            mSensorManager.registerListener(this,
-                            mSensorManager.getDefaultSensor(sensortype),
-                            SensorManager.SENSOR_DELAY_GAME, null);
-        } else {
-            mSensorManager.unregisterListener(this,
-                            mSensorManager.getDefaultSensor(sensortype));
-        }
-    }
-
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
         // TODO
@@ -597,7 +573,6 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
                                       y / SensorManager.GRAVITY_EARTH,
                                       event.values[2] / SensorManager.GRAVITY_EARTH);
 
-<<<<<<< HEAD
             if (mGyroscopeEnabled
                     && (mAccelerometerGyroFallbackEnabled
                     || mLastNonAccelerometerGyroTimestamp == 0
@@ -614,9 +589,6 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
             handleRotationVectorGyro(event);
         } else if (event.sensor.getType() == Sensor.TYPE_GRAVITY && mGyroscopeEnabled) {
             handleGravityGyroFallback(event);
-=======
-
->>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
         }
     }
 
