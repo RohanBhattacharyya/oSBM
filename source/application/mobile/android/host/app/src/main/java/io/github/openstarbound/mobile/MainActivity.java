@@ -8,7 +8,10 @@ import android.content.pm.ResolveInfo;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
+<<<<<<< HEAD
 import android.hardware.Sensor;
+=======
+>>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -485,6 +488,7 @@ public final class MainActivity extends SDLActivity {
         return ensureWritableDirectory(fallback) ? fallback.getAbsolutePath() : fallbackStorageRoot;
     }
 
+<<<<<<< HEAD
     public static boolean setGyroSensorEnabled(boolean enabled) {
         MainActivity activity = instance();
         if (activity == null) {
@@ -503,6 +507,8 @@ public final class MainActivity extends SDLActivity {
         return true;
     }
 
+=======
+>>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     public static String resolveModsDirectory(String fallbackModsDirectory) {
         MainActivity activity = instance();
 

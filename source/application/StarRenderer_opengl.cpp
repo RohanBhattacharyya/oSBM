@@ -632,7 +632,11 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
     m_currentFrameBuffer.reset();
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
     // Restore the screen viewport (canvas positioned at its safe-area offset).
+<<<<<<< HEAD
     glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
+=======
+    glViewport(m_screenOffset[0], m_screenOffset[1], m_screenSize[0], m_screenSize[1]);
+>>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   }
 
   glUseProgram(m_program = effect.program);
@@ -670,6 +674,7 @@ void OpenGlRenderer::setScissorRect(Maybe<RectI> const& scissorRect) {
   m_scissorRect = scissorRect;
   if (m_scissorRect) {
     glEnable(GL_SCISSOR_TEST);
+<<<<<<< HEAD
     float xScale = m_screenSize[0] ? (float)m_screenViewportSize[0] / (float)m_screenSize[0] : 1.0f;
     float yScale = m_screenSize[1] ? (float)m_screenViewportSize[1] / (float)m_screenSize[1] : 1.0f;
     glScissor(
@@ -677,6 +682,13 @@ void OpenGlRenderer::setScissorRect(Maybe<RectI> const& scissorRect) {
       (GLint)std::round(m_scissorRect->yMin() * yScale) + (GLint)m_screenOffset[1],
       (GLsizei)std::round(m_scissorRect->width() * xScale),
       (GLsizei)std::round(m_scissorRect->height() * yScale)
+=======
+    glScissor(
+      m_scissorRect->xMin() + (GLint)m_screenOffset[0],
+      m_scissorRect->yMin() + (GLint)m_screenOffset[1],
+      m_scissorRect->width(),
+      m_scissorRect->height()
+>>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     );
   } else {
     glDisable(GL_SCISSOR_TEST);
@@ -763,9 +775,13 @@ void OpenGlRenderer::flush(Mat3F const& transformation) {
 
 void OpenGlRenderer::setScreenSize(Vec2U screenSize) {
   m_screenSize = screenSize;
+<<<<<<< HEAD
   if (m_screenViewportSize[0] == 0 || m_screenViewportSize[1] == 0)
     m_screenViewportSize = screenSize;
   glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
+=======
+  glViewport(m_screenOffset[0], m_screenOffset[1], m_screenSize[0], m_screenSize[1]);
+>>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   glUniform2f(m_screenSizeUniform, m_screenSize[0], m_screenSize[1]);
 
   for (auto& frameBuffer : m_frameBuffers) {
@@ -790,7 +806,11 @@ void OpenGlRenderer::startFrame() {
   if (m_scissorRect)
     glDisable(GL_SCISSOR_TEST);
 
+<<<<<<< HEAD
   glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
+=======
+  glViewport(m_screenOffset[0], m_screenOffset[1], m_screenSize[0], m_screenSize[1]);
+>>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
 
   for (auto& frameBuffer : m_frameBuffers) {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer.second->id);
@@ -1329,13 +1349,20 @@ void OpenGlRenderer::blitGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer)
     return;
 
   auto& size = m_screenSize;
+<<<<<<< HEAD
   auto& viewport = m_screenViewportSize;
+=======
+>>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
   auto& off  = m_screenOffset;
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
   glBindFramebuffer(GL_READ_FRAMEBUFFER, frameBuffer->id);
   glBlitFramebuffer(
     0, 0, size[0], size[1],
+<<<<<<< HEAD
     off[0], off[1], off[0] + viewport[0], off[1] + viewport[1],
+=======
+    off[0], off[1], off[0] + size[0], off[1] + size[1],
+>>>>>>> 68d6a2f48cf3b89871bfa20bf9c4657e0b97bfca
     GL_COLOR_BUFFER_BIT, GL_NEAREST
   );
 
