@@ -2726,6 +2726,7 @@ private:
       {"Chat / T (Enter)", keyAction(Key::Return)},
       {"Tech / F", keyAction(Key::F)},
       {"Swap Hotbar / X", keyAction(Key::X)},
+      {"Drop Item / Q", keyAction(Key::Q)},
       {"Shift", keyAction(Key::LShift)},
       {"Ctrl", keyAction(Key::LCtrl)},
       {"Move Up / W", keyAction(Key::W)},
