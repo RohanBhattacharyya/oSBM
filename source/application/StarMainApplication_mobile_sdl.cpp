@@ -2855,6 +2855,19 @@ private:
       ImGui::SameLine();
   }
 
+  void beginLauncherScrollArea(char const* id, LauncherState const& state) const {
+    float reservedFooterHeight = 0.0f;
+    if (!state.lastStatus.empty())
+      reservedFooterHeight += ImGui::GetTextLineHeightWithSpacing();
+    if (!state.lastError.empty())
+      reservedFooterHeight += ImGui::GetTextLineHeightWithSpacing();
+    if (reservedFooterHeight > 0.0f)
+      reservedFooterHeight += ImGui::GetStyle().ItemSpacing.y;
+
+    float height = std::max(80.0f, ImGui::GetContentRegionAvail().y - reservedFooterHeight);
+    ImGui::BeginChild(id, ImVec2(0.0f, height), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+  }
+
   void renderTouchActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId) {
     auto choices = touchActionChoices();
     int index = touchActionIndex(action);
@@ -2997,6 +3010,8 @@ private:
   }
 
   void renderLauncherUiSettings(LauncherState& state) {
+    beginLauncherScrollArea("LauncherUiSettingsScroll", state);
+
     ImGui::Text("Launcher UI Settings");
     ImGui::Separator();
 
@@ -3014,6 +3029,8 @@ private:
       state.uiConfig = LauncherUiConfig();
       applyLauncherUiConfig(state.uiConfig);
     }
+
+    ImGui::EndChild();
   }
 
   void renderTouchManager(LauncherState& state) {
@@ -3024,7 +3041,7 @@ private:
     ImGui::Text("Touch Controls Manager");
     ImGui::Separator();
 
-    if (ImGui::BeginChild("TouchManagerScroll", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
+    beginLauncherScrollArea("TouchManagerScroll", state);
     if (ImGui::Button("Back to Launcher"))
       state.touchManagerOpen = false;
     sameLineIfNextFits(imguiButtonWidth("Preview / Adjust Layout"));
@@ -3146,7 +3163,6 @@ private:
       }
     }
     ImGui::EndChild();
-    }
     ImGui::EndChild();
   }
 
@@ -3197,6 +3213,9 @@ private:
     } else if (state.modManagerOpen) {
       if (state.modListDirty)
         refreshModList(state, modsPath);
+
+      bool requestDeletePopup = false;
+      beginLauncherScrollArea("ModManagerScroll", state);
 
       ImGui::Text("Mod Manager");
       ImGui::TextWrapped("Browse installed mods, import new mods, and delete entries.");
@@ -3266,9 +3285,9 @@ private:
       ImGui::Separator();
       String modSearch = String(state.modSearchBuffer).trim();
       size_t shownMods = 0;
-      bool requestDeletePopup = false;
       ImGui::Text("Installed mods: %u", (unsigned)state.modEntries.size());
-      if (ImGui::BeginChild("ModManagerList", ImVec2(0, -90.0f), true)) {
+      float modListHeight = std::max(180.0f, ImGui::GetContentRegionAvail().y - 90.0f);
+      if (ImGui::BeginChild("ModManagerList", ImVec2(0.0f, modListHeight), true, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
         for (auto const& mod : state.modEntries) {
           if (mod.isPackedPak && !state.modShowPackedPaks)
             continue;
@@ -3301,6 +3320,7 @@ private:
             ImGui::TextDisabled("No mods are currently installed.");
         }
       }
+      ImGui::EndChild();
       ImGui::EndChild();
 
       if (requestDeletePopup)
@@ -3336,6 +3356,8 @@ private:
         ImGui::EndPopup();
       }
     } else if (state.saveManagerOpen) {
+      beginLauncherScrollArea("SaveManagerScroll", state);
+
       ImGui::Text("Save Manager");
       ImGui::TextWrapped("Open, import, and export player and universe save data.");
       ImGui::Separator();
@@ -3396,7 +3418,10 @@ private:
           }
         });
       }
+      ImGui::EndChild();
     } else {
+      beginLauncherScrollArea("LauncherMainScroll", state);
+
       ImGui::TextWrapped("Configure assets and controls before launching.");
       ImGui::Separator();
 
@@ -3468,6 +3493,8 @@ private:
       launchPressed = ImGui::Button("Launch");
       if (!state.canLaunch)
         ImGui::EndDisabled();
+
+      ImGui::EndChild();
     }
 
     if (!state.lastStatus.empty())

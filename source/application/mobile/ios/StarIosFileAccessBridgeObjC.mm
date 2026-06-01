@@ -1027,7 +1027,7 @@ static NSArray<NSURL*>* presentOpenPicker(PickerMode mode) {
     if (@available(iOS 14.0, *)) {
 #if STAR_IOS_HAS_UNIFORM_TYPES
       if (mode == PickerMode::Folder)
-        picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
+        picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:YES];
       else
         picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData, UTTypeItem] asCopy:YES];
 #endif
@@ -1039,7 +1039,7 @@ static NSArray<NSURL*>* presentOpenPicker(PickerMode mode) {
 #else
       NSArray<NSString*>* types = mode == PickerMode::Folder ? @[(NSString*)kUTTypeFolder] : @[(NSString*)kUTTypeData, (NSString*)kUTTypeItem];
 #endif
-      UIDocumentPickerMode pickerMode = mode == PickerMode::Folder ? UIDocumentPickerModeOpen : UIDocumentPickerModeImport;
+      UIDocumentPickerMode pickerMode = UIDocumentPickerModeImport;
       picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:types inMode:pickerMode];
     }
 
