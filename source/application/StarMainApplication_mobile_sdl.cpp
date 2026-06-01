@@ -791,7 +791,7 @@ static MobileTouchPressMode pressModeFromName(String const& name, MobileTouchPre
 static std::vector<MobileTouchElement> defaultTouchElements() {
   return {
     {"joystick", "Joystick", MobileTouchElementKind::Joystick, true, {0.14f, 0.78f}, 1.15f, keyAction(Key::Space), {}, {}, {}, {}},
-    {"aimJoystick", "Aim", MobileTouchElementKind::AimJoystick, false, {0.66f, 0.78f}, 1.15f, noneAction(), {}, {}, {}, {}},
+    {"aimJoystick", "Aim", MobileTouchElementKind::AimJoystick, true, {0.66f, 0.78f}, 1.15f, noneAction(), {}, {}, {}, {}},
     {"leftHand", "L", MobileTouchElementKind::Button, true, {0.30f, 0.16f}, 0.92f, mouseAction(MouseButton::Left), {}, {}, {}, {}},
     {"rightHand", "R", MobileTouchElementKind::Button, true, {0.64f, 0.16f}, 0.92f, mouseAction(MouseButton::Right), {}, {}, {}, {}},
     {"jump", "J", MobileTouchElementKind::Button, true, {0.88f, 0.78f}, 1.00f, keyAction(Key::Space), {}, {}, {}, {}},
