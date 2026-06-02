@@ -29,6 +29,7 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -984,7 +985,19 @@ struct LauncherUiConfig {
   std::array<float, 3> accentColor = {0.28f, 0.55f, 1.0f};
 };
 
+struct LauncherActionResult {
+  String status;
+  String error;
+  bool modListDirty = false;
+  Maybe<String> packedPakPath;
+};
+
 struct LauncherState {
+  ~LauncherState() {
+    if (asyncActionThread.joinable())
+      asyncActionThread.join();
+  }
+
   bool canLaunch = false;
   String packedPakPath;
   String lastError;
@@ -1012,6 +1025,12 @@ struct LauncherState {
   String pendingDeletePath;
   String pendingDeleteName;
   bool pendingDeleteIsDirectory = false;
+  std::thread asyncActionThread;
+  std::mutex asyncActionMutex;
+  bool asyncActionRunning = false;
+  bool asyncActionCompleted = false;
+  String asyncActionName;
+  LauncherActionResult asyncActionResult;
 };
 
 class MobileTouchInputAdapter {
@@ -2484,18 +2503,20 @@ private:
     // SDL3 to request both portrait and landscape families.
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait PortraitUpsideDown LandscapeLeft LandscapeRight");
 #endif
-#ifdef STAR_SYSTEM_ANDROID
-    SDL_SetHint(SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY, "0");
-    SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "1");
-    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
-    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
-    SDL_SetHint(SDL_HINT_VIDEO_SYNC_WINDOW_OPERATIONS, "0");
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
 #if defined(SDL_HINT_TOUCH_MOUSE_EVENTS)
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
 #endif
 #if defined(SDL_HINT_MOUSE_TOUCH_EVENTS)
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
 #endif
+#endif
+#ifdef STAR_SYSTEM_ANDROID
+    SDL_SetHint(SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY, "0");
+    SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "1");
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
+    SDL_SetHint(SDL_HINT_VIDEO_SYNC_WINDOW_OPERATIONS, "0");
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD | SDL_INIT_SENSOR))
       throw ApplicationException::format("Could not initialize SDL: {}", SDL_GetError());
@@ -2855,6 +2876,16 @@ private:
       ImGui::SameLine();
   }
 
+  void renderLauncherBusyIndicator(LauncherState const& state) const {
+    if (!state.asyncActionRunning)
+      return;
+
+    char const frames[] = "|/-\\";
+    int frame = (int)std::floor(ImGui::GetTime() * 10.0) & 3;
+    String label = state.asyncActionName.empty() ? "Importing" : state.asyncActionName;
+    ImGui::Text("%c %s", frames[frame], label.utf8Ptr());
+  }
+
   void beginLauncherScrollArea(char const* id, LauncherState const& state) const {
     float reservedFooterHeight = 0.0f;
     if (!state.lastStatus.empty())
@@ -2865,7 +2896,7 @@ private:
       reservedFooterHeight += ImGui::GetStyle().ItemSpacing.y;
 
     float height = std::max(80.0f, ImGui::GetContentRegionAvail().y - reservedFooterHeight);
-    ImGui::BeginChild(id, ImVec2(0.0f, height), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    ImGui::BeginChild(id, ImVec2(0.0f, height), false, ImGuiWindowFlags_NoScrollbar);
   }
 
   void renderTouchActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId) {
@@ -3200,6 +3231,89 @@ private:
       }
     };
 
+    auto applyAsyncLauncherAction = [&state]() {
+      LauncherActionResult result;
+      bool completed = false;
+      {
+        std::lock_guard<std::mutex> lock(state.asyncActionMutex);
+        if (state.asyncActionCompleted) {
+          result = state.asyncActionResult;
+          state.asyncActionResult = {};
+          state.asyncActionCompleted = false;
+          state.asyncActionRunning = false;
+          state.asyncActionName.clear();
+          completed = true;
+        }
+      }
+
+      if (!completed)
+        return;
+
+      if (state.asyncActionThread.joinable())
+        state.asyncActionThread.join();
+
+      state.lastStatus = result.status;
+      state.lastError = result.error;
+      if (result.modListDirty)
+        state.modListDirty = true;
+      if (result.packedPakPath) {
+        state.packedPakPath = *result.packedPakPath;
+        state.canLaunch = File::isFile(state.packedPakPath);
+      }
+    };
+
+    auto runLauncherActionAsync = [&state](String const& actionName, std::function<LauncherActionResult()> const& fn) {
+      if (state.asyncActionRunning) {
+        state.lastStatus = "Native file picker is already open.";
+        state.lastError = "Finish or cancel the current picker before starting another import.";
+        return;
+      }
+
+      if (state.asyncActionThread.joinable())
+        state.asyncActionThread.join();
+
+      String progressName = actionName;
+      if (actionName == "Import mod (.pak)")
+        progressName = "Importing mod (.pak)";
+      else if (actionName == "Import mod folder (.zip)")
+        progressName = "Importing mod folder (.zip)";
+      else if (actionName == "Import mods folder (.zip)")
+        progressName = "Importing mods folder (.zip)";
+      else if (actionName == "Import packed.pak")
+        progressName = "Importing packed.pak";
+
+      {
+        std::lock_guard<std::mutex> lock(state.asyncActionMutex);
+        state.asyncActionRunning = true;
+        state.asyncActionCompleted = false;
+        state.asyncActionName = progressName;
+        state.asyncActionResult = {};
+      }
+      state.lastStatus = strf("{}...", progressName);
+      state.lastError.clear();
+
+      state.asyncActionThread = std::thread([&state, actionName, fn]() {
+        LauncherActionResult result;
+        try {
+          result = fn();
+        } catch (std::exception const& e) {
+          result.status = strf("{} failed.", actionName);
+          result.error = strf("({}) {}", actionName, outputException(e, true));
+          Logger::error("Launcher action '{}' failed: {}", actionName, result.error);
+        } catch (...) {
+          result.status = strf("{} failed.", actionName);
+          result.error = strf("({}) Unknown runtime failure", actionName);
+          Logger::error("Launcher action '{}' failed: unknown runtime failure", actionName);
+        }
+
+        std::lock_guard<std::mutex> lock(state.asyncActionMutex);
+        state.asyncActionResult = result;
+        state.asyncActionCompleted = true;
+      });
+    };
+
+    applyAsyncLauncherAction();
+
     auto modsPath = modsDirectoryPath();
     if (!File::isDirectory(modsPath))
       File::makeDirectoryRecursive(modsPath);
@@ -3233,7 +3347,32 @@ private:
       ImGui::Checkbox("Show unpacked folders", &state.modShowUnpackedFolders);
       ImGui::TextWrapped("Mods directory: %s", modsPath.utf8Ptr());
 
+      renderLauncherBusyIndicator(state);
+      if (state.asyncActionRunning)
+        ImGui::TextWrapped("Finish or cancel the native picker to continue.");
+      ImGui::BeginDisabled(state.asyncActionRunning);
       if (ImGui::Button("Import mod (.pak)")) {
+#ifdef STAR_SYSTEM_IOS
+        auto svc = m_platformServices->externalFileAccessService();
+        runLauncherActionAsync("Import mod (.pak)", [svc]() {
+          if (svc) {
+            auto imported = svc->importModPakFiles();
+            return LauncherActionResult{
+              imported.empty() ? "No mod imported." : strf("Imported {} mod(s)", imported.size()),
+              imported.empty() ? "No .pak selected or import failed." : "",
+              true,
+              {}
+            };
+          }
+
+          return LauncherActionResult{
+            "Import unavailable.",
+            "ExternalFileAccessService is unavailable on this platform build.",
+            false,
+            {}
+          };
+        });
+#else
         runLauncherAction("Import mod (.pak)", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             auto imported = svc->importModPakFiles();
@@ -3248,8 +3387,36 @@ private:
             state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
           }
         });
+#endif
       }
-      if (ImGui::Button("Import mod folder (single mod)")) {
+      if (ImGui::Button(
+#ifdef STAR_SYSTEM_IOS
+            "Import mod folder (.zip)"
+#else
+            "Import mod folder (single mod)"
+#endif
+          )) {
+#ifdef STAR_SYSTEM_IOS
+        auto svc = m_platformServices->externalFileAccessService();
+        runLauncherActionAsync("Import mod folder (.zip)", [svc]() {
+          if (svc) {
+            auto imported = svc->importSingleModFolder();
+            return LauncherActionResult{
+              imported.empty() ? "No mod folder zip imported." : strf("Imported {} mod(s)", imported.size()),
+              imported.empty() ? "No .zip selected or import failed." : "",
+              true,
+              {}
+            };
+          }
+
+          return LauncherActionResult{
+            "Import unavailable.",
+            "ExternalFileAccessService is unavailable on this platform build.",
+            false,
+            {}
+          };
+        });
+#else
         runLauncherAction("Import mod folder", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             auto imported = svc->importSingleModFolder();
@@ -3264,8 +3431,36 @@ private:
             state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
           }
         });
+#endif
       }
-      if (ImGui::Button("Import mods folder (all .pak and folders)")) {
+      if (ImGui::Button(
+#ifdef STAR_SYSTEM_IOS
+            "Import mods folder (.zip)"
+#else
+            "Import mods folder (all .pak and folders)"
+#endif
+          )) {
+#ifdef STAR_SYSTEM_IOS
+        auto svc = m_platformServices->externalFileAccessService();
+        runLauncherActionAsync("Import mods folder (.zip)", [svc]() {
+          if (svc) {
+            auto imported = svc->importModsDirectory();
+            return LauncherActionResult{
+              imported.empty() ? "No mods zip imported." : strf("Imported {} mod(s)", imported.size()),
+              imported.empty() ? "No .zip selected or no valid mods found." : "",
+              true,
+              {}
+            };
+          }
+
+          return LauncherActionResult{
+            "Import unavailable.",
+            "ExternalFileAccessService is unavailable on this platform build.",
+            false,
+            {}
+          };
+        });
+#else
         runLauncherAction("Import mods folder", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             auto imported = svc->importModsDirectory();
@@ -3280,7 +3475,9 @@ private:
             state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
           }
         });
+#endif
       }
+      ImGui::EndDisabled();
 
       ImGui::Separator();
       String modSearch = String(state.modSearchBuffer).trim();
@@ -3426,8 +3623,40 @@ private:
       ImGui::Separator();
 
       ImGui::Text("packed.pak: %s", state.packedPakPath.empty() ? "<not selected>" : state.packedPakPath.utf8Ptr());
+      renderLauncherBusyIndicator(state);
 
+      ImGui::BeginDisabled(state.asyncActionRunning);
       if (ImGui::Button("Pick packed.pak")) {
+#ifdef STAR_SYSTEM_IOS
+        auto svc = m_platformServices->externalFileAccessService();
+        runLauncherActionAsync("Import packed.pak", [svc]() {
+          if (svc) {
+            auto picked = svc->pickPackedPak();
+            if (picked) {
+              return LauncherActionResult{
+                "Imported packed.pak",
+                "",
+                false,
+                picked
+              };
+            }
+
+            return LauncherActionResult{
+              "No file selected.",
+              "Native picker unavailable or canceled.",
+              false,
+              {}
+            };
+          }
+
+          return LauncherActionResult{
+            "Native picker unavailable.",
+            "ExternalFileAccessService is unavailable on this platform build.",
+            false,
+            {}
+          };
+        });
+#else
         runLauncherAction("Pick packed.pak", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             auto picked = svc->pickPackedPak();
@@ -3444,7 +3673,9 @@ private:
             state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
           }
         });
+#endif
       }
+      ImGui::EndDisabled();
 
       ImGui::Separator();
       ImGui::TextWrapped("Current mods directory: %s", modsPath.utf8Ptr());
@@ -3488,10 +3719,11 @@ private:
       if (!state.canLaunch)
         ImGui::TextColored(ImVec4(1, 0.6f, 0.4f, 1), "Launch is disabled until packed.pak is imported.");
 
-      if (!state.canLaunch)
+      bool launchDisabled = !state.canLaunch || state.asyncActionRunning;
+      if (launchDisabled)
         ImGui::BeginDisabled();
       launchPressed = ImGui::Button("Launch");
-      if (!state.canLaunch)
+      if (launchDisabled)
         ImGui::EndDisabled();
 
       ImGui::EndChild();
@@ -4141,11 +4373,70 @@ private:
     return events;
   }
 
+  ImVec2 launcherTouchPosition(float x, float y) const {
+    ImVec2 displaySize = imguiDisplaySize();
+    if (x >= 0.0f && x <= 1.0f && y >= 0.0f && y <= 1.0f)
+      return ImVec2(x * displaySize.x, y * displaySize.y);
+    return ImVec2(x, y);
+  }
+
+  bool processLauncherTouchEvent(SDL_Event const& event) {
+    if (event.type != SDL_EVENT_FINGER_DOWN
+        && event.type != SDL_EVENT_FINGER_MOTION
+        && event.type != SDL_EVENT_FINGER_UP
+        && event.type != SDL_EVENT_FINGER_CANCELED)
+      return false;
+
+    if (!ImGui::GetCurrentContext())
+      return true;
+
+    ImGuiIO& io = ImGui::GetIO();
+    ImVec2 pos = launcherTouchPosition(event.tfinger.x, event.tfinger.y);
+    uint64_t finger = event.tfinger.fingerID;
+
+    io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+    io.AddMousePosEvent(pos.x, pos.y);
+
+    if (event.type == SDL_EVENT_FINGER_DOWN) {
+      if (!m_launcherTouchActive) {
+        m_launcherTouchActive = true;
+        m_launcherTouchFinger = finger;
+        m_launcherTouchLastPos = pos;
+        m_launcherTouchDragDistance = 0.0f;
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+      }
+      return true;
+    }
+
+    if (!m_launcherTouchActive || m_launcherTouchFinger != finger)
+      return true;
+
+    if (event.type == SDL_EVENT_FINGER_MOTION) {
+      float dx = pos.x - m_launcherTouchLastPos.x;
+      float dy = pos.y - m_launcherTouchLastPos.y;
+      m_launcherTouchLastPos = pos;
+      m_launcherTouchDragDistance += std::abs(dx) + std::abs(dy);
+
+      if (m_launcherTouchDragDistance > 6.0f && std::abs(dy) > 0.25f)
+        io.AddMouseWheelEvent(0.0f, dy / 48.0f);
+
+      return true;
+    }
+
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    m_launcherTouchActive = false;
+    m_launcherTouchFinger = 0;
+    m_launcherTouchDragDistance = 0.0f;
+    return true;
+  }
+
   void processWindowEvents() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-      convertEventToRenderCoordinatesIfPossible(m_window, &event);
-      ImGui_ImplSDL3_ProcessEvent(&event);
+      if (!processLauncherTouchEvent(event)) {
+        convertEventToRenderCoordinatesIfPossible(m_window, &event);
+        ImGui_ImplSDL3_ProcessEvent(&event);
+      }
       if (event.type == SDL_EVENT_QUIT)
 #ifdef STAR_SYSTEM_ANDROID
         continue;
@@ -4443,6 +4734,10 @@ private:
   ApplicationControllerPtr m_appController;
   MobilePlatformServicesUPtr m_platformServices;
   unique_ptr<MobileTouchInputAdapter> m_touchAdapter;
+  bool m_launcherTouchActive = false;
+  uint64_t m_launcherTouchFinger = 0;
+  ImVec2 m_launcherTouchLastPos = ImVec2(0.0f, 0.0f);
+  float m_launcherTouchDragDistance = 0.0f;
 };
 
 } // namespace

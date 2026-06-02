@@ -38,18 +38,21 @@
 - (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
   (void)controller;
   self.pickedUrls = urls ?: @[];
+  NSLog(@"[OpenStarbound][iOSBridge] document picker selected %lu URL(s)", (unsigned long)self.pickedUrls.count);
   [self signalCompletion];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController*)controller didPickDocumentAtURL:(NSURL*)url {
   (void)controller;
   self.pickedUrls = url ? @[url] : @[];
+  NSLog(@"[OpenStarbound][iOSBridge] document picker selected %@ URL", url ? @"one" : @"no");
   [self signalCompletion];
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController*)controller {
   (void)controller;
   self.pickedUrls = @[];
+  NSLog(@"[OpenStarbound][iOSBridge] document picker cancelled");
   [self signalCompletion];
 }
 @end
@@ -349,99 +352,6 @@ static bool streamCopyUrlToPathAtomic(NSURL* sourceUrl, NSString* targetPath) {
   return true;
 }
 
-static bool copyDirectoryUrlContents(NSURL* sourceDirUrl, NSString* targetDirPath) {
-  if (!sourceDirUrl || !targetDirPath)
-    return false;
-
-  if (!ensureDirectory(targetDirPath))
-    return false;
-
-  BOOL startedScopedAccess = [sourceDirUrl startAccessingSecurityScopedResource];
-
-  NSFileManager* fm = NSFileManager.defaultManager;
-  NSError* listError = nil;
-  NSArray<NSURL*>* children = [fm contentsOfDirectoryAtURL:sourceDirUrl
-                                includingPropertiesForKeys:@[NSURLNameKey, NSURLIsDirectoryKey]
-                                                   options:0
-                                                     error:&listError];
-  if (!children) {
-    if (startedScopedAccess)
-      [sourceDirUrl stopAccessingSecurityScopedResource];
-    return listError == nil;
-  }
-
-  for (NSURL* childUrl in children) {
-    NSNumber* isDirectory = nil;
-    [childUrl getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
-
-    NSString* childName = nil;
-    [childUrl getResourceValue:&childName forKey:NSURLNameKey error:nil];
-    childName = sanitizedFileName(childName, isDirectory.boolValue ? @"mod_folder" : @"mod_file");
-    NSString* targetChild = [targetDirPath stringByAppendingPathComponent:childName];
-
-    if (isDirectory.boolValue) {
-      if (!copyDirectoryUrlContents(childUrl, targetChild)) {
-        if (startedScopedAccess)
-          [sourceDirUrl stopAccessingSecurityScopedResource];
-        return false;
-      }
-    } else {
-      if (!streamCopyUrlToPathAtomic(childUrl, targetChild)) {
-        if (startedScopedAccess)
-          [sourceDirUrl stopAccessingSecurityScopedResource];
-        return false;
-      }
-    }
-  }
-
-  if (startedScopedAccess)
-    [sourceDirUrl stopAccessingSecurityScopedResource];
-
-  return true;
-}
-
-static void importAllModsFromFolderUrl(NSURL* sourceDirUrl, NSString* targetModsDirectory, NSMutableArray<NSString*>* importedFiles) {
-  if (!sourceDirUrl || !targetModsDirectory || !importedFiles)
-    return;
-
-  BOOL startedScopedAccess = [sourceDirUrl startAccessingSecurityScopedResource];
-
-  NSFileManager* fm = NSFileManager.defaultManager;
-  NSError* listError = nil;
-  NSArray<NSURL*>* entries = [fm contentsOfDirectoryAtURL:sourceDirUrl
-                               includingPropertiesForKeys:@[NSURLNameKey, NSURLIsDirectoryKey]
-                                                  options:0
-                                                    error:&listError];
-  if (!entries) {
-    if (startedScopedAccess)
-      [sourceDirUrl stopAccessingSecurityScopedResource];
-    return;
-  }
-
-  for (NSURL* entryUrl in entries) {
-    NSNumber* isDirectory = nil;
-    [entryUrl getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
-
-    NSString* entryName = nil;
-    [entryUrl getResourceValue:&entryName forKey:NSURLNameKey error:nil];
-    if (!entryName || entryName.length == 0)
-      entryName = isDirectory.boolValue ? @"mod_folder" : @"mod_file";
-
-    if (isDirectory.boolValue) {
-      NSString* targetModRoot = uniqueTargetPath(targetModsDirectory, entryName, true);
-      if (ensureDirectory(targetModRoot) && copyDirectoryUrlContents(entryUrl, targetModRoot))
-        [importedFiles addObject:targetModRoot];
-    } else if (isPakFileName(entryName)) {
-      NSString* targetPak = uniqueTargetPath(targetModsDirectory, entryName, false);
-      if (streamCopyUrlToPathAtomic(entryUrl, targetPak))
-        [importedFiles addObject:targetPak];
-    }
-  }
-
-  if (startedScopedAccess)
-    [sourceDirUrl stopAccessingSecurityScopedResource];
-}
-
 struct ZipCentralEntry {
   std::string name;
   uint32_t crc = 0;
@@ -688,7 +598,7 @@ static bool writeBytesToPathAtomic(std::vector<uint8_t> const& bytes, NSString* 
   return true;
 }
 
-static bool unzipSaveArchive(NSString* zipPath, NSString* tempRoot) {
+static bool unzipArchiveToRoot(NSString* zipPath, NSString* targetRoot) {
   std::vector<uint8_t> data;
   if (!readFileBytes(zipPath, data) || data.size() < 22)
     return false;
@@ -768,13 +678,90 @@ static bool unzipSaveArchive(NSString* zipPath, NSString* tempRoot) {
     NSString* relative = [NSString stringWithUTF8String:name.c_str()];
     if (!relative)
       return false;
-    NSString* targetPath = [tempRoot stringByAppendingPathComponent:relative];
+    NSString* targetPath = [targetRoot stringByAppendingPathComponent:relative];
     if (!writeBytesToPathAtomic(uncompressed, targetPath))
       return false;
     extractedAny = true;
   }
 
   return extractedAny;
+}
+
+static bool unzipSaveArchive(NSString* zipPath, NSString* tempRoot) {
+  return unzipArchiveToRoot(zipPath, tempRoot);
+}
+
+static bool shouldIgnoreModImportEntryName(NSString* name) {
+  return !name
+      || name.length == 0
+      || [name isEqualToString:@".DS_Store"]
+      || [name isEqualToString:@"__MACOSX"]
+      || [name hasPrefix:@"."];
+}
+
+static NSArray<NSString*>* visibleDirectoryEntries(NSString* directory) {
+  NSArray<NSString*>* children = [NSFileManager.defaultManager contentsOfDirectoryAtPath:directory error:nil];
+  if (!children)
+    return @[];
+
+  NSMutableArray<NSString*>* visible = [NSMutableArray array];
+  for (NSString* child in children) {
+    if (!shouldIgnoreModImportEntryName(child))
+      [visible addObject:child];
+  }
+  return visible;
+}
+
+static NSString* zipBaseNameForModFolder(NSURL* selected) {
+  NSString* name = selected.lastPathComponent;
+  if (!name || name.length == 0)
+    return @"mod_folder";
+  if ([[name pathExtension].lowercaseString isEqualToString:@"zip"])
+    name = name.stringByDeletingPathExtension;
+  return sanitizedFileName(name, @"mod_folder");
+}
+
+static NSString* findSingleModZipPayloadRoot(NSString* tempRoot, NSString** outName) {
+  NSArray<NSString*>* children = visibleDirectoryEntries(tempRoot);
+  if (children.count == 1) {
+    NSString* child = children.firstObject;
+    NSString* childPath = [tempRoot stringByAppendingPathComponent:child];
+    BOOL isDirectory = NO;
+    if ([NSFileManager.defaultManager fileExistsAtPath:childPath isDirectory:&isDirectory] && isDirectory) {
+      if (outName)
+        *outName = sanitizedFileName(child, @"mod_folder");
+      return childPath;
+    }
+  }
+
+  return tempRoot;
+}
+
+static bool directoryLooksLikeModsFolder(NSString* directory) {
+  NSArray<NSString*>* children = visibleDirectoryEntries(directory);
+  for (NSString* child in children) {
+    NSString* childPath = [directory stringByAppendingPathComponent:child];
+    BOOL isDirectory = NO;
+    if ([NSFileManager.defaultManager fileExistsAtPath:childPath isDirectory:&isDirectory] && (isDirectory || isPakFileName(child)))
+      return true;
+  }
+  return false;
+}
+
+static NSString* findModsZipPayloadRoot(NSString* tempRoot) {
+  NSString* explicitMods = [tempRoot stringByAppendingPathComponent:@"mods"];
+  BOOL isDirectory = NO;
+  if ([NSFileManager.defaultManager fileExistsAtPath:explicitMods isDirectory:&isDirectory] && isDirectory)
+    return explicitMods;
+
+  NSArray<NSString*>* children = visibleDirectoryEntries(tempRoot);
+  if (children.count == 1) {
+    NSString* childPath = [tempRoot stringByAppendingPathComponent:children.firstObject];
+    if ([NSFileManager.defaultManager fileExistsAtPath:childPath isDirectory:&isDirectory] && isDirectory && directoryLooksLikeModsFolder(childPath))
+      return childPath;
+  }
+
+  return tempRoot;
 }
 
 static bool hasSavePayload(NSString* directory) {
@@ -822,6 +809,30 @@ static bool copyLocalTree(NSString* source, NSString* target) {
     return true;
   }
   return copyLocalFileToPathAtomic(source, target);
+}
+
+static void importAllModsFromLocalDirectory(NSString* sourceDirectory, NSString* targetModsDirectory, NSMutableArray<NSString*>* importedFiles) {
+  if (!sourceDirectory || !targetModsDirectory || !importedFiles)
+    return;
+
+  NSArray<NSString*>* entries = visibleDirectoryEntries(sourceDirectory);
+  NSFileManager* fm = NSFileManager.defaultManager;
+  for (NSString* entryName in entries) {
+    NSString* sourcePath = [sourceDirectory stringByAppendingPathComponent:entryName];
+    BOOL isDirectory = NO;
+    if (![fm fileExistsAtPath:sourcePath isDirectory:&isDirectory])
+      continue;
+
+    if (isDirectory) {
+      NSString* targetModRoot = uniqueTargetPath(targetModsDirectory, sanitizedFileName(entryName, @"mod_folder"), true);
+      if (copyLocalTree(sourcePath, targetModRoot))
+        [importedFiles addObject:targetModRoot];
+    } else if (isPakFileName(entryName)) {
+      NSString* targetPak = uniqueTargetPath(targetModsDirectory, sanitizedFileName(entryName, @"mod.pak"), false);
+      if (copyLocalFileToPathAtomic(sourcePath, targetPak))
+        [importedFiles addObject:targetPak];
+    }
+  }
 }
 
 static bool installSavePayload(NSString* payloadRoot, NSString* storageRoot) {
@@ -1027,7 +1038,7 @@ static NSArray<NSURL*>* presentOpenPicker(PickerMode mode) {
     if (@available(iOS 14.0, *)) {
 #if STAR_IOS_HAS_UNIFORM_TYPES
       if (mode == PickerMode::Folder)
-        picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:YES];
+        picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
       else
         picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData, UTTypeItem] asCopy:YES];
 #endif
@@ -1039,12 +1050,12 @@ static NSArray<NSURL*>* presentOpenPicker(PickerMode mode) {
 #else
       NSArray<NSString*>* types = mode == PickerMode::Folder ? @[(NSString*)kUTTypeFolder] : @[(NSString*)kUTTypeData, (NSString*)kUTTypeItem];
 #endif
-      UIDocumentPickerMode pickerMode = UIDocumentPickerModeImport;
+      UIDocumentPickerMode pickerMode = mode == PickerMode::Folder ? UIDocumentPickerModeOpen : UIDocumentPickerModeImport;
       picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:types inMode:pickerMode];
     }
 
     picker.delegate = delegate;
-    picker.allowsMultipleSelection = false;
+    picker.allowsMultipleSelection = mode == PickerMode::Folder;
     picker.modalPresentationStyle = UIModalPresentationFormSheet;
     picker.popoverPresentationController.sourceView = presenter.view;
     picker.popoverPresentationController.sourceRect = presenter.view.bounds;
@@ -1258,22 +1269,39 @@ extern "C" char** StarIosBridge_importSingleModFolder(char const* modsDirectory,
       if (!ensureDirectory(targetModsDirectory))
         return nullptr;
 
-      NSArray<NSURL*>* picked = presentOpenPicker(PickerMode::Folder);
+      NSArray<NSURL*>* picked = presentOpenPicker(PickerMode::File);
       NSURL* selected = picked.firstObject;
       if (!selected)
         return nullptr;
-
-      NSString* rootName = selected.lastPathComponent;
-      if (!rootName || rootName.length == 0)
-        rootName = @"mod_folder";
-
-      NSString* targetModRoot = uniqueTargetPath(targetModsDirectory, rootName, true);
-      if (!ensureDirectory(targetModRoot))
+      if (![[selected.pathExtension lowercaseString] isEqualToString:@"zip"])
         return nullptr;
 
       NSMutableArray<NSString*>* imported = [NSMutableArray array];
-      if (copyDirectoryUrlContents(selected, targetModRoot))
-        [imported addObject:targetModRoot];
+      NSFileManager* fm = NSFileManager.defaultManager;
+      long long stamp = (long long)(NSDate.date.timeIntervalSince1970 * 1000.0);
+      NSString* tempZip = [targetModsDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@".mod-folder-import-%lld.zip", stamp]];
+      NSString* tempRoot = [targetModsDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@".mod-folder-import-%lld", stamp]];
+
+      @try {
+        if (!streamCopyUrlToPathAtomic(selected, tempZip))
+          return nullptr;
+        if (!ensureDirectory(tempRoot))
+          return nullptr;
+        if (!unzipArchiveToRoot(tempZip, tempRoot))
+          return nullptr;
+
+        NSString* rootName = zipBaseNameForModFolder(selected);
+        NSString* payloadRoot = findSingleModZipPayloadRoot(tempRoot, &rootName);
+        if (!payloadRoot)
+          return nullptr;
+
+        NSString* targetModRoot = uniqueTargetPath(targetModsDirectory, rootName, true);
+        if (copyLocalTree(payloadRoot, targetModRoot))
+          [imported addObject:targetModRoot];
+      } @finally {
+        [fm removeItemAtPath:tempZip error:nil];
+        [fm removeItemAtPath:tempRoot error:nil];
+      }
 
       return copyImportedFileArray(imported, outCount);
     }
@@ -1297,13 +1325,33 @@ extern "C" char** StarIosBridge_importModsDirectory(char const* modsDirectory, i
       if (!ensureDirectory(targetModsDirectory))
         return nullptr;
 
-      NSArray<NSURL*>* picked = presentOpenPicker(PickerMode::Folder);
+      NSArray<NSURL*>* picked = presentOpenPicker(PickerMode::File);
       NSURL* selected = picked.firstObject;
       if (!selected)
         return nullptr;
+      if (![[selected.pathExtension lowercaseString] isEqualToString:@"zip"])
+        return nullptr;
 
       NSMutableArray<NSString*>* imported = [NSMutableArray array];
-      importAllModsFromFolderUrl(selected, targetModsDirectory, imported);
+      NSFileManager* fm = NSFileManager.defaultManager;
+      long long stamp = (long long)(NSDate.date.timeIntervalSince1970 * 1000.0);
+      NSString* tempZip = [targetModsDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@".mods-folder-import-%lld.zip", stamp]];
+      NSString* tempRoot = [targetModsDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@".mods-folder-import-%lld", stamp]];
+
+      @try {
+        if (!streamCopyUrlToPathAtomic(selected, tempZip))
+          return nullptr;
+        if (!ensureDirectory(tempRoot))
+          return nullptr;
+        if (!unzipArchiveToRoot(tempZip, tempRoot))
+          return nullptr;
+
+        NSString* payloadRoot = findModsZipPayloadRoot(tempRoot);
+        importAllModsFromLocalDirectory(payloadRoot, targetModsDirectory, imported);
+      } @finally {
+        [fm removeItemAtPath:tempZip error:nil];
+        [fm removeItemAtPath:tempRoot error:nil];
+      }
 
       return copyImportedFileArray(imported, outCount);
     }
