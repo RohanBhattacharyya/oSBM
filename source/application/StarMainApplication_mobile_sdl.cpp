@@ -3833,7 +3833,7 @@ private:
 #endif
 
     unsigned hwThreads = std::max(1u, std::thread::hardware_concurrency());
-    unsigned workerPoolSize = std::clamp(hwThreads > 2 ? hwThreads - 1 : hwThreads, 2u, 6u);
+    unsigned workerPoolSize = std::min(hwThreads, 2u);
 
     Json bootConfig = JsonObject{
       {"assetDirectories", JsonArray{bundledAssetsRoot, modsPath}},

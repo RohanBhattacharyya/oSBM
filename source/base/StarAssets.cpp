@@ -1280,10 +1280,20 @@ shared_ptr<Assets::AssetData> Assets::loadAsset(AssetId const& id) const {
       }
 
     } catch (StarException const& e) {
-      if (id.type == AssetType::Image && m_settings.missingImage) {
+      if (id.type == AssetType::Image && m_settings.missingImage && id.path.basePath != *m_settings.missingImage) {
         Logger::error("Could not load image asset '{}', using placeholder default.\n{}", id.path, outputException(e, false));
         assetData = loadImage({*m_settings.missingImage, {}, {}});
-      } else if (id.type == AssetType::Audio && m_settings.missingAudio) {
+      } else if (id.type == AssetType::Audio && m_settings.missingAudio && id.path.basePath != *m_settings.missingAudio) {
+        Logger::error("Could not load audio asset '{}', using placeholder default.\n{}", id.path, outputException(e, false));
+        assetData = loadAudio({*m_settings.missingAudio, {}, {}});
+      } else {
+        throw;
+      }
+    } catch (std::exception const& e) {
+      if (id.type == AssetType::Image && m_settings.missingImage && id.path.basePath != *m_settings.missingImage) {
+        Logger::error("Could not load image asset '{}', using placeholder default.\n{}", id.path, outputException(e, false));
+        assetData = loadImage({*m_settings.missingImage, {}, {}});
+      } else if (id.type == AssetType::Audio && m_settings.missingAudio && id.path.basePath != *m_settings.missingAudio) {
         Logger::error("Could not load audio asset '{}', using placeholder default.\n{}", id.path, outputException(e, false));
         assetData = loadAudio({*m_settings.missingAudio, {}, {}});
       } else {
