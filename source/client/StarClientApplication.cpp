@@ -1164,6 +1164,20 @@ void ClientApplication::updateModsWarning(float) {
 
 void ClientApplication::updateSplash(float dt) {
   m_cinematicOverlay->update(dt);
+  if (!m_rootLoader.isRunning()) {
+    if (m_rootLoader) {
+      try {
+        m_rootLoader.finish();
+      } catch (std::exception const& e) {
+        setError("Error loading game assets!", e);
+        return;
+      } catch (...) {
+        setError("Unknown error loading game assets!");
+        return;
+      }
+    }
+  }
+
   if (!m_rootLoader.isRunning() && (m_cinematicOverlay->completable() || m_cinematicOverlay->completed()))
     changeState(MainAppState::Title);
 }

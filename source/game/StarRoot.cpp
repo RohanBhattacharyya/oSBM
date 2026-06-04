@@ -57,7 +57,11 @@ namespace Star {
 
 namespace {
   unsigned const RootMaintenanceSleep = 5000;
+#if STAR_PLATFORM_MOBILE
+  unsigned const RootLoadThreads = 1;
+#else
   unsigned const RootLoadThreads = 4;
+#endif
 }
 
 Root* Root::singletonPtr() {
@@ -315,6 +319,7 @@ void Root::loadMods(StringList modDirectories, bool _reload) {
 }
 
 void Root::fullyLoad() {
+  Logger::info("Root: Loading everything with {} worker thread(s)", RootLoadThreads);
   auto workerPool = WorkerPool("Root::fullyLoad", RootLoadThreads);
   List<WorkerPoolHandle> loaders;
 
