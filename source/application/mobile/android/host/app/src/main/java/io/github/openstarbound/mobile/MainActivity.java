@@ -1505,16 +1505,13 @@ public final class MainActivity extends SDLActivity {
 
             boolean opensbOk = copyAssetTreeIfMissing(activity, "opensb", new File(targetRoot, "opensb"));
             boolean langOk = copyAssetTreeIfMissing(activity, "lang", new File(targetRoot, "lang"));
-            boolean fontLauncherOk = copyAssetTreeIfMissing(activity, "launcher_cn.ttf", new File(targetRoot, "launcher_cn.ttf"));
-            boolean fontGameOk = copyAssetTreeIfMissing(activity, "opensb/hobo.ttf", new File(targetRoot, "hobo.ttf"));
+            boolean fontOk = copyAssetTreeIfMissing(activity, "opensb/hobo.ttf", new File(targetRoot, "hobo.ttf"));
             Log.i(TAG, "syncBundledAssets: root=" + targetRoot.getAbsolutePath()
                 + " opensbOk=" + opensbOk
                 + " langOk=" + langOk
-                + " fontLauncherOk=" + fontLauncherOk
-                + " fontGameOk=" + fontGameOk
+                + " fontOk=" + fontOk
                 + " langExists=" + new File(targetRoot, "lang/zh_CN.lang").isFile()
-                + " launcherFontExists=" + new File(targetRoot, "launcher_cn.ttf").isFile()
-                + " gameFontExists=" + new File(targetRoot, "hobo.ttf").isFile());
+                + " fontExists=" + new File(targetRoot, "hobo.ttf").isFile());
             if (!opensbOk) {
                 return null;
             }
