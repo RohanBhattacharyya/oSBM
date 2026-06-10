@@ -98,6 +98,7 @@ char const* const LauncherLangDirectory = "lang";
 char const* const DefaultLauncherLocale = "en_US";
 char const* const SystemLocaleMarker = "__system__";
 char const* const PreferredLauncherFontPath = "hobo.ttf";
+char const* const BundledLauncherFontPath = "opensb/hobo.ttf";
 
 #ifdef STAR_SYSTEM_ANDROID
 void androidLogInfo(char const* fmt, ...);
@@ -231,6 +232,30 @@ String loadPreferredLauncherLocale() {
 #else
   return DefaultLauncherLocale;
 #endif
+}
+
+String resolveLauncherLocaleChoice(String const& localeChoice) {
+  auto choice = localeChoice.trim();
+  if (choice.empty() || choice == SystemLocaleMarker)
+    return loadPreferredLauncherLocale();
+  return normalizeLauncherLocale(choice);
+}
+
+std::vector<String> launcherCjkFontCandidates() {
+  return {
+#ifdef STAR_SYSTEM_ANDROID
+    "/system/fonts/NotoSansCJK-Regular.ttc",
+    "/system/fonts/NotoSansSC-Regular.otf",
+    "/system/fonts/NotoSansHans-Regular.otf",
+    "/system/fonts/DroidSansFallback.ttf",
+    "/system/fonts/SourceHanSansCN-Regular.otf",
+#elif defined(STAR_SYSTEM_IOS)
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/LanguageSupport/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+#endif
+  };
 }
 
 #ifdef STAR_SYSTEM_ANDROID
@@ -2938,8 +2963,7 @@ private:
   }
 
   void reloadLauncherLocalization(String const& preferredLocale = {}) {
-    String locale = preferredLocale.empty() ? loadPreferredLauncherLocale() : preferredLocale;
-    m_launcherLocale = normalizeLauncherLocale(locale);
+    m_launcherLocale = resolveLauncherLocaleChoice(preferredLocale);
     if (!File::isDirectory(m_launcherLangDirectory))
       m_launcherLangDirectory = File::relativeTo(m_storageRoot, strf("bundled_assets/{}", LauncherLangDirectory));
 
@@ -2967,8 +2991,11 @@ private:
       fontPath = m_launcherFontPath;
     } else {
       fontPath = File::relativeTo(m_storageRoot, strf("bundled_assets/{}", PreferredLauncherFontPath));
-      if (!File::isFile(fontPath))
-        fontPath.clear();
+      if (!File::isFile(fontPath)) {
+        fontPath = File::relativeTo(m_storageRoot, strf("bundled_assets/{}", BundledLauncherFontPath));
+        if (!File::isFile(fontPath))
+          fontPath.clear();
+      }
     }
 
     m_launcherFontData.clear();
@@ -2976,11 +3003,28 @@ private:
       m_launcherFontData = File::readFile(fontPath);
       ImFontConfig config{};
       config.FontDataOwnedByAtlas = false;
-      io.Fonts->AddFontFromMemoryTTF(m_launcherFontData.ptr(), (int)m_launcherFontData.size(), 18.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
+      io.Fonts->AddFontFromMemoryTTF(m_launcherFontData.ptr(), (int)m_launcherFontData.size(), 18.0f, &config);
     }
 
     if (io.Fonts->Fonts.empty())
       io.Fonts->AddFontDefault();
+
+    m_launcherFallbackFontData.clear();
+    for (auto const& candidate : launcherCjkFontCandidates()) {
+      if (!File::isFile(candidate))
+        continue;
+
+      m_launcherFallbackFontData.push_back(File::readFile(candidate));
+      auto& fontData = m_launcherFallbackFontData.back();
+      ImFontConfig config{};
+      config.FontDataOwnedByAtlas = false;
+      config.MergeMode = true;
+      if (io.Fonts->AddFontFromMemoryTTF(fontData.ptr(), (int)fontData.size(), 18.0f, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon())) {
+        androidLogInfo("Loaded launcher CJK fallback font: %s", candidate.utf8Ptr());
+        break;
+      }
+      m_launcherFallbackFontData.pop_back();
+    }
   }
 
   void reloadLauncherFontAtlas() {
@@ -3015,12 +3059,8 @@ private:
         };
       }
     }
-    String savedLocale = config.queryString("launcherUi.locale", "");
-    if (savedLocale == SystemLocaleMarker) {
-      state.locale = loadPreferredLauncherLocale();
-    } else {
-      state.locale = normalizeLauncherLocale(savedLocale.empty() ? loadPreferredLauncherLocale() : savedLocale);
-    }
+    String savedLocale = config.queryString("launcherUi.locale", SystemLocaleMarker);
+    state.locale = savedLocale.empty() || savedLocale == SystemLocaleMarker ? String(SystemLocaleMarker) : normalizeLauncherLocale(savedLocale);
     state.systemLocale = loadPreferredLauncherLocale();
     reloadLauncherLocalization(state.locale);
     reloadLauncherFontAtlas();
@@ -3311,7 +3351,6 @@ private:
     if (ImGui::Button(launcherText("common.save", "Save").utf8Ptr())) {
       persistLauncherState(state);
       reloadLauncherLocalization(state.locale);
-      reloadLauncherFontAtlas();
     }
 
     std::vector<pair<String, String>> localeChoices{
@@ -3334,7 +3373,7 @@ private:
         if (ImGui::Selectable(localeChoices[i].first.utf8Ptr(), selected)) {
           state.locale = localeChoices[i].second;
           reloadLauncherLocalization(state.locale);
-          reloadLauncherFontAtlas();
+          persistLauncherState(state);
         }
         if (selected)
           ImGui::SetItemDefaultFocus();
@@ -5035,6 +5074,7 @@ private:
   String m_launcherFontPath;
   StringMap<String> m_launcherTranslations;
   ByteArray m_launcherFontData;
+  std::vector<ByteArray> m_launcherFallbackFontData;
   LauncherUiConfig m_launcherUiConfig;
 
   TickRateApproacher m_updateTicker{60.0f, 1.0f};

@@ -115,10 +115,14 @@ IF (STAR_SYSTEM_IOS)
 
   SET(STAR_IOS_BUNDLE_ASSETS_SOURCE "${PROJECT_SOURCE_DIR}/../assets/opensb")
   SET(STAR_IOS_BUNDLE_ASSETS_DEST "$<TARGET_BUNDLE_DIR:starbound>/assets/opensb")
+  SET(STAR_IOS_BUNDLE_LANG_SOURCE "${PROJECT_SOURCE_DIR}/application/mobile/android/host/app/src/main/assets/lang")
+  SET(STAR_IOS_BUNDLE_LANG_DEST "$<TARGET_BUNDLE_DIR:starbound>/assets/lang")
 
   ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_BUNDLE_ASSETS_DEST}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${STAR_IOS_BUNDLE_ASSETS_SOURCE}" "${STAR_IOS_BUNDLE_ASSETS_DEST}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_BUNDLE_LANG_DEST}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${STAR_IOS_BUNDLE_LANG_SOURCE}" "${STAR_IOS_BUNDLE_LANG_DEST}"
     COMMENT "Copying OpenStarbound bundled assets into iOS app bundle"
     VERBATIM
   )

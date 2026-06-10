@@ -1141,6 +1141,21 @@ extern "C" char* StarIosBridge_syncBundledAssets(char const* targetRootDirectory
       if (!copyBundleTreeIfMissing(sourceOpensb, targetOpensb))
         return nullptr;
 
+      NSString* resourcePath = NSBundle.mainBundle.resourcePath;
+      NSArray<NSString*>* langCandidates = @[
+        [resourcePath stringByAppendingPathComponent:@"assets/lang"],
+        [resourcePath stringByAppendingPathComponent:@"lang"]
+      ];
+      for (NSString* sourceLang in langCandidates) {
+        BOOL isDirectory = NO;
+        if ([NSFileManager.defaultManager fileExistsAtPath:sourceLang isDirectory:&isDirectory] && isDirectory) {
+          NSString* targetLang = [targetRoot stringByAppendingPathComponent:@"lang"];
+          if (!copyBundleTreeIfMissing(sourceLang, targetLang))
+            return nullptr;
+          break;
+        }
+      }
+
       return copyCString(targetRoot);
     }
   } @catch (NSException* exception) {

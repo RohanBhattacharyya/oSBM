@@ -1505,7 +1505,7 @@ public final class MainActivity extends SDLActivity {
 
             boolean opensbOk = copyAssetTreeIfMissing(activity, "opensb", new File(targetRoot, "opensb"));
             boolean langOk = copyAssetTreeIfMissing(activity, "lang", new File(targetRoot, "lang"));
-            boolean fontOk = copyAssetTreeIfMissing(activity, "hobo.ttf", new File(targetRoot, "hobo.ttf"));
+            boolean fontOk = copyAssetTreeIfMissing(activity, "opensb/hobo.ttf", new File(targetRoot, "hobo.ttf"));
             Log.i(TAG, "syncBundledAssets: root=" + targetRoot.getAbsolutePath()
                 + " opensbOk=" + opensbOk
                 + " langOk=" + langOk
