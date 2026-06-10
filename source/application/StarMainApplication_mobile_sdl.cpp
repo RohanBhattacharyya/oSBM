@@ -820,6 +820,8 @@ struct MobileTouchConfig {
   float gyroSensitivity = 1.0f;
   bool gyroInvertX = false;
   bool gyroInvertY = false;
+  bool rightStickSmartKeyEnabled = false;
+  MouseButton rightStickSmartKeyMouseButton = MouseButton::Left;
 };
 
 enum class MobileTouchElementKind {
@@ -967,6 +969,7 @@ static std::vector<MobileTouchElement> defaultTouchElements() {
     {"joystick", launcherTextStatic("touchElement.joystick", "Joystick"), MobileTouchElementKind::Joystick, true, {0.14f, 0.78f}, 1.15f, keyAction(Key::Space), {}, {}, {}, {}},
     {"aimJoystick", launcherTextStatic("touchElement.aimJoystick", "Aim"), MobileTouchElementKind::AimJoystick, true, {0.66f, 0.78f}, 1.15f, noneAction(), {}, {}, {}, {}},
     {"leftHand", launcherTextStatic("touchElement.leftHand", "L"), MobileTouchElementKind::Button, true, {0.30f, 0.16f}, 0.92f, mouseAction(MouseButton::Left), {}, {}, {}, {}},
+    {"smartKeyManualAuto", launcherTextStatic("touchElement.smartKeyManualAuto", "Smart"), MobileTouchElementKind::Button, true, {0.47f, 0.16f}, 0.82f, mouseAction(MouseButton::Right), {}, {}, {}, {}, MobileTouchPressMode::Toggle},
     {"rightHand", launcherTextStatic("touchElement.rightHand", "R"), MobileTouchElementKind::Button, true, {0.64f, 0.16f}, 0.92f, mouseAction(MouseButton::Right), {}, {}, {}, {}},
     {"jump", launcherTextStatic("touchElement.jump", "J"), MobileTouchElementKind::Button, true, {0.88f, 0.78f}, 1.00f, keyAction(Key::Space), {}, {}, {}, {}},
     {"interact", launcherTextStatic("touchElement.interact", "E"), MobileTouchElementKind::Button, true, {0.76f, 0.73f}, 0.92f, keyAction(Key::E), {}, {}, {}, {}},
@@ -1394,7 +1397,30 @@ public:
       } else {
         bool held = heldElement(element.id)
             || (element.action.kind == MobileTouchActionKind::GyroToggle && m_gyroAvailable && m_config.gyroEnabled && m_gyroRuntimeEnabled);
-        drawButton(draw, ip(center), drawRadius * 0.55f, held, element.label.utf8Ptr(), base, fill);
+        char const* label = element.label.utf8Ptr();
+        ImU32 buttonFill = fill;
+        if (element.id == "smartKeyManualAuto") {
+          held = m_config.rightStickSmartKeyEnabled;
+          if (held) {
+            label = launcherTextStatic("touchElement.smartKeyManualAuto.on", "Smart").utf8Ptr();
+            buttonFill = IM_COL32(60, 200, 80, (int)(140.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
+          } else {
+            label = launcherTextStatic("touchElement.smartKeyManualAuto.off", "Manual").utf8Ptr();
+          }
+        } else if (element.id == "rightHand" && m_config.rightStickSmartKeyEnabled) {
+          MouseButton smartButton = m_config.rightStickSmartKeyMouseButton;
+          held = (smartButton == MouseButton::Right);
+          if (held) {
+            buttonFill = IM_COL32(220, 60, 60, (int)(140.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
+          }
+        } else if (element.id == "leftHand" && m_config.rightStickSmartKeyEnabled) {
+          MouseButton smartButton = m_config.rightStickSmartKeyMouseButton;
+          held = (smartButton == MouseButton::Left);
+          if (held) {
+            buttonFill = IM_COL32(60, 130, 220, (int)(140.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
+          }
+        }
+        drawButton(draw, ip(center), drawRadius * 0.55f, held, label, base, buttonFill);
       }
     }
   }
@@ -1627,6 +1653,9 @@ private:
         m_aimJoystickCurrent = pos;
         ensureAimTarget();
         updateAimJoystickFinger(state, pos);
+        if (m_config.rightStickSmartKeyEnabled) {
+          setMouseOwner(m_aimJoystickElementId, m_config.rightStickSmartKeyMouseButton, true);
+        }
         claimedControl = true;
         break;
       }
@@ -1731,6 +1760,9 @@ private:
         if (m_aimJoystickActive && !aimJoystickPrecise())
           syncVirtualAimCursor(true, true);
         m_aimJoystickActive = false;
+        if (m_config.rightStickSmartKeyEnabled) {
+          setMouseOwner(m_aimJoystickElementId, m_config.rightStickSmartKeyMouseButton, false);
+        }
         m_aimJoystickElementId.clear();
         m_aimJoystickFinger = 0;
         m_aimVec = {};
@@ -2060,6 +2092,35 @@ private:
 
   void pressActionButton(MobileTouchElement const& element) {
     m_heldElements.add(element.id);
+
+    if ((element.id == "leftHand" || element.id == "rightHand") && m_config.rightStickSmartKeyEnabled) {
+      MouseButton newButton = (element.id == "leftHand") ? MouseButton::Left : MouseButton::Right;
+      if (m_config.rightStickSmartKeyMouseButton != newButton) {
+        MouseButton oldButton = m_config.rightStickSmartKeyMouseButton;
+        m_config.rightStickSmartKeyMouseButton = newButton;
+        if (m_aimJoystickActive) {
+          setMouseOwner(m_aimJoystickElementId, oldButton, false);
+          setMouseOwner(m_aimJoystickElementId, newButton, true);
+        }
+      } else if (m_aimJoystickActive) {
+        setMouseOwner(m_aimJoystickElementId, newButton, false);
+        setMouseOwner(m_aimJoystickElementId, newButton, true);
+      }
+      return;
+    }
+
+    if (element.id == "smartKeyManualAuto") {
+      m_config.rightStickSmartKeyEnabled = !m_config.rightStickSmartKeyEnabled;
+      if (m_config.rightStickSmartKeyEnabled) {
+        if (m_aimJoystickActive)
+          setMouseOwner(m_aimJoystickElementId, m_config.rightStickSmartKeyMouseButton, true);
+      } else {
+        if (m_aimJoystickActive)
+          setMouseOwner(m_aimJoystickElementId, m_config.rightStickSmartKeyMouseButton, false);
+      }
+      return;
+    }
+
     if (element.action.kind == MobileTouchActionKind::GyroToggle) {
       if (m_gyroAvailable && m_config.gyroEnabled) {
         m_gyroRuntimeEnabled = !m_gyroRuntimeEnabled;
@@ -2090,6 +2151,14 @@ private:
 
   void releaseActionButton(FingerState const& state) {
     m_heldElements.remove(state.elementId);
+
+    if ((state.elementId == "leftHand" || state.elementId == "rightHand") && m_config.rightStickSmartKeyEnabled) {
+      MouseButton releasedButton = (state.elementId == "leftHand") ? MouseButton::Left : MouseButton::Right;
+      if (m_aimJoystickActive)
+        setMouseOwner(m_aimJoystickElementId, releasedButton, false);
+      return;
+    }
+
     if (state.pressMode == MobileTouchPressMode::Hold)
       setAction(state.action, state.elementId, false);
     else if (state.pressMode == MobileTouchPressMode::Repeat) {
@@ -3092,6 +3161,8 @@ private:
     state.touchConfig.gyroSensitivity = config.queryFloat("touch.gyroSensitivity", 1.0f);
     state.touchConfig.gyroInvertX = config.queryBool("touch.gyroInvertX", false);
     state.touchConfig.gyroInvertY = config.queryBool("touch.gyroInvertY", false);
+    state.touchConfig.rightStickSmartKeyEnabled = config.queryBool("touch.rightStickSmartKeyEnabled", false);
+    state.touchConfig.rightStickSmartKeyMouseButton = (MouseButton)config.queryInt("touch.rightStickSmartKeyMouseButton", (int)MouseButton::Left);
     state.touchElements = touchElementsFromConfig(config);
 
     state.canLaunch = File::isFile(state.packedPakPath);
@@ -3486,6 +3557,11 @@ private:
           state.selectedTouchElement = i;
         if (selected) {
           ImGui::Indent();
+          if (element.id == "smartKeyManualAuto") {
+            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s",
+              launcherText("touchManager.smartKeyManualAutoHint", "Smart Key: toggles Right Stick Smart Key mode. L = Left, R = Right.").utf8Ptr());
+            ImGui::Separator();
+          }
           if (state.touchLabelBufferElementId != element.id) {
             state.touchLabelBufferElementId = element.id;
             std::snprintf(state.touchLabelBuffer, sizeof(state.touchLabelBuffer), "%s", element.label.utf8Ptr());
@@ -4119,6 +4195,8 @@ private:
         {"gyroSensitivity", state.touchConfig.gyroSensitivity},
         {"gyroInvertX", state.touchConfig.gyroInvertX},
         {"gyroInvertY", state.touchConfig.gyroInvertY},
+        {"rightStickSmartKeyEnabled", state.touchConfig.rightStickSmartKeyEnabled},
+        {"rightStickSmartKeyMouseButton", (int)state.touchConfig.rightStickSmartKeyMouseButton},
         {"elements", jsonFromTouchElements(state.touchElements)}
       }}
     };
@@ -4186,6 +4264,8 @@ private:
             {"gyroSensitivity", state.touchConfig.gyroSensitivity},
             {"gyroInvertX", state.touchConfig.gyroInvertX},
             {"gyroInvertY", state.touchConfig.gyroInvertY},
+            {"rightStickSmartKeyEnabled", state.touchConfig.rightStickSmartKeyEnabled},
+            {"rightStickSmartKeyMouseButton", (int)state.touchConfig.rightStickSmartKeyMouseButton},
             {"elements", jsonFromTouchElements(state.touchElements)},
             {"invertLook", false}
           }}
