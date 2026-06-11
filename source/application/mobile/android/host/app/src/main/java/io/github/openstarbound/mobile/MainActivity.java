@@ -73,6 +73,8 @@ public final class MainActivity extends SDLActivity {
     private static String sPickedPakResult;
     private static ArrayList<String> sImportedMods;
     private static boolean sSaveImportResult;
+    private static boolean sGameStarted = false;
+    private static boolean sForceLandscape = false;
     private OnBackInvokedCallback mBackCallback;
 
     @Override
@@ -83,43 +85,39 @@ public final class MainActivity extends SDLActivity {
 
     public static native void onNativeGyroAim(float x, float y, float z);
 
+    public static void setGameStarting(boolean forceLandscape) {
+        sGameStarted = true;
+        sForceLandscape = forceLandscape;
+        if (sInstance != null) {
+            if (sForceLandscape) {
+                sInstance.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE);
+            } else {
+                sInstance.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_USER);
+            }
+        }
+    }
+
+    public static void resetGameStarted() {
+        sGameStarted = false;
+        sForceLandscape = false;
+        if (sInstance != null) {
+            sInstance.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_USER);
+        }
+    }
+
     @Override
     public void setOrientationBis(int w, int h, boolean resizable, String hint) {
         if (w <= 1 || h <= 1) {
             return;
         }
-
-        boolean allowLandscapeLeft = hint.contains("LandscapeLeft");
-        boolean allowLandscapeRight = hint.contains("LandscapeRight");
-        boolean allowPortrait = hint.contains("Portrait ") || hint.endsWith("Portrait");
-        boolean allowPortraitUpsideDown = hint.contains("PortraitUpsideDown");
-        boolean allowLandscapeFamily = allowLandscapeLeft || allowLandscapeRight;
-        boolean allowPortraitFamily = allowPortrait || allowPortraitUpsideDown;
-
-        int requestedOrientation;
-        if (allowLandscapeFamily && allowPortraitFamily) {
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
-        } else if (allowLandscapeFamily) {
-            requestedOrientation = allowLandscapeLeft && allowLandscapeRight
-                ? ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
-                : allowLandscapeLeft
-                    ? ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                    : ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE;
-        } else if (allowPortraitFamily) {
-            requestedOrientation = allowPortrait && allowPortraitUpsideDown
-                ? ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
-                : allowPortrait
-                    ? ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                    : ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT;
-        } else if (resizable) {
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
-        } else {
-            requestedOrientation = w > h
-                ? ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
-                : ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT;
+        // During launcher phase, never lock orientation.
+        if (!sGameStarted) {
+            return;
         }
-
-        setRequestedOrientation(requestedOrientation);
+        // During game phase, apply forceLandscape setting stored by setGameStarting().
+        if (sForceLandscape) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE);
+        }
     }
 
     @Override
@@ -131,7 +129,6 @@ public final class MainActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         sInstance = this;
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE);
         super.onCreate(savedInstanceState);
         applyStableDisplayConfig();
 
@@ -145,6 +142,11 @@ public final class MainActivity extends SDLActivity {
                 mBackCallback
             );
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
     }
 
     @Override

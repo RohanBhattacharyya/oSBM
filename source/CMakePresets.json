@@ -38,7 +38,7 @@
       "displayName": "Windows x64",
       "binaryDir": "${sourceParentDir}/build/windows-release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "x64-windows-mixed-md",
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
         "CMAKE_INCLUDE_PATH": "${sourceParentDir}/lib/windows/include",
@@ -65,7 +65,7 @@
       "binaryDir": "${sourceParentDir}/build/linux-release",
       "cacheVariables": {
         "CMAKE_MAKE_PROGRAM": "ninja",
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "x64-linux-mixed",
         "CMAKE_INCLUDE_PATH": "${sourceParentDir}/lib/linux/include",
         "CMAKE_LIBRARY_PATH": "${sourceParentDir}/lib/linux",
@@ -88,7 +88,7 @@
       "displayName": "Linux Clang x64",
       "binaryDir": "${sourceParentDir}/build/linux-release-clang",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
         "VCPKG_TARGET_TRIPLET": "x64-linux-mixed-clang",
@@ -133,7 +133,7 @@
       "description": "Android-first mobile preset. Requires ANDROID_NDK_HOME and may need local toolchain tweaks.",
       "binaryDir": "${sourceParentDir}/build/android-arm64-debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_SYSTEM_NAME": "Android",
         "CMAKE_SYSTEM_VERSION": "28",
         "CMAKE_ANDROID_NDK": "$env{ANDROID_NDK_HOME}",

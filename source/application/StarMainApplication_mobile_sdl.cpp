@@ -1175,6 +1175,7 @@ struct LauncherState {
   String packedPakPath;
   String lastError;
   String lastStatus;
+  bool forceLandscape = false;
   LauncherUiConfig uiConfig;
   String locale;
   String systemLocale;
@@ -2396,7 +2397,35 @@ public:
       m_runtimeExitReason.clear();
       try {
         androidLogInfo("Entering game loop");
+#ifdef STAR_SYSTEM_ANDROID
+        {
+          JNIEnv* env = reinterpret_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+          if (env) {
+            jclass cls = env->FindClass("io/github/openstarbound/mobile/MainActivity");
+            if (cls) {
+              jmethodID setGameStartingMethod = env->GetStaticMethodID(cls, "setGameStarting", "(Z)V");
+              if (setGameStartingMethod)
+                env->CallStaticVoidMethod(cls, setGameStartingMethod, launcher.forceLandscape ? JNI_TRUE : JNI_FALSE);
+              env->DeleteLocalRef(cls);
+            }
+          }
+        }
+#endif
         runGameLoop();
+#ifdef STAR_SYSTEM_ANDROID
+        {
+          JNIEnv* env = reinterpret_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+          if (env) {
+            jclass cls = env->FindClass("io/github/openstarbound/mobile/MainActivity");
+            if (cls) {
+              jmethodID resetGameStartedMethod = env->GetStaticMethodID(cls, "resetGameStarted", "()V");
+              if (resetGameStartedMethod)
+                env->CallStaticVoidMethod(cls, resetGameStartedMethod);
+              env->DeleteLocalRef(cls);
+            }
+          }
+        }
+#endif
       } catch (std::exception const& e) {
         auto message = strf("{}", outputException(e, true));
         Logger::error("Runtime loop failed: {}", message);
@@ -3095,6 +3124,7 @@ private:
     state.touchElements = touchElementsFromConfig(config);
 
     state.canLaunch = File::isFile(state.packedPakPath);
+    state.forceLandscape = config.queryBool("forceLandscape", false);
     state.lastStatus = state.canLaunch ? launcherText("status.packedPakReady", "Using existing packed.pak") : launcherText("status.packedPakMissing", "Please import packed.pak");
   }
 
@@ -4053,6 +4083,8 @@ private:
       ImGui::Text("%s: %s", launcherText("launcher.touchControlsStatusLabel", "Touch Controls").utf8Ptr(), state.touchConfig.enabled ? launcherText("common.enabled", "enabled").utf8Ptr() : launcherText("common.disabled", "disabled").utf8Ptr());
 
       state.canLaunch = File::isFile(state.packedPakPath);
+      ImGui::Checkbox(launcherText("launcher.forceLandscape", "Force landscape orientation for game").utf8Ptr(), &state.forceLandscape);
+
       if (!state.canLaunch)
         ImGui::TextColored(ImVec4(1, 0.6f, 0.4f, 1), "%s", launcherText("launcher.launchDisabledHint", "Launch is disabled until packed.pak is imported.").utf8Ptr());
 
@@ -4100,6 +4132,7 @@ private:
   void persistLauncherState(LauncherState const& state) {
     Json config = JsonObject{
       {"packedPakPath", state.packedPakPath},
+      {"forceLandscape", state.forceLandscape},
       {"launcherUi", JsonObject{
         {"scale", state.uiConfig.scale},
         {"locale", state.locale},

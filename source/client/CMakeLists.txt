@@ -88,12 +88,22 @@ IF (STAR_SYSTEM_ANDROID)
       )
     endif()
   else()
-    ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_ANDROID_JNI_LIB_DIR}"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:starbound>" "${STAR_ANDROID_JNI_LIB_DIR}/libmain.so"
-      COMMENT "Copying libmain.so into Android host jniLibs"
-      VERBATIM
-    )
+    if(CMAKE_STRIP)
+      ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_ANDROID_JNI_LIB_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:starbound>" "${STAR_ANDROID_JNI_LIB_DIR}/libmain.so"
+        COMMAND ${CMAKE_STRIP} --strip-debug "${STAR_ANDROID_JNI_LIB_DIR}/libmain.so"
+        COMMENT "Copying and stripping libmain.so into Android host jniLibs"
+        VERBATIM
+      )
+    else()
+      ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_ANDROID_JNI_LIB_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:starbound>" "${STAR_ANDROID_JNI_LIB_DIR}/libmain.so"
+        COMMENT "Copying libmain.so into Android host jniLibs (strip unavailable)"
+        VERBATIM
+      )
+    endif()
   endif()
 ENDIF ()
 

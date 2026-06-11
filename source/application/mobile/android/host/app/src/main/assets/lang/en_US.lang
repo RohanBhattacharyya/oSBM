@@ -13,6 +13,7 @@ launcher.touchControlsStatusLabel=Touch Controls
 launcher.exportDiagnostics=Export Diagnostics
 launcher.launchDisabledHint=Launch is disabled until packed.pak is imported.
 launcher.launch=Launch
+launcher.forceLandscape=Force landscape orientation for game
 uiSettings.title=Launcher UI Settings
 uiSettings.language=Language
 uiSettings.language.system=System default
