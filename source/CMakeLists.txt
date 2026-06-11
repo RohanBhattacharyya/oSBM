@@ -756,12 +756,17 @@ if(STAR_BUILD_GUI)
     endif()
 
     if(CMAKE_HOST_WIN32)
+      if(STAR_ANDROID_SDL3_JAR)
+        set(SDL3_ENV_PREFIX "STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR} ")
+      else()
+        set(SDL3_ENV_PREFIX "")
+      endif()
       add_custom_target(android_apk ALL
         COMMAND ${CMAKE_COMMAND} -E env
           ANDROID_NDK_HOME=$ENV{ANDROID_NDK_HOME}
           ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
           GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
-          STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
+          ${SDL3_ENV_PREFIX}
           cmd /c "if exist \"${STAR_ANDROID_GRADLE_WRAPPER_BAT}\" (call \"${STAR_ANDROID_GRADLE_WRAPPER_BAT}\" -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}) else (gradle.bat -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK})"
         DEPENDS starbound
         WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
@@ -769,12 +774,17 @@ if(STAR_BUILD_GUI)
         VERBATIM
       )
     else()
+      if(STAR_ANDROID_SDL3_JAR)
+        set(SDL3_ENV_PREFIX "STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR} ")
+      else()
+        set(SDL3_ENV_PREFIX "")
+      endif()
       add_custom_target(android_apk ALL
         COMMAND ${CMAKE_COMMAND} -E env
           ANDROID_NDK_HOME=$ENV{ANDROID_NDK_HOME}
           ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
           GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
-          STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
+          ${SDL3_ENV_PREFIX}
           bash -lc "if [ -z \"${JAVA_HOME}\" ]; then export JAVA_HOME=\"$(dirname \"$(dirname \"$(readlink -f \"$(command -v javac)\")\")\")\"; fi; if [ -x \"${STAR_ANDROID_GRADLE_WRAPPER}\" ]; then \"${STAR_ANDROID_GRADLE_WRAPPER}\" -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; elif command -v gradle >/dev/null 2>&1; then gradle -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; else echo \"Android packaging requires Gradle. Install 'gradle' or add a wrapper at ${STAR_ANDROID_GRADLE_WRAPPER}.\" >&2; exit 1; fi"
         DEPENDS starbound
         WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
