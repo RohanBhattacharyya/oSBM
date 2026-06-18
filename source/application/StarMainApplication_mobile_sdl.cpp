@@ -2856,11 +2856,22 @@ private:
 
     auto& colors = style.Colors;
     auto const& accent = m_launcherUiConfig.accentColor;
-    // WindowBg is the large "void" that fills the launcher body and any other
-    // top-level window; StyleColorsDark leaves it as a near-black grey that
-    // ignores the picked accent. Tint it very slightly so a red accent reads
-    // as a dim warm background instead of staying neutral black.
-    colors[ImGuiCol_WindowBg] = launcherSlotColor(accent, 0.06f, 1.0f);
+
+    // Big container backgrounds (window body, child panels, title bar, menu
+    // bar, popup backdrop, scrollbar backdrop, idle tabs) are left at the
+    // neutral values StyleColorsDark sets up. Tinting them with the picked
+    // accent makes the whole launcher read as a colored wash instead of a
+    // dark UI with accent highlights, so we keep them as the original dark
+    // grey scale.
+    colors[ImGuiCol_Border] = launcherSlotColor(accent, 0.12f, 0.55f);
+    colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_ResizeGrip] = ImVec4(1, 1, 1, 0.10f);
+    colors[ImGuiCol_ResizeGripHovered] = ImVec4(1, 1, 1, 0.20f);
+    colors[ImGuiCol_ResizeGripActive] = ImVec4(1, 1, 1, 0.30f);
+
+    // Interactive accents. These are the only colors that should carry the
+    // picked accent, so picking red actually shows red on buttons/headers
+    // and leaves the surrounding panels neutral.
     colors[ImGuiCol_Button] = launcherColor(accent, 0.62f);
     colors[ImGuiCol_ButtonHovered] = launcherColorScaled(accent, 1.15f, 0.86f);
     colors[ImGuiCol_ButtonActive] = launcherColorScaled(accent, 0.82f, 0.96f);
@@ -2870,49 +2881,37 @@ private:
     colors[ImGuiCol_CheckMark] = launcherColorScaled(accent, 1.20f, 1.0f);
     colors[ImGuiCol_SliderGrab] = launcherColorScaled(accent, 1.10f, 0.82f);
     colors[ImGuiCol_SliderGrabActive] = launcherColorScaled(accent, 1.25f, 1.0f);
+    // Small slot colors (input field, checkbox, scrollbar grab, separator,
+    // table borders/rows) get a small accent mix so they read as part of
+    // the same color family as the background, while the interactive
+    // hover/active states go full accent for clear feedback.
+    colors[ImGuiCol_Separator] = launcherSlotColor(accent, 0.15f, 0.35f);
     colors[ImGuiCol_SeparatorActive] = launcherColor(accent, 0.85f);
     colors[ImGuiCol_SeparatorHovered] = launcherColor(accent, 0.65f);
-
-    // Derive the remaining "slot" colors from accent so picking red doesn't
-    // leave blue frames/borders/scrollbars behind.
-    colors[ImGuiCol_Border] = launcherSlotColor(accent, 0.35f, 0.55f);
-    colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
-    colors[ImGuiCol_FrameBg] = launcherSlotColor(accent, 0.25f, 0.55f);
-    colors[ImGuiCol_FrameBgHovered] = launcherSlotColor(accent, 0.45f, 0.70f);
-    colors[ImGuiCol_FrameBgActive] = launcherSlotColor(accent, 0.60f, 0.85f);
-    colors[ImGuiCol_TitleBg] = launcherSlotColor(accent, 0.20f, 1.0f);
-    colors[ImGuiCol_TitleBgActive] = launcherSlotColor(accent, 0.35f, 1.0f);
-    colors[ImGuiCol_MenuBarBg] = launcherSlotColor(accent, 0.20f, 1.0f);
-    colors[ImGuiCol_ScrollbarBg] = launcherSlotColor(accent, 0.10f, 0.55f);
-    colors[ImGuiCol_ScrollbarGrab] = launcherSlotColor(accent, 0.45f, 0.80f);
-    colors[ImGuiCol_ScrollbarGrabHovered] = launcherSlotColor(accent, 0.60f, 0.90f);
-    colors[ImGuiCol_ScrollbarGrabActive] = launcherSlotColor(accent, 0.80f, 1.0f);
-    colors[ImGuiCol_ChildBg] = launcherSlotColor(accent, 0.10f, 1.0f);
-    colors[ImGuiCol_PopupBg] = launcherSlotColor(accent, 0.15f, 0.95f);
-    colors[ImGuiCol_Tab] = launcherSlotColor(accent, 0.25f, 0.85f);
-    colors[ImGuiCol_TabHovered] = launcherSlotColor(accent, 0.55f, 0.90f);
-    colors[ImGuiCol_TabActive] = launcherSlotColor(accent, 0.65f, 1.0f);
-    colors[ImGuiCol_TabUnfocused] = launcherSlotColor(accent, 0.20f, 0.85f);
-    colors[ImGuiCol_TabUnfocusedActive] = launcherSlotColor(accent, 0.50f, 1.0f);
-    colors[ImGuiCol_ResizeGrip] = launcherSlotColor(accent, 0.35f, 0.40f);
-    colors[ImGuiCol_ResizeGripHovered] = launcherSlotColor(accent, 0.60f, 0.70f);
-    colors[ImGuiCol_ResizeGripActive] = launcherSlotColor(accent, 0.80f, 1.0f);
-    colors[ImGuiCol_Text] = ImVec4(0.95f, 0.95f, 0.96f, 1.0f);
-    colors[ImGuiCol_TextDisabled] = ImVec4(0.55f, 0.55f, 0.60f, 1.0f);
-    colors[ImGuiCol_TextSelectedBg] = launcherColor(accent, 0.45f);
-    colors[ImGuiCol_Separator] = launcherSlotColor(accent, 0.30f, 0.60f);
+    colors[ImGuiCol_FrameBg] = launcherSlotColor(accent, 0.18f, 0.55f);
+    colors[ImGuiCol_FrameBgHovered] = launcherColor(accent, 0.45f);
+    colors[ImGuiCol_FrameBgActive] = launcherColor(accent, 0.65f);
+    colors[ImGuiCol_ScrollbarGrab] = launcherSlotColor(accent, 0.30f, 0.80f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = launcherColor(accent, 0.60f);
+    colors[ImGuiCol_ScrollbarGrabActive] = launcherColor(accent, 0.85f);
+    colors[ImGuiCol_TabHovered] = launcherColor(accent, 0.55f);
+    colors[ImGuiCol_TabActive] = launcherColor(accent, 0.75f);
+    colors[ImGuiCol_TabUnfocusedActive] = launcherColor(accent, 0.50f);
+    colors[ImGuiCol_TextSelectedBg] = launcherColorScaled(accent, 0.85f, 0.45f);
     colors[ImGuiCol_DragDropTarget] = launcherColor(accent, 0.90f);
     colors[ImGuiCol_NavHighlight] = launcherColor(accent, 0.80f);
     colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1, 1, 1, 0.70f);
     colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0, 0, 0, 0.50f);
     colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, 0.55f);
+    colors[ImGuiCol_Text] = ImVec4(0.95f, 0.95f, 0.96f, 1.0f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.55f, 0.55f, 0.60f, 1.0f);
     colors[ImGuiCol_PlotLines] = launcherColor(accent, 0.80f);
     colors[ImGuiCol_PlotLinesHovered] = launcherColor(accent, 1.0f);
     colors[ImGuiCol_PlotHistogram] = launcherColor(accent, 0.80f);
     colors[ImGuiCol_PlotHistogramHovered] = launcherColor(accent, 1.0f);
-    colors[ImGuiCol_TableHeaderBg] = launcherSlotColor(accent, 0.25f, 0.65f);
-    colors[ImGuiCol_TableBorderStrong] = launcherSlotColor(accent, 0.30f, 0.70f);
-    colors[ImGuiCol_TableBorderLight] = launcherSlotColor(accent, 0.20f, 0.50f);
+    colors[ImGuiCol_TableHeaderBg] = launcherSlotColor(accent, 0.15f, 0.65f);
+    colors[ImGuiCol_TableBorderStrong] = launcherSlotColor(accent, 0.20f, 0.70f);
+    colors[ImGuiCol_TableBorderLight] = launcherSlotColor(accent, 0.10f, 0.50f);
     colors[ImGuiCol_TableRowBg] = ImVec4(0, 0, 0, 0);
     colors[ImGuiCol_TableRowBgAlt] = launcherSlotColor(accent, 0.05f, 0.30f);
   }
