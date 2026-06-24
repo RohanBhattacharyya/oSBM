@@ -82,10 +82,27 @@ public:
   void update(float dt);
 
 private:
+  struct UiNavigationCandidate {
+    Widget const* widget;
+    RectI rect;
+    Vec2I center;
+    Maybe<RectI> selectableAncestorRect;
+  };
+
   Vec2I windowSize() const;
   Vec2I calculatePaneOffset(PanePtr const& pane) const;
   Vec2I calculateNewInterfacePosition(PanePtr const& pane, float interfaceScaleRatio) const;
   bool dismiss(PanePtr const& pane);
+  bool handleUiNavigation(UiNavigationDirection direction);
+  void collectUiNavigationCandidates(Widget* widget, List<UiNavigationCandidate>& candidates, bool includeSelf, Maybe<RectI> selectableAncestorRect = {}) const;
+  bool uiNavigationCandidateWidget(Widget* widget) const;
+  Maybe<UiNavigationCandidate> chooseUiNavigationCandidate(List<UiNavigationCandidate> const& candidates, UiNavigationDirection direction) const;
+  Vec2I uiNavigationOrigin(UiNavigationDirection direction) const;
+  Vec2I uiNavigationSelectedCenter() const;
+  InputEvent uiNavigationMouseEvent(InputEvent const& event) const;
+  void clearUiNavigationTextInputFocus();
+  void clearInvalidUiSelection();
+  void drawUiSelection() const;
 
   GuiContext* m_context;
   float m_prevInterfaceScale;
@@ -102,6 +119,12 @@ private:
   Vec2I m_tooltipInitialPosition;
   PanePtr m_activeTooltip;
   PanePtr m_tooltipParentPane;
+
+  bool m_hasUiSelection = false;
+  bool m_sendingUiNavigationMouseMove = false;
+  bool m_sendingUiNavigationMouseButton = false;
+  Widget const* m_uiSelectionWidget = nullptr;
+  RectI m_uiSelectionRect;
 };
 
 }

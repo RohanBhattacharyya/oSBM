@@ -3,6 +3,11 @@
 #include "StarJsonExtra.hpp"
 #include "StarAssets.hpp"
 #include "StarRoot.hpp"
+#include "StarImageWidget.hpp"
+#include "StarLabelWidget.hpp"
+#include "StarPortraitWidget.hpp"
+
+#include <limits>
 
 namespace Star {
 
@@ -193,7 +198,25 @@ bool PaneManager::keyboardCapturedForTextInput() const {
 }
 
 bool PaneManager::sendInputEvent(InputEvent const& event) {
+  if (auto navigation = event.ptr<UiNavigationEvent>())
+    return handleUiNavigation(navigation->direction);
+
+  if (m_hasUiSelection && !m_sendingUiNavigationMouseButton && (event.is<MouseButtonDownEvent>() || event.is<MouseButtonUpEvent>())) {
+    if (event.is<MouseButtonDownEvent>())
+      clearUiNavigationTextInputFocus();
+    m_sendingUiNavigationMouseButton = true;
+    bool handled = sendInputEvent(uiNavigationMouseEvent(event));
+    m_sendingUiNavigationMouseButton = false;
+    clearInvalidUiSelection();
+    return handled;
+  }
+
   if (event.is<MouseMoveEvent>()) {
+    if (!m_sendingUiNavigationMouseMove) {
+      m_hasUiSelection = false;
+      m_uiSelectionWidget = nullptr;
+    }
+
     m_tooltipLastMousePos = *m_context->mousePosition(event);
 
     for (auto const& layerPair : m_displayedPanes) {
@@ -288,6 +311,7 @@ void PaneManager::render() {
   }
 
   m_context->resetInterfaceScissorRect();
+  drawUiSelection();
   m_prevInterfaceScale = m_context->interfaceScale();
 }
 
@@ -348,6 +372,199 @@ void PaneManager::update(float dt) {
         panePair.first->update(dt);
     }
   }
+
+  clearInvalidUiSelection();
+}
+
+bool PaneManager::handleUiNavigation(UiNavigationDirection direction) {
+  clearUiNavigationTextInputFocus();
+
+  List<UiNavigationCandidate> candidates;
+  bool foundModal = false;
+  for (auto const& layerPair : m_displayedPanes) {
+    for (auto const& panePair : layerPair.second) {
+      if (panePair.first == m_activeTooltip || !panePair.first->active())
+        continue;
+
+      collectUiNavigationCandidates(panePair.first.get(), candidates, false);
+
+      if (layerPair.first == PaneLayer::ModalWindow) {
+        foundModal = true;
+        break;
+      }
+    }
+    if (foundModal)
+      break;
+  }
+
+  auto selected = chooseUiNavigationCandidate(candidates, direction);
+  if (!selected)
+    return false;
+
+  m_hasUiSelection = true;
+  m_uiSelectionWidget = selected->widget;
+  m_uiSelectionRect = selected->rect;
+
+  Vec2F mousePosition = Vec2F(selected->center) * m_context->interfaceScale();
+  MouseMoveEvent moveEvent{{0.0f, 0.0f}, mousePosition, true};
+  m_sendingUiNavigationMouseMove = true;
+  sendInputEvent(moveEvent);
+  m_sendingUiNavigationMouseMove = false;
+  return true;
+}
+
+void PaneManager::collectUiNavigationCandidates(Widget* widget, List<UiNavigationCandidate>& candidates, bool includeSelf, Maybe<RectI> selectableAncestorRect) const {
+  if (!widget || !widget->active())
+    return;
+
+  bool selectableSelf = includeSelf && uiNavigationCandidateWidget(widget);
+
+  if (selectableSelf) {
+    RectI rect = widget->screenBoundRect();
+    if (!rect.isEmpty() && rect.size()[0] >= 3 && rect.size()[1] >= 3) {
+      RectI visibleRect = rect.limited(RectI::withSize(Vec2I(), windowSize()));
+      if (!visibleRect.isEmpty()) {
+        candidates.append({widget, visibleRect, visibleRect.center(), selectableAncestorRect});
+        selectableAncestorRect = visibleRect;
+      }
+    }
+  }
+
+  for (size_t i = 0; i < widget->numChildren(); ++i)
+    collectUiNavigationCandidates(widget->getChildNum(i).get(), candidates, true, selectableAncestorRect);
+}
+
+bool PaneManager::uiNavigationCandidateWidget(Widget* widget) const {
+  if (!widget->interactive() || widget->mouseTransparent())
+    return false;
+  if (is<LabelWidget>(widget) || is<ImageWidget>(widget) || is<PortraitWidget>(widget))
+    return false;
+  return true;
+}
+
+Maybe<PaneManager::UiNavigationCandidate> PaneManager::chooseUiNavigationCandidate(List<UiNavigationCandidate> const& candidates, UiNavigationDirection direction) const {
+  if (candidates.empty())
+    return {};
+
+  Vec2I origin = m_hasUiSelection ? m_uiSelectionRect.center() : uiNavigationOrigin(direction);
+  Maybe<UiNavigationCandidate> best;
+  float bestScore = std::numeric_limits<float>::max();
+
+  for (auto const& candidate : candidates) {
+    Vec2I delta = candidate.center - origin;
+    float primary;
+    float perpendicular;
+    switch (direction) {
+      case UiNavigationDirection::Up:
+        primary = delta[1];
+        perpendicular = std::abs(delta[0]);
+        break;
+      case UiNavigationDirection::Down:
+        primary = -delta[1];
+        perpendicular = std::abs(delta[0]);
+        break;
+      case UiNavigationDirection::Left:
+        primary = -delta[0];
+        perpendicular = std::abs(delta[1]);
+        break;
+      case UiNavigationDirection::Right:
+      default:
+        primary = delta[0];
+        perpendicular = std::abs(delta[1]);
+        break;
+    }
+
+    if (primary <= 0.0f)
+      continue;
+
+    float score = primary + perpendicular * 2.0f;
+    if (candidate.selectableAncestorRect && (!m_hasUiSelection || *candidate.selectableAncestorRect != m_uiSelectionRect))
+      score += 100000.0f;
+
+    if (score < bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+
+  return best;
+}
+
+Vec2I PaneManager::uiNavigationOrigin(UiNavigationDirection direction) const {
+  Vec2I size = windowSize();
+  switch (direction) {
+    case UiNavigationDirection::Up:
+      return {size[0] / 2, 0};
+    case UiNavigationDirection::Down:
+      return {size[0] / 2, size[1]};
+    case UiNavigationDirection::Left:
+      return {size[0], size[1] / 2};
+    case UiNavigationDirection::Right:
+    default:
+      return {0, size[1] / 2};
+  }
+}
+
+Vec2I PaneManager::uiNavigationSelectedCenter() const {
+  return m_uiSelectionRect.center();
+}
+
+InputEvent PaneManager::uiNavigationMouseEvent(InputEvent const& event) const {
+  Vec2F mousePosition = Vec2F(uiNavigationSelectedCenter()) * m_context->interfaceScale();
+  if (auto down = event.ptr<MouseButtonDownEvent>())
+    return MouseButtonDownEvent{down->mouseButton, mousePosition};
+  if (auto up = event.ptr<MouseButtonUpEvent>())
+    return MouseButtonUpEvent{up->mouseButton, mousePosition};
+  return event;
+}
+
+void PaneManager::clearUiNavigationTextInputFocus() {
+  if (auto widget = keyboardCapturedWidget()) {
+    if (widget->keyboardCaptureMode() == KeyboardCaptureMode::TextInput)
+      widget->blur();
+  }
+}
+
+void PaneManager::clearInvalidUiSelection() {
+  if (!m_hasUiSelection)
+    return;
+
+  List<UiNavigationCandidate> candidates;
+  bool foundModal = false;
+  for (auto const& layerPair : m_displayedPanes) {
+    for (auto const& panePair : layerPair.second) {
+      if (panePair.first == m_activeTooltip || panePair.first->isDismissed() || !panePair.first->active())
+        continue;
+
+      collectUiNavigationCandidates(panePair.first.get(), candidates, false);
+
+      if (layerPair.first == PaneLayer::ModalWindow) {
+        foundModal = true;
+        break;
+      }
+    }
+    if (foundModal)
+      break;
+  }
+
+  for (auto const& candidate : candidates) {
+    if (candidate.widget == m_uiSelectionWidget) {
+      m_uiSelectionRect = candidate.rect;
+      return;
+    }
+  }
+
+  m_hasUiSelection = false;
+  m_uiSelectionWidget = nullptr;
+}
+
+void PaneManager::drawUiSelection() const {
+  if (!m_hasUiSelection)
+    return;
+
+  RectI rect = m_uiSelectionRect.padded(3);
+  m_context->drawInterfaceQuad(RectF(rect), Vec4B(80, 180, 255, 36));
+  m_context->drawInterfacePolyLines(PolyF(rect), Vec4B(120, 220, 255, 230), 2.0f);
 }
 
 Vec2I PaneManager::windowSize() const {

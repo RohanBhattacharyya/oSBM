@@ -795,13 +795,22 @@ ControllerButton controllerButtonFromSdlControllerButton(uint8_t button) {
     case SDL_GAMEPAD_BUTTON_WEST: return ControllerButton::X;
     case SDL_GAMEPAD_BUTTON_NORTH: return ControllerButton::Y;
     case SDL_GAMEPAD_BUTTON_BACK: return ControllerButton::Back;
+    case SDL_GAMEPAD_BUTTON_GUIDE: return ControllerButton::Guide;
     case SDL_GAMEPAD_BUTTON_START: return ControllerButton::Start;
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: return ControllerButton::LeftStick;
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return ControllerButton::RightStick;
     case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return ControllerButton::LeftShoulder;
     case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return ControllerButton::RightShoulder;
     case SDL_GAMEPAD_BUTTON_DPAD_UP: return ControllerButton::DPadUp;
     case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return ControllerButton::DPadDown;
     case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return ControllerButton::DPadLeft;
     case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return ControllerButton::DPadRight;
+    case SDL_GAMEPAD_BUTTON_MISC1: return ControllerButton::Misc1;
+    case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1: return ControllerButton::Paddle1;
+    case SDL_GAMEPAD_BUTTON_LEFT_PADDLE1: return ControllerButton::Paddle2;
+    case SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2: return ControllerButton::Paddle3;
+    case SDL_GAMEPAD_BUTTON_LEFT_PADDLE2: return ControllerButton::Paddle4;
+    case SDL_GAMEPAD_BUTTON_TOUCHPAD: return ControllerButton::Touchpad;
     default: return ControllerButton::Invalid;
   }
 }
@@ -822,6 +831,32 @@ struct MobileTouchConfig {
   bool gyroInvertY = false;
 };
 
+enum class MobileGamepadStickMode {
+  Movement,
+  Aim
+};
+
+struct MobileGamepadStickConfig {
+  bool enabled = true;
+  MobileGamepadStickMode mode = MobileGamepadStickMode::Movement;
+  bool preciseAim = false;
+  float deadzone = 0.18f;
+  float sensitivity = 1.0f;
+  bool invertX = false;
+  bool invertY = false;
+};
+
+struct MobileGamepadConfig {
+  bool enabled = true;
+  float triggerThreshold = 0.45f;
+  MobileGamepadStickConfig leftStick;
+  MobileGamepadStickConfig rightStick;
+
+  MobileGamepadConfig() {
+    rightStick.mode = MobileGamepadStickMode::Aim;
+  }
+};
+
 enum class MobileTouchElementKind {
   Joystick,
   AimJoystick,
@@ -836,6 +871,8 @@ enum class MobileTouchActionKind {
   MouseWheelUp,
   MouseWheelDown,
   GyroToggle,
+  GamepadAimModeToggle,
+  UiNavigation,
   None
 };
 
@@ -850,6 +887,7 @@ struct MobileTouchAction {
   MobileTouchActionKind kind = MobileTouchActionKind::Key;
   Key key = Key::Space;
   MouseButton mouseButton = MouseButton::Left;
+  UiNavigationDirection uiNavigationDirection = UiNavigationDirection::Down;
   List<Key> keys;
 };
 
@@ -868,6 +906,14 @@ struct MobileTouchElement {
   MobileTouchPressMode pressMode = MobileTouchPressMode::Hold;
   float aimSensitivity = 1.0f;
   bool preciseAim = false;
+};
+
+struct MobileGamepadBinding {
+  ControllerButton button = ControllerButton::A;
+  String label;
+  bool enabled = true;
+  MobileTouchAction action;
+  MobileTouchPressMode pressMode = MobileTouchPressMode::SinglePress;
 };
 
 static String keysName(List<Key> const& keys) {
@@ -893,6 +939,13 @@ static String actionName(MobileTouchAction const& action) {
       return launcherTextStatic("touchAction.scrollDown", "Scroll Down");
     case MobileTouchActionKind::GyroToggle:
       return launcherTextStatic("touchAction.gyroToggle", "Gyro Toggle");
+    case MobileTouchActionKind::GamepadAimModeToggle:
+      return launcherTextStatic("gamepadAction.aimModeToggle", "Toggle Aim Mode");
+    case MobileTouchActionKind::UiNavigation:
+      return action.uiNavigationDirection == UiNavigationDirection::Up ? launcherTextStatic("gamepadAction.selectionUp", "Selection Up")
+          : action.uiNavigationDirection == UiNavigationDirection::Down ? launcherTextStatic("gamepadAction.selectionDown", "Selection Down")
+          : action.uiNavigationDirection == UiNavigationDirection::Left ? launcherTextStatic("gamepadAction.selectionLeft", "Selection Left")
+          : launcherTextStatic("gamepadAction.selectionRight", "Selection Right");
     default:
       return launcherTextStatic("touchAction.none", "None");
   }
@@ -928,6 +981,19 @@ static MobileTouchAction wheelAction(bool up) {
 static MobileTouchAction gyroToggleAction() {
   MobileTouchAction action;
   action.kind = MobileTouchActionKind::GyroToggle;
+  return action;
+}
+
+static MobileTouchAction gamepadAimModeToggleAction() {
+  MobileTouchAction action;
+  action.kind = MobileTouchActionKind::GamepadAimModeToggle;
+  return action;
+}
+
+static MobileTouchAction uiNavigationAction(UiNavigationDirection direction) {
+  MobileTouchAction action;
+  action.kind = MobileTouchActionKind::UiNavigation;
+  action.uiNavigationDirection = direction;
   return action;
 }
 
@@ -978,6 +1044,34 @@ static std::vector<MobileTouchElement> defaultTouchElements() {
     {"gyroToggle", launcherTextStatic("touchElement.gyro", "Gyro"), MobileTouchElementKind::Button, false, {0.74f, 0.88f}, 0.82f, gyroToggleAction(), {}, {}, {}, {}, MobileTouchPressMode::SinglePress},
     {"dpad", launcherTextStatic("touchElement.dpad", "D-PAD"), MobileTouchElementKind::DPad, false, {0.16f, 0.74f}, 1.05f, keyAction(Key::Space),
       keyAction(Key::W), keyAction(Key::S), keyAction(Key::A), keyAction(Key::D)}
+  };
+}
+
+static std::vector<MobileGamepadBinding> defaultGamepadBindings() {
+  return {
+    {ControllerButton::A, "A", true, keyAction(Key::Space), MobileTouchPressMode::Hold},
+    {ControllerButton::B, "B", true, keyAction(Key::Escape), MobileTouchPressMode::Hold},
+    {ControllerButton::X, "X", true, keyAction(Key::E), MobileTouchPressMode::Hold},
+    {ControllerButton::Y, "Y", true, keyAction(Key::Q), MobileTouchPressMode::Hold},
+    {ControllerButton::LeftShoulder, "LB", true, wheelAction(true), MobileTouchPressMode::Repeat},
+    {ControllerButton::RightShoulder, "RB", true, wheelAction(false), MobileTouchPressMode::Repeat},
+    {ControllerButton::TriggerLeft, "LT", true, mouseAction(MouseButton::Right), MobileTouchPressMode::Hold},
+    {ControllerButton::TriggerRight, "RT", true, mouseAction(MouseButton::Left), MobileTouchPressMode::Hold},
+    {ControllerButton::Back, "Back", true, keyAction(Key::I), MobileTouchPressMode::Hold},
+    {ControllerButton::Start, "Start", true, keyAction(Key::Escape), MobileTouchPressMode::Hold},
+    {ControllerButton::Guide, "Guide", false, noneAction(), MobileTouchPressMode::SinglePress},
+    {ControllerButton::LeftStick, "L3", true, keyAction(Key::LCtrl), MobileTouchPressMode::Hold},
+    {ControllerButton::RightStick, "R3", true, gamepadAimModeToggleAction(), MobileTouchPressMode::SinglePress},
+    {ControllerButton::DPadUp, "Up", true, uiNavigationAction(UiNavigationDirection::Up), MobileTouchPressMode::SinglePress},
+    {ControllerButton::DPadDown, "Down", true, uiNavigationAction(UiNavigationDirection::Down), MobileTouchPressMode::SinglePress},
+    {ControllerButton::DPadLeft, "Left", true, uiNavigationAction(UiNavigationDirection::Left), MobileTouchPressMode::SinglePress},
+    {ControllerButton::DPadRight, "Right", true, uiNavigationAction(UiNavigationDirection::Right), MobileTouchPressMode::SinglePress},
+    {ControllerButton::Misc1, "Share", false, noneAction(), MobileTouchPressMode::SinglePress},
+    {ControllerButton::Paddle1, "P1", false, noneAction(), MobileTouchPressMode::SinglePress},
+    {ControllerButton::Paddle2, "P2", false, noneAction(), MobileTouchPressMode::SinglePress},
+    {ControllerButton::Paddle3, "P3", false, noneAction(), MobileTouchPressMode::SinglePress},
+    {ControllerButton::Paddle4, "P4", false, noneAction(), MobileTouchPressMode::SinglePress},
+    {ControllerButton::Touchpad, "Pad", false, noneAction(), MobileTouchPressMode::SinglePress}
   };
 }
 
@@ -1053,6 +1147,10 @@ static Json jsonFromTouchAction(MobileTouchAction const& action) {
     return JsonObject{{"type", "wheel"}, {"direction", "down"}};
   if (action.kind == MobileTouchActionKind::GyroToggle)
     return JsonObject{{"type", "gyroToggle"}};
+  if (action.kind == MobileTouchActionKind::GamepadAimModeToggle)
+    return JsonObject{{"type", "gamepadAimModeToggle"}};
+  if (action.kind == MobileTouchActionKind::UiNavigation)
+    return JsonObject{{"type", "uiNavigation"}, {"direction", UiNavigationDirectionNames.getRight(action.uiNavigationDirection)}};
   if (action.kind == MobileTouchActionKind::None)
     return JsonObject{{"type", "none"}};
   return JsonObject{{"type", "key"}, {"key", KeyNames.getRight(action.key)}};
@@ -1070,6 +1168,10 @@ static MobileTouchAction touchActionFromJson(Json const& json, MobileTouchAction
     return wheelAction(!json.getString("direction", "up").equals("down", String::CaseInsensitive));
   if (type.equals("gyroToggle", String::CaseInsensitive) || type.equals("gyro", String::CaseInsensitive))
     return gyroToggleAction();
+  if (type.equals("gamepadAimModeToggle", String::CaseInsensitive) || type.equals("aimModeToggle", String::CaseInsensitive))
+    return gamepadAimModeToggleAction();
+  if (type.equals("uiNavigation", String::CaseInsensitive) || type.equals("selection", String::CaseInsensitive))
+    return uiNavigationAction(UiNavigationDirectionNames.valueLeft(json.getString("direction", UiNavigationDirectionNames.getRight(def.uiNavigationDirection)), def.uiNavigationDirection));
   if (type.equals("none", String::CaseInsensitive))
     return noneAction();
   auto keyName = json.getString("key", KeyNames.getRight(def.key));
@@ -1146,6 +1248,123 @@ static std::vector<MobileTouchElement> touchElementsFromConfig(Json const& confi
   return elements;
 }
 
+static String gamepadStickModeName(MobileGamepadStickMode mode) {
+  switch (mode) {
+    case MobileGamepadStickMode::Aim:
+      return "aim";
+    default:
+      return "movement";
+  }
+}
+
+static MobileGamepadStickMode gamepadStickModeFromName(String const& name, MobileGamepadStickMode def = MobileGamepadStickMode::Movement) {
+  if (name.equals("aim", String::CaseInsensitive) || name.equals("cameraAim", String::CaseInsensitive) || name.equals("camera", String::CaseInsensitive))
+    return MobileGamepadStickMode::Aim;
+  if (name.equals("movement", String::CaseInsensitive) || name.equals("move", String::CaseInsensitive))
+    return MobileGamepadStickMode::Movement;
+  return def;
+}
+
+static Json jsonFromGamepadStick(MobileGamepadStickConfig const& stick) {
+  return JsonObject{
+    {"enabled", stick.enabled},
+    {"mode", gamepadStickModeName(stick.mode)},
+    {"preciseAim", stick.preciseAim},
+    {"deadzone", stick.deadzone},
+    {"sensitivity", stick.sensitivity},
+    {"invertX", stick.invertX},
+    {"invertY", stick.invertY}
+  };
+}
+
+static MobileGamepadStickConfig gamepadStickFromJson(Json const& json, MobileGamepadStickConfig def) {
+  def.enabled = json.getBool("enabled", def.enabled);
+  def.mode = gamepadStickModeFromName(json.getString("mode", gamepadStickModeName(def.mode)), def.mode);
+  def.preciseAim = json.getBool("preciseAim", def.preciseAim);
+  def.deadzone = json.getFloat("deadzone", def.deadzone);
+  def.sensitivity = json.getFloat("sensitivity", def.sensitivity);
+  def.invertX = json.getBool("invertX", def.invertX);
+  def.invertY = json.getBool("invertY", def.invertY);
+  return def;
+}
+
+static MobileGamepadConfig gamepadConfigFromConfig(Json const& config) {
+  MobileGamepadConfig out;
+  out.enabled = config.queryBool("gamepad.enabled", true);
+  out.triggerThreshold = config.queryFloat("gamepad.triggerThreshold", 0.45f);
+  out.leftStick = gamepadStickFromJson(config.query("gamepad.leftStick", JsonObject()), out.leftStick);
+  out.rightStick = gamepadStickFromJson(config.query("gamepad.rightStick", JsonObject()), out.rightStick);
+  return out;
+}
+
+static JsonArray jsonFromGamepadBindings(std::vector<MobileGamepadBinding> const& bindings) {
+  JsonArray out;
+  for (auto const& binding : bindings) {
+    out.append(JsonObject{
+      {"button", ControllerButtonNames.getRight(binding.button)},
+      {"label", binding.label},
+      {"enabled", binding.enabled},
+      {"action", jsonFromTouchAction(binding.action)},
+      {"pressMode", pressModeName(binding.pressMode)}
+    });
+  }
+  return out;
+}
+
+static MobileGamepadBinding gamepadBindingFromJson(Json const& json, MobileGamepadBinding def) {
+  def.button = ControllerButtonNames.valueLeft(json.getString("button", ControllerButtonNames.getRight(def.button)), def.button);
+  def.label = json.getString("label", def.label);
+  def.enabled = json.getBool("enabled", def.enabled);
+  def.action = touchActionFromJson(json.get("action", jsonFromTouchAction(def.action)), def.action);
+  def.pressMode = pressModeFromName(json.getString("pressMode", pressModeName(def.pressMode)), def.pressMode);
+
+  auto migrateKeySinglePressDefaultToHold = [&](ControllerButton button, Key key) {
+    if (def.button == button && def.pressMode == MobileTouchPressMode::SinglePress && def.action.kind == MobileTouchActionKind::Key && def.action.key == key)
+      def.pressMode = MobileTouchPressMode::Hold;
+  };
+  migrateKeySinglePressDefaultToHold(ControllerButton::A, Key::Space);
+  migrateKeySinglePressDefaultToHold(ControllerButton::B, Key::Escape);
+  migrateKeySinglePressDefaultToHold(ControllerButton::X, Key::E);
+  migrateKeySinglePressDefaultToHold(ControllerButton::Y, Key::Q);
+  migrateKeySinglePressDefaultToHold(ControllerButton::Back, Key::I);
+  migrateKeySinglePressDefaultToHold(ControllerButton::Start, Key::Escape);
+
+  auto migrateDPadMovementDefault = [&](ControllerButton button, Key key, UiNavigationDirection direction) {
+    if (def.button == button && def.pressMode == MobileTouchPressMode::Hold && def.action.kind == MobileTouchActionKind::Key && def.action.key == key) {
+      def.action = uiNavigationAction(direction);
+      def.pressMode = MobileTouchPressMode::SinglePress;
+    }
+  };
+  migrateDPadMovementDefault(ControllerButton::DPadUp, Key::W, UiNavigationDirection::Up);
+  migrateDPadMovementDefault(ControllerButton::DPadDown, Key::S, UiNavigationDirection::Down);
+  migrateDPadMovementDefault(ControllerButton::DPadLeft, Key::A, UiNavigationDirection::Left);
+  migrateDPadMovementDefault(ControllerButton::DPadRight, Key::D, UiNavigationDirection::Right);
+  return def;
+}
+
+static std::vector<MobileGamepadBinding> gamepadBindingsFromConfig(Json const& config) {
+  auto bindings = defaultGamepadBindings();
+  if (auto saved = config.optQueryArray("gamepad.bindings")) {
+    for (auto const& savedBindingJson : *saved) {
+      auto button = ControllerButtonNames.maybeLeft(savedBindingJson.getString("button", ""));
+      if (!button)
+        continue;
+
+      bool merged = false;
+      for (auto& binding : bindings) {
+        if (binding.button == *button) {
+          binding = gamepadBindingFromJson(savedBindingJson, binding);
+          merged = true;
+          break;
+        }
+      }
+      if (!merged)
+        bindings.push_back(gamepadBindingFromJson(savedBindingJson, MobileGamepadBinding{}));
+    }
+  }
+  return bindings;
+}
+
 struct LauncherModEntry {
   String displayName;
   String path;
@@ -1181,7 +1400,10 @@ struct LauncherState {
   bool uiSettingsOpen = false;
   MobileTouchConfig touchConfig;
   std::vector<MobileTouchElement> touchElements;
+  MobileGamepadConfig gamepadConfig;
+  std::vector<MobileGamepadBinding> gamepadBindings;
   bool touchManagerOpen = false;
+  bool gamepadManagerOpen = false;
   bool touchPreviewOpen = false;
   int selectedTouchElement = 0;
   String touchLabelBufferElementId;
@@ -2333,6 +2555,438 @@ private:
 
 };
 
+class MobileGamepadInputAdapter {
+public:
+  explicit MobileGamepadInputAdapter(Vec2U* renderCanvasSize)
+    : m_renderCanvasSize(renderCanvasSize) {
+    resetCursor();
+  }
+
+  void setConfig(MobileGamepadConfig config) {
+    if (!config.enabled)
+      cancelAll();
+    m_config = config;
+  }
+
+  void setBindings(std::vector<MobileGamepadBinding> bindings) {
+    cancelAll();
+    m_bindings = std::move(bindings);
+  }
+
+  void beginFrame() {
+    m_generatedEvents.clear();
+    if (!m_config.enabled)
+      cancelAll();
+  }
+
+  void endFrame() {
+    if (!m_config.enabled)
+      return;
+
+    updateStickMovement("gamepad:leftStick", m_config.leftStick, m_leftStick);
+    updateStickMovement("gamepad:rightStick", m_config.rightStick, m_rightStick);
+    updateStickAim();
+    releaseExpiredPulsedActions();
+    repeatButtons();
+  }
+
+  void appendGeneratedEvents(List<InputEvent>& outEvents) {
+    outEvents.appendAll(m_generatedEvents);
+    m_generatedEvents.clear();
+  }
+
+  bool processInputEvent(InputEvent const& event, List<InputEvent>& passthroughEvents) {
+    if (!m_config.enabled) {
+      passthroughEvents.append(event);
+      return false;
+    }
+
+    if (auto axis = event.ptr<ControllerAxisEvent>()) {
+      ControllerAxisEvent filtered = *axis;
+      filtered.controllerAxisValue = applyAxisDeadzone(axis->controllerAxis, axis->controllerAxisValue);
+      updateAxisState(filtered.controllerAxis, filtered.controllerAxisValue);
+
+      if (axis->controllerAxis == ControllerAxis::LeftX || axis->controllerAxis == ControllerAxis::LeftY
+          || axis->controllerAxis == ControllerAxis::RightX || axis->controllerAxis == ControllerAxis::RightY)
+        return true;
+
+      if (axis->controllerAxis == ControllerAxis::TriggerLeft) {
+        updateVirtualButton(ControllerButton::TriggerLeft, filtered.controllerAxisValue >= std::clamp(m_config.triggerThreshold, 0.05f, 0.95f));
+        return true;
+      }
+
+      if (axis->controllerAxis == ControllerAxis::TriggerRight) {
+        updateVirtualButton(ControllerButton::TriggerRight, filtered.controllerAxisValue >= std::clamp(m_config.triggerThreshold, 0.05f, 0.95f));
+        return true;
+      }
+
+      return true;
+    }
+
+    if (auto button = event.ptr<ControllerButtonDownEvent>()) {
+      pressButton(button->controllerButton);
+      return true;
+    }
+
+    if (auto button = event.ptr<ControllerButtonUpEvent>()) {
+      releaseButton(button->controllerButton);
+      return true;
+    }
+
+    passthroughEvents.append(event);
+    return false;
+  }
+
+  void cancelAll() {
+    clearPulsedActions();
+
+    for (auto const& pair : m_keyHoldCounts.pairs()) {
+      if (pair.second > 0)
+        emitEvent(KeyUpEvent{pair.first});
+    }
+    for (auto const& pair : m_mouseHoldCounts.pairs()) {
+      if (pair.second > 0)
+        emitEvent(MouseButtonUpEvent{pair.first, m_cursorPosition});
+    }
+
+    m_heldButtons.clear();
+    m_toggledButtons.clear();
+    m_nextButtonRepeatMs.clear();
+    m_keyActionOwners.clear();
+    m_keyHoldCounts.clear();
+    m_mouseActionOwners.clear();
+    m_mouseHoldCounts.clear();
+    m_leftStick = {};
+    m_rightStick = {};
+  }
+
+private:
+  struct ActiveButton {
+    MobileTouchAction action;
+    MobileTouchPressMode pressMode = MobileTouchPressMode::SinglePress;
+  };
+
+  Vec2F canvasSize() const {
+    if (m_renderCanvasSize && (*m_renderCanvasSize)[0] > 0 && (*m_renderCanvasSize)[1] > 0)
+      return Vec2F(*m_renderCanvasSize);
+    return {1280.0f, 720.0f};
+  }
+
+  void resetCursor() {
+    Vec2F canvas = canvasSize();
+    m_cursorPosition = {canvas[0] * 0.5f, canvas[1] * 0.5f};
+    m_lastAimFrameMs = Time::monotonicMilliseconds();
+  }
+
+  float applyAxisDeadzone(ControllerAxis axis, float value) const {
+    MobileGamepadStickConfig stick;
+    bool useStick = true;
+    if (axis == ControllerAxis::LeftX || axis == ControllerAxis::LeftY)
+      stick = m_config.leftStick;
+    else if (axis == ControllerAxis::RightX || axis == ControllerAxis::RightY)
+      stick = m_config.rightStick;
+    else
+      useStick = false;
+
+    if (!useStick)
+      return std::clamp(value, 0.0f, 1.0f);
+
+    float deadzone = std::clamp(stick.deadzone, 0.0f, 0.85f);
+    if (std::abs(value) < deadzone)
+      return 0.0f;
+
+    float scaled = (std::abs(value) - deadzone) / std::max(0.001f, 1.0f - deadzone);
+    scaled = std::copysign(std::clamp(scaled, 0.0f, 1.0f), value);
+    if (axis == ControllerAxis::LeftY || axis == ControllerAxis::RightY)
+      scaled = -scaled;
+    if ((axis == ControllerAxis::LeftX || axis == ControllerAxis::RightX) && stick.invertX)
+      scaled = -scaled;
+    if ((axis == ControllerAxis::LeftY || axis == ControllerAxis::RightY) && stick.invertY)
+      scaled = -scaled;
+    return scaled;
+  }
+
+  void updateAxisState(ControllerAxis axis, float value) {
+    if (axis == ControllerAxis::LeftX)
+      m_leftStick[0] = value;
+    else if (axis == ControllerAxis::LeftY)
+      m_leftStick[1] = value;
+    else if (axis == ControllerAxis::RightX)
+      m_rightStick[0] = value;
+    else if (axis == ControllerAxis::RightY)
+      m_rightStick[1] = value;
+  }
+
+  MobileGamepadBinding const* bindingForButton(ControllerButton button) const {
+    for (auto const& binding : m_bindings) {
+      if (binding.button == button)
+        return &binding;
+    }
+    return nullptr;
+  }
+
+  String buttonOwner(ControllerButton button) const {
+    return String("gamepad:") + ControllerButtonNames.getRight(button);
+  }
+
+  void updateVirtualButton(ControllerButton button, bool desired) {
+    if (desired)
+      pressButton(button);
+    else
+      releaseButton(button);
+  }
+
+  void pressButton(ControllerButton button) {
+    if (button == ControllerButton::Invalid || m_heldButtons.contains(buttonOwner(button)))
+      return;
+    auto binding = bindingForButton(button);
+    if (!binding || !binding->enabled)
+      return;
+
+    String owner = buttonOwner(button);
+    m_heldButtons.add(owner);
+    ActiveButton active{binding->action, binding->pressMode};
+    m_activeButtons[owner] = active;
+
+    if (binding->action.kind == MobileTouchActionKind::GamepadAimModeToggle) {
+      startPulsedAction(binding->action, owner);
+      return;
+    }
+
+    if (binding->pressMode == MobileTouchPressMode::Toggle) {
+      if (m_toggledButtons.contains(owner)) {
+        m_toggledButtons.remove(owner);
+        setAction(binding->action, owner, false);
+      } else {
+        m_toggledButtons.add(owner);
+        setAction(binding->action, owner, true);
+      }
+    } else if (binding->pressMode == MobileTouchPressMode::Hold) {
+      setAction(binding->action, owner, true);
+    } else {
+      startPulsedAction(binding->action, owner);
+      if (binding->pressMode == MobileTouchPressMode::Repeat)
+        m_nextButtonRepeatMs[owner] = Time::monotonicMilliseconds() + 120;
+    }
+  }
+
+  void releaseButton(ControllerButton button) {
+    String owner = buttonOwner(button);
+    if (!m_heldButtons.contains(owner))
+      return;
+
+    m_heldButtons.remove(owner);
+    if (auto active = m_activeButtons.ptr(owner)) {
+      if (active->pressMode == MobileTouchPressMode::Hold)
+        setAction(active->action, owner, false);
+      else if (active->pressMode == MobileTouchPressMode::Repeat) {
+        m_nextButtonRepeatMs.remove(owner);
+        cancelPulsedAction(owner);
+      }
+    }
+    m_activeButtons.remove(owner);
+  }
+
+  void repeatButtons() {
+    int64_t now = Time::monotonicMilliseconds();
+    for (auto const& owner : m_heldButtons.values()) {
+      auto active = m_activeButtons.ptr(owner);
+      if (!active || active->pressMode != MobileTouchPressMode::Repeat)
+        continue;
+      auto next = m_nextButtonRepeatMs.value(owner, 0);
+      if (next > now)
+        continue;
+      startPulsedAction(active->action, owner);
+      m_nextButtonRepeatMs[owner] = now + 120;
+    }
+  }
+
+  void updateStickMovement(String const& owner, MobileGamepadStickConfig const& stick, Vec2F const& value) {
+    if (!stick.enabled || stick.mode != MobileGamepadStickMode::Movement) {
+      setKeyOwner(owner + ":right", Key::D, false);
+      setKeyOwner(owner + ":left", Key::A, false);
+      setKeyOwner(owner + ":up", Key::W, false);
+      setKeyOwner(owner + ":down", Key::S, false);
+      return;
+    }
+
+    setKeyOwner(owner + ":right", Key::D, value[0] > 0.30f);
+    setKeyOwner(owner + ":left", Key::A, value[0] < -0.30f);
+    setKeyOwner(owner + ":up", Key::W, value[1] < -0.30f);
+    setKeyOwner(owner + ":down", Key::S, value[1] > 0.30f);
+  }
+
+  MobileGamepadStickConfig* activeAimStick(Vec2F& value) {
+    if (m_config.rightStick.enabled && m_config.rightStick.mode == MobileGamepadStickMode::Aim && m_rightStick.magnitudeSquared() > 0.0001f) {
+      value = m_rightStick;
+      return &m_config.rightStick;
+    }
+    if (m_config.leftStick.enabled && m_config.leftStick.mode == MobileGamepadStickMode::Aim && m_leftStick.magnitudeSquared() > 0.0001f) {
+      value = m_leftStick;
+      return &m_config.leftStick;
+    }
+    return nullptr;
+  }
+
+  MobileGamepadStickConfig* aimModeToggleStick() {
+    if (m_config.rightStick.mode == MobileGamepadStickMode::Aim)
+      return &m_config.rightStick;
+    if (m_config.leftStick.mode == MobileGamepadStickMode::Aim)
+      return &m_config.leftStick;
+    return &m_config.rightStick;
+  }
+
+  void updateStickAim() {
+    Vec2F stickValue;
+    auto stick = activeAimStick(stickValue);
+    if (!stick) {
+      m_lastAimFrameMs = Time::monotonicMilliseconds();
+      return;
+    }
+
+    Vec2F canvas = canvasSize();
+    int64_t now = Time::monotonicMilliseconds();
+    float dt = std::clamp((float)(now - m_lastAimFrameMs) / 1000.0f, 0.0f, 0.05f);
+    m_lastAimFrameMs = now;
+
+    Vec2F aim{stickValue[0], stickValue[1]};
+    if (stick->preciseAim) {
+      float shortSide = std::max(1.0f, std::min(canvas[0], canvas[1]));
+      float speed = shortSide * 1.35f * std::clamp(stick->sensitivity, 0.10f, 5.0f);
+      m_cursorPosition += aim * speed * dt;
+    } else {
+      Vec2F center{canvas[0] * 0.5f, canvas[1] * 0.5f};
+      float radius = std::min(canvas[0], canvas[1]) * 0.34f * std::clamp(stick->sensitivity, 0.25f, 2.5f);
+      m_cursorPosition = center + aim * radius;
+    }
+
+    m_cursorPosition[0] = std::clamp(m_cursorPosition[0], 0.0f, canvas[0]);
+    m_cursorPosition[1] = std::clamp(m_cursorPosition[1], 0.0f, canvas[1]);
+    emitEvent(MouseMoveEvent{{0.0f, 0.0f}, m_cursorPosition, true});
+  }
+
+  void setKeyOwner(String const& owner, Key key, bool desired) {
+    String token = owner + ":" + KeyNames.getRight(key);
+    if (desired && !m_keyActionOwners.contains(token)) {
+      m_keyActionOwners.add(token);
+      unsigned count = m_keyHoldCounts.value(key, 0);
+      m_keyHoldCounts.set(key, count + 1);
+      if (count == 0)
+        emitEvent(KeyDownEvent{key, noMods()});
+    } else if (!desired && m_keyActionOwners.contains(token)) {
+      m_keyActionOwners.remove(token);
+      unsigned count = m_keyHoldCounts.value(key, 0);
+      if (count <= 1) {
+        m_keyHoldCounts.remove(key);
+        emitEvent(KeyUpEvent{key});
+      } else {
+        m_keyHoldCounts.set(key, count - 1);
+      }
+    }
+  }
+
+  void setMouseOwner(String const& owner, MouseButton button, bool desired) {
+    String token = owner + ":" + MouseButtonNames.getRight(button);
+    if (desired && !m_mouseActionOwners.contains(token)) {
+      m_mouseActionOwners.add(token);
+      unsigned count = m_mouseHoldCounts.value(button, 0);
+      m_mouseHoldCounts.set(button, count + 1);
+      if (count == 0)
+        emitEvent(MouseButtonDownEvent{button, m_cursorPosition});
+    } else if (!desired && m_mouseActionOwners.contains(token)) {
+      m_mouseActionOwners.remove(token);
+      unsigned count = m_mouseHoldCounts.value(button, 0);
+      if (count <= 1) {
+        m_mouseHoldCounts.remove(button);
+        emitEvent(MouseButtonUpEvent{button, m_cursorPosition});
+      } else {
+        m_mouseHoldCounts.set(button, count - 1);
+      }
+    }
+  }
+
+  void setAction(MobileTouchAction const& action, String const& owner, bool desired) {
+    if (action.kind == MobileTouchActionKind::Key) {
+      setKeyOwner(owner, action.key, desired);
+    } else if (action.kind == MobileTouchActionKind::KeyMacro) {
+      for (auto key : action.keys)
+        setKeyOwner(owner, key, desired);
+    } else if (action.kind == MobileTouchActionKind::MouseButton) {
+      setMouseOwner(owner, action.mouseButton, desired);
+    } else if (desired && action.kind == MobileTouchActionKind::MouseWheelUp) {
+      emitEvent(MouseWheelEvent{MouseWheel::Up, m_cursorPosition});
+    } else if (desired && action.kind == MobileTouchActionKind::MouseWheelDown) {
+      emitEvent(MouseWheelEvent{MouseWheel::Down, m_cursorPosition});
+    } else if (desired && action.kind == MobileTouchActionKind::GamepadAimModeToggle) {
+      auto stick = aimModeToggleStick();
+      stick->preciseAim = !stick->preciseAim;
+    } else if (desired && action.kind == MobileTouchActionKind::UiNavigation) {
+      emitEvent(UiNavigationEvent{action.uiNavigationDirection});
+    }
+  }
+
+  bool actionNeedsRelease(MobileTouchAction const& action) const {
+    return action.kind == MobileTouchActionKind::Key || action.kind == MobileTouchActionKind::KeyMacro || action.kind == MobileTouchActionKind::MouseButton;
+  }
+
+  void startPulsedAction(MobileTouchAction const& action, String const& owner) {
+    setAction(action, owner, true);
+    if (!actionNeedsRelease(action))
+      return;
+    m_pulsedActions[owner] = action;
+    m_pulsedActionReleaseMs[owner] = Time::monotonicMilliseconds() + 55;
+  }
+
+  void cancelPulsedAction(String const& owner) {
+    if (auto action = m_pulsedActions.ptr(owner))
+      setAction(*action, owner, false);
+    m_pulsedActions.remove(owner);
+    m_pulsedActionReleaseMs.remove(owner);
+  }
+
+  void releaseExpiredPulsedActions() {
+    int64_t now = Time::monotonicMilliseconds();
+    StringList expired;
+    for (auto const& pair : m_pulsedActionReleaseMs.pairs()) {
+      if (pair.second <= now)
+        expired.append(pair.first);
+    }
+    for (auto const& owner : expired)
+      cancelPulsedAction(owner);
+  }
+
+  void clearPulsedActions() {
+    StringList owners;
+    for (auto const& pair : m_pulsedActions.pairs())
+      owners.append(pair.first);
+    for (auto const& owner : owners)
+      cancelPulsedAction(owner);
+  }
+
+  void emitEvent(InputEvent const& event) {
+    m_generatedEvents.append(event);
+  }
+
+  Vec2U* m_renderCanvasSize = nullptr;
+  MobileGamepadConfig m_config;
+  std::vector<MobileGamepadBinding> m_bindings = defaultGamepadBindings();
+  List<InputEvent> m_generatedEvents;
+  Vec2F m_leftStick;
+  Vec2F m_rightStick;
+  Vec2F m_cursorPosition;
+  int64_t m_lastAimFrameMs = 0;
+  StringSet m_heldButtons;
+  StringSet m_toggledButtons;
+  StringMap<ActiveButton> m_activeButtons;
+  StringMap<int64_t> m_nextButtonRepeatMs;
+  StringMap<MobileTouchAction> m_pulsedActions;
+  StringMap<int64_t> m_pulsedActionReleaseMs;
+  StringSet m_keyActionOwners;
+  HashMap<Key, unsigned> m_keyHoldCounts;
+  StringSet m_mouseActionOwners;
+  HashMap<MouseButton, unsigned> m_mouseHoldCounts;
+};
+
 class MobilePlatform {
 public:
   MobilePlatform(ApplicationUPtr application, StringList cmdLineArgs)
@@ -2697,6 +3351,7 @@ private:
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD | SDL_INIT_SENSOR))
       throw ApplicationException::format("Could not initialize SDL: {}", SDL_GetError());
+    openExistingGamepads();
 
     SDL_AudioSpec desired = {SDL_AUDIO_S16, 2, 44100};
     m_sdlAudioOutputStream = SDL_OpenAudioDeviceStream(
@@ -2870,6 +3525,7 @@ private:
   }
 
   void teardownSdl() {
+    m_sdlGamepads.clear();
     if (m_sdlAudioOutputStream) {
       SDL_CloseAudioDevice(SDL_GetAudioStreamDevice(m_sdlAudioOutputStream));
       m_sdlAudioOutputStream = nullptr;
@@ -3093,6 +3749,8 @@ private:
     state.touchConfig.gyroInvertX = config.queryBool("touch.gyroInvertX", false);
     state.touchConfig.gyroInvertY = config.queryBool("touch.gyroInvertY", false);
     state.touchElements = touchElementsFromConfig(config);
+    state.gamepadConfig = gamepadConfigFromConfig(config);
+    state.gamepadBindings = gamepadBindingsFromConfig(config);
 
     state.canLaunch = File::isFile(state.packedPakPath);
     state.lastStatus = state.canLaunch ? launcherText("status.packedPakReady", "Using existing packed.pak") : launcherText("status.packedPakMissing", "Please import packed.pak");
@@ -3131,6 +3789,16 @@ private:
     };
   }
 
+  std::vector<pair<String, MobileTouchAction>> gamepadActionChoices() const {
+    auto choices = touchActionChoices();
+    choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.aimModeToggle", "Toggle Aim Mode"), gamepadAimModeToggleAction()});
+    choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.selectionUp", "Selection Up"), uiNavigationAction(UiNavigationDirection::Up)});
+    choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.selectionDown", "Selection Down"), uiNavigationAction(UiNavigationDirection::Down)});
+    choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.selectionLeft", "Selection Left"), uiNavigationAction(UiNavigationDirection::Left)});
+    choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.selectionRight", "Selection Right"), uiNavigationAction(UiNavigationDirection::Right)});
+    return choices;
+  }
+
   bool touchActionEqual(MobileTouchAction const& a, MobileTouchAction const& b) const {
     if (a.kind != b.kind)
       return false;
@@ -3140,17 +3808,22 @@ private:
       return a.keys == b.keys;
     if (a.kind == MobileTouchActionKind::MouseButton)
       return a.mouseButton == b.mouseButton;
+    if (a.kind == MobileTouchActionKind::UiNavigation)
+      return a.uiNavigationDirection == b.uiNavigationDirection;
     return true;
   }
 
-  int touchActionIndex(MobileTouchAction const& action) const {
-    auto choices = touchActionChoices();
+  int actionIndex(MobileTouchAction const& action, std::vector<pair<String, MobileTouchAction>> const& choices) const {
     for (size_t i = 0; i < choices.size(); ++i) {
       auto const& candidate = choices[i].second;
       if (touchActionEqual(candidate, action))
         return (int)i;
     }
     return 0;
+  }
+
+  int touchActionIndex(MobileTouchAction const& action) const {
+    return actionIndex(action, touchActionChoices());
   }
 
   String touchActionKeysText(MobileTouchAction const& action) const {
@@ -3196,9 +3869,8 @@ private:
     ImGui::BeginChild(id, ImVec2(0.0f, height), false, ImGuiWindowFlags_NoScrollbar);
   }
 
-  void renderTouchActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId) {
-    auto choices = touchActionChoices();
-    int index = touchActionIndex(action);
+  void renderActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId, std::vector<pair<String, MobileTouchAction>> const& choices) {
+    int index = actionIndex(action, choices);
     if (ImGui::BeginCombo(label, choices[index].first.utf8Ptr())) {
       for (size_t i = 0; i < choices.size(); ++i) {
         bool selected = index == (int)i;
@@ -3240,6 +3912,14 @@ private:
     ImGui::PopID();
   }
 
+  void renderTouchActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId) {
+    renderActionCombo(state, label, action, bufferId, touchActionChoices());
+  }
+
+  void renderGamepadActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId) {
+    renderActionCombo(state, label, action, bufferId, gamepadActionChoices());
+  }
+
   void renderTouchPressModeCombo(MobileTouchElement& element) {
     std::vector<pair<char const*, MobileTouchPressMode>> choices{
       {launcherText("touchManager.pressMode.single", "Single press").utf8Ptr(), MobileTouchPressMode::SinglePress},
@@ -3264,6 +3944,160 @@ private:
       }
       ImGui::EndCombo();
     }
+  }
+
+  void renderGamepadPressModeCombo(MobileGamepadBinding& binding) {
+    MobileTouchElement temp;
+    temp.pressMode = binding.pressMode;
+    renderTouchPressModeCombo(temp);
+    binding.pressMode = temp.pressMode;
+  }
+
+  String activeGamepadLayoutName() const {
+    if (m_activeGamepadType != SDL_GAMEPAD_TYPE_UNKNOWN) {
+      char const* type = SDL_GetGamepadStringForType(m_activeGamepadType);
+      if (type && type[0])
+        return String(type);
+    }
+    return m_activeGamepadName.empty() ? launcherText("gamepadManager.layoutGeneric", "Generic gamepad") : m_activeGamepadName;
+  }
+
+  String gamepadBindingDisplayLabel(MobileGamepadBinding const& binding) const {
+    bool playstation = m_activeGamepadType == SDL_GAMEPAD_TYPE_PS3 || m_activeGamepadType == SDL_GAMEPAD_TYPE_PS4 || m_activeGamepadType == SDL_GAMEPAD_TYPE_PS5;
+    bool nintendo = m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO
+        || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT
+        || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT
+        || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
+
+    if (playstation) {
+      if (binding.button == ControllerButton::A)
+        return "Cross";
+      if (binding.button == ControllerButton::B)
+        return "Circle";
+      if (binding.button == ControllerButton::X)
+        return "Square";
+      if (binding.button == ControllerButton::Y)
+        return "Triangle";
+      if (binding.button == ControllerButton::LeftShoulder)
+        return "L1";
+      if (binding.button == ControllerButton::RightShoulder)
+        return "R1";
+      if (binding.button == ControllerButton::TriggerLeft)
+        return "L2";
+      if (binding.button == ControllerButton::TriggerRight)
+        return "R2";
+      if (binding.button == ControllerButton::Back)
+        return "Share";
+      if (binding.button == ControllerButton::Start)
+        return "Options";
+      if (binding.button == ControllerButton::Touchpad)
+        return "Touchpad";
+    } else if (nintendo) {
+      if (binding.button == ControllerButton::A)
+        return "B";
+      if (binding.button == ControllerButton::B)
+        return "A";
+      if (binding.button == ControllerButton::X)
+        return "Y";
+      if (binding.button == ControllerButton::Y)
+        return "X";
+      if (binding.button == ControllerButton::Back)
+        return "-";
+      if (binding.button == ControllerButton::Start)
+        return "+";
+      if (binding.button == ControllerButton::Misc1)
+        return "Capture";
+    }
+
+    return binding.label.empty() ? ControllerButtonNames.getRight(binding.button) : binding.label;
+  }
+
+  void renderGamepadStickModeCombo(MobileGamepadStickConfig& stick) {
+    std::vector<pair<String, MobileGamepadStickMode>> choices{
+      {launcherText("gamepadManager.modeMovement", "Movement"), MobileGamepadStickMode::Movement},
+      {launcherText("gamepadManager.modeAim", "Camera Aim"), MobileGamepadStickMode::Aim}
+    };
+
+    int index = 0;
+    for (int i = 0; i < (int)choices.size(); ++i) {
+      if (choices[i].second == stick.mode) {
+        index = i;
+        break;
+      }
+    }
+
+    if (ImGui::BeginCombo(launcherText("gamepadManager.mode", "Mode").utf8Ptr(), choices[index].first.utf8Ptr())) {
+      for (int i = 0; i < (int)choices.size(); ++i) {
+        bool selected = index == i;
+        if (ImGui::Selectable(choices[i].first.utf8Ptr(), selected))
+          stick.mode = choices[i].second;
+        if (selected)
+          ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+  }
+
+  void renderGamepadStickSettings(char const* label, MobileGamepadStickConfig& stick) {
+    if (ImGui::TreeNode(label)) {
+      ImGui::Checkbox(launcherText("gamepadManager.stickEnabled", "Enabled").utf8Ptr(), &stick.enabled);
+      renderGamepadStickModeCombo(stick);
+      ImGui::SliderFloat(launcherText("gamepadManager.deadzone", "Deadzone").utf8Ptr(), &stick.deadzone, 0.0f, 0.85f);
+      ImGui::Checkbox(launcherText("gamepadManager.invertX", "Invert X").utf8Ptr(), &stick.invertX);
+      sameLineIfNextFits(ImGui::CalcTextSize(launcherText("gamepadManager.invertY", "Invert Y").utf8Ptr()).x + ImGui::GetFrameHeight());
+      ImGui::Checkbox(launcherText("gamepadManager.invertY", "Invert Y").utf8Ptr(), &stick.invertY);
+      if (stick.mode == MobileGamepadStickMode::Aim) {
+        ImGui::SliderFloat(launcherText("gamepadManager.sensitivity", "Sensitivity").utf8Ptr(), &stick.sensitivity, 0.10f, 5.0f);
+        ImGui::Checkbox(launcherText("gamepadManager.preciseAim", "Precise cursor aim").utf8Ptr(), &stick.preciseAim);
+      }
+      ImGui::TreePop();
+    }
+  }
+
+  void renderGamepadButtonBindings(LauncherState& state) {
+    ImGui::TextUnformatted(launcherText("gamepadManager.bindings", "Button Bindings").utf8Ptr());
+
+    for (auto& binding : state.gamepadBindings) {
+      String displayLabel = gamepadBindingDisplayLabel(binding);
+      String summary = strf("{} -> {}", displayLabel, actionName(binding.action));
+
+      ImGui::PushID(ControllerButtonNames.getRight(binding.button).utf8Ptr());
+      bool open = ImGui::TreeNodeEx(summary.utf8Ptr(), ImGuiTreeNodeFlags_DefaultOpen);
+      if (open) {
+        ImGui::Checkbox(launcherText("gamepadManager.bindingEnabled", "Binding enabled").utf8Ptr(), &binding.enabled);
+        ImGui::Text("%s: %s", launcherText("gamepadManager.button", "Button").utf8Ptr(), displayLabel.utf8Ptr());
+        renderGamepadActionCombo(state, launcherText("touchManager.interaction", "Interaction").utf8Ptr(), binding.action, String("gamepad:") + ControllerButtonNames.getRight(binding.button));
+        renderGamepadPressModeCombo(binding);
+        ImGui::TreePop();
+      }
+      ImGui::PopID();
+    }
+  }
+
+  void renderGamepadManager(LauncherState& state) {
+    ImGui::TextUnformatted(launcherText("gamepadManager.title", "Gamepad Controls").utf8Ptr());
+    ImGui::Separator();
+
+    beginLauncherScrollArea("GamepadManagerScroll", state);
+    if (ImGui::Button(launcherText("common.backToControls", "Back to Controls").utf8Ptr()))
+      state.gamepadManagerOpen = false;
+    sameLineIfNextFits(imguiButtonWidth(launcherText("common.save", "Save").utf8Ptr()));
+    if (ImGui::Button(launcherText("common.save", "Save").utf8Ptr()))
+      persistLauncherState(state);
+
+    String connected = m_activeGamepadName.empty() ? launcherText("gamepadManager.noController", "No controller connected") : m_activeGamepadName;
+    ImGui::Text("%s: %s", launcherText("gamepadManager.connected", "Connected").utf8Ptr(), connected.utf8Ptr());
+    ImGui::Text("%s: %s", launcherText("gamepadManager.layout", "Layout").utf8Ptr(), activeGamepadLayoutName().utf8Ptr());
+
+    ImGui::Checkbox(launcherText("gamepadManager.enable", "Enable gamepad controls").utf8Ptr(), &state.gamepadConfig.enabled);
+    ImGui::SliderFloat(launcherText("gamepadManager.triggerThreshold", "Trigger press threshold").utf8Ptr(), &state.gamepadConfig.triggerThreshold, 0.05f, 0.95f);
+    renderGamepadStickSettings(launcherText("gamepadManager.leftStick", "Left Stick").utf8Ptr(), state.gamepadConfig.leftStick);
+    renderGamepadStickSettings(launcherText("gamepadManager.rightStick", "Right Stick").utf8Ptr(), state.gamepadConfig.rightStick);
+
+    ImGui::Separator();
+    renderGamepadButtonBindings(state);
+
+    ImGui::EndChild();
   }
 
   void renderTouchElementPreview(LauncherState& state, ImDrawList* draw, ImVec2 canvasMin, ImVec2 canvasSize, int index) {
@@ -3398,12 +4232,15 @@ private:
     if (!gyroAvailable)
       state.touchConfig.gyroEnabled = false;
 
-    ImGui::TextUnformatted(launcherText("touchManager.title", "Touch Controls Manager").utf8Ptr());
+    ImGui::TextUnformatted(launcherText("touchManager.title", "Controls").utf8Ptr());
     ImGui::Separator();
 
     beginLauncherScrollArea("TouchManagerScroll", state);
     if (ImGui::Button(launcherText("common.backToLauncher", "Back to Launcher").utf8Ptr()))
       state.touchManagerOpen = false;
+    sameLineIfNextFits(imguiButtonWidth(launcherText("gamepadManager.open", "Gamepad Controls").utf8Ptr()));
+    if (ImGui::Button(launcherText("gamepadManager.open", "Gamepad Controls").utf8Ptr()))
+      state.gamepadManagerOpen = true;
     sameLineIfNextFits(imguiButtonWidth(launcherText("touchManager.previewAdjust", "Preview / Adjust Layout").utf8Ptr()));
     if (ImGui::Button(launcherText("touchManager.previewAdjust", "Preview / Adjust Layout").utf8Ptr()))
       state.touchPreviewOpen = true;
@@ -3411,6 +4248,7 @@ private:
     if (ImGui::Button(launcherText("common.save", "Save").utf8Ptr()))
       persistLauncherState(state);
 
+    ImGui::TextUnformatted(launcherText("touchManager.touchSection", "Controls").utf8Ptr());
     ImGui::Checkbox(launcherText("touchManager.enableOverlay", "Enable touch overlay").utf8Ptr(), &state.touchConfig.enabled);
     ImGui::Checkbox(launcherText("touchManager.enableDirectGestures", "Enable direct screen touch gestures").utf8Ptr(), &state.touchConfig.directTouchGestures);
     ImGui::BeginDisabled(!gyroAvailable);
@@ -3659,6 +4497,8 @@ private:
 
     if (state.uiSettingsOpen) {
       renderLauncherUiSettings(state);
+    } else if (state.touchManagerOpen && state.gamepadManagerOpen) {
+      renderGamepadManager(state);
     } else if (state.touchManagerOpen) {
       renderTouchManager(state);
     } else if (state.modManagerOpen) {
@@ -4026,9 +4866,10 @@ private:
       sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.uiSettings", "UI Settings").utf8Ptr()));
       if (ImGui::Button(launcherText("launcher.uiSettings", "UI Settings").utf8Ptr()))
         state.uiSettingsOpen = true;
-      sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.touchControls", "Touch Controls").utf8Ptr()));
-      if (ImGui::Button(launcherText("launcher.touchControls", "Touch Controls").utf8Ptr())) {
+      sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.touchControls", "Controls").utf8Ptr()));
+      if (ImGui::Button(launcherText("launcher.touchControls", "Controls").utf8Ptr())) {
         state.touchManagerOpen = true;
+        state.gamepadManagerOpen = false;
         state.selectedTouchElement = std::clamp(state.selectedTouchElement, 0, (int)state.touchElements.size() - 1);
       }
       sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.exportDiagnostics", "Export Diagnostics").utf8Ptr()));
@@ -4050,7 +4891,9 @@ private:
       }
 
       ImGui::Separator();
-      ImGui::Text("%s: %s", launcherText("launcher.touchControlsStatusLabel", "Touch Controls").utf8Ptr(), state.touchConfig.enabled ? launcherText("common.enabled", "enabled").utf8Ptr() : launcherText("common.disabled", "disabled").utf8Ptr());
+      ImGui::Text("%s: %s / %s", launcherText("launcher.touchControlsStatusLabel", "Controls").utf8Ptr(),
+        state.touchConfig.enabled ? launcherText("common.touchOn", "touch on").utf8Ptr() : launcherText("common.touchOff", "touch off").utf8Ptr(),
+        state.gamepadConfig.enabled ? launcherText("common.gamepadOn", "gamepad on").utf8Ptr() : launcherText("common.gamepadOff", "gamepad off").utf8Ptr());
 
       state.canLaunch = File::isFile(state.packedPakPath);
       if (!state.canLaunch)
@@ -4120,6 +4963,13 @@ private:
         {"gyroInvertX", state.touchConfig.gyroInvertX},
         {"gyroInvertY", state.touchConfig.gyroInvertY},
         {"elements", jsonFromTouchElements(state.touchElements)}
+      }},
+      {"gamepad", JsonObject{
+        {"enabled", state.gamepadConfig.enabled},
+        {"triggerThreshold", state.gamepadConfig.triggerThreshold},
+        {"leftStick", jsonFromGamepadStick(state.gamepadConfig.leftStick)},
+        {"rightStick", jsonFromGamepadStick(state.gamepadConfig.rightStick)},
+        {"bindings", jsonFromGamepadBindings(state.gamepadBindings)}
       }}
     };
 
@@ -4174,7 +5024,9 @@ private:
       }},
       {"storageDirectory", m_storageRoot},
       {"logDirectory", File::relativeTo(m_storageRoot, "logs")},
+      {"controllerInput", false},
       {"defaultConfiguration", JsonObject{
+        {"controllerInput", false},
         {"mobile", JsonObject{
           {"touchControls", JsonObject{
             {"enabled", state.touchConfig.enabled},
@@ -4188,6 +5040,13 @@ private:
             {"gyroInvertY", state.touchConfig.gyroInvertY},
             {"elements", jsonFromTouchElements(state.touchElements)},
             {"invertLook", false}
+          }},
+          {"gamepadControls", JsonObject{
+            {"enabled", state.gamepadConfig.enabled},
+            {"triggerThreshold", state.gamepadConfig.triggerThreshold},
+            {"leftStick", jsonFromGamepadStick(state.gamepadConfig.leftStick)},
+            {"rightStick", jsonFromGamepadStick(state.gamepadConfig.rightStick)},
+            {"bindings", jsonFromGamepadBindings(state.gamepadBindings)}
           }}
         }}
       }}
@@ -4298,6 +5157,7 @@ private:
       androidLogInfo("startApplication: create touch adapter");
       m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize, &m_renderCanvasSize, &m_displayScale, &m_safeArea);
       m_touchAdapter->setGyroAvailable(platformGyroAvailable());
+      m_gamepadAdapter = make_unique<MobileGamepadInputAdapter>(&m_renderCanvasSize);
 
       if (auto configService = m_platformServices->launchConfigService()) {
         auto cfg = configService->loadLauncherConfig();
@@ -4316,6 +5176,8 @@ private:
         m_touchAdapter->setConfig(touch);
         m_touchAdapter->setElements(touchElementsFromConfig(cfg));
         syncGyroSensor(touch.gyroEnabled);
+        m_gamepadAdapter->setConfig(gamepadConfigFromConfig(cfg));
+        m_gamepadAdapter->setBindings(gamepadBindingsFromConfig(cfg));
       }
 
       if (m_softQuitRequested || m_quitRequested) {
@@ -4457,6 +5319,8 @@ private:
     m_textInputDirty = false;
 #endif
     syncGyroSensor(false);
+    if (m_gamepadAdapter)
+      m_gamepadAdapter->cancelAll();
     // Do not reset m_application: startup() can be called again for a new
     // session without rebuilding the entire object.
   }
@@ -4620,6 +5484,8 @@ private:
     ImGuiIO* io = overlayEnabled ? &ImGui::GetIO() : nullptr;
 
     m_touchAdapter->beginFrame();
+    if (m_gamepadAdapter)
+      m_gamepadAdapter->beginFrame();
 
     while (SDL_PollEvent(&event)) {
       bool touchDerivedMouse = isTouchDerivedMouseEvent(event);
@@ -4648,6 +5514,8 @@ private:
           || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) {
         if (m_touchAdapter)
           m_touchAdapter->cancelAll();
+        if (m_gamepadAdapter)
+          m_gamepadAdapter->cancelAll();
         syncWindowMetrics(true);
         continue;
       }
@@ -4655,6 +5523,8 @@ private:
       if (event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
         if (m_touchAdapter)
           m_touchAdapter->cancelAll();
+        if (m_gamepadAdapter)
+          m_gamepadAdapter->cancelAll();
         syncWindowMetrics(true);
         continue;
       }
@@ -4696,10 +5566,18 @@ private:
         input.set(ControllerButtonDownEvent{(ControllerId)event.gbutton.which, controllerButtonFromSdlControllerButton(event.gbutton.button)});
       } else if (event.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
         input.set(ControllerButtonUpEvent{(ControllerId)event.gbutton.which, controllerButtonFromSdlControllerButton(event.gbutton.button)});
+      } else if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+        openGamepad(event.gdevice.which);
+      } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+        closeGamepad(event.gdevice.which);
       }
 
-      if (input)
-        events.append(input.take());
+      if (input) {
+        if (m_gamepadAdapter)
+          m_gamepadAdapter->processInputEvent(input.take(), events);
+        else
+          events.append(input.take());
+      }
     }
 
     syncWindowMetrics(true);
@@ -4707,6 +5585,10 @@ private:
     updateGyroInput();
     m_touchAdapter->endFrame();
     m_touchAdapter->appendGeneratedEvents(events);
+    if (m_gamepadAdapter) {
+      m_gamepadAdapter->endFrame();
+      m_gamepadAdapter->appendGeneratedEvents(events);
+    }
     return events;
   }
 
@@ -4796,10 +5678,64 @@ private:
           || event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED
           || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) {
         syncWindowMetrics(false);
+      } else if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
+        openGamepad(event.gdevice.which);
+      } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
+        closeGamepad(event.gdevice.which);
       }
     }
 
     syncWindowMetrics(false);
+  }
+
+  void openGamepad(SDL_JoystickID id) {
+    if (m_sdlGamepads.contains(id))
+      return;
+
+    SDL_Gamepad* gamepad = SDL_OpenGamepad(id);
+    if (!gamepad) {
+      Logger::warn("Controller device '{}' could not be opened: {}", id, SDL_GetError());
+      return;
+    }
+
+    m_sdlGamepads.insert_or_assign(id, SDLGamepadUPtr(gamepad, SDL_CloseGamepad));
+    refreshActiveGamepadInfo();
+    Logger::info("Controller device '{}' added", SDL_GetGamepadName(gamepad) ? SDL_GetGamepadName(gamepad) : "Unknown Controller");
+  }
+
+  void closeGamepad(SDL_JoystickID id) {
+    auto find = m_sdlGamepads.find(id);
+    if (find != m_sdlGamepads.end()) {
+      if (SDL_Gamepad* gamepad = find->second.get())
+        Logger::info("Controller device '{}' removed", SDL_GetGamepadName(gamepad) ? SDL_GetGamepadName(gamepad) : "Unknown Controller");
+      m_sdlGamepads.erase(id);
+    }
+    refreshActiveGamepadInfo();
+    if (m_gamepadAdapter)
+      m_gamepadAdapter->cancelAll();
+  }
+
+  void refreshActiveGamepadInfo() {
+    m_activeGamepadName.clear();
+    m_activeGamepadType = SDL_GAMEPAD_TYPE_UNKNOWN;
+    for (auto const& pair : m_sdlGamepads) {
+      if (SDL_Gamepad* gamepad = pair.second.get()) {
+        char const* name = SDL_GetGamepadName(gamepad);
+        m_activeGamepadName = name ? String(name) : String("Unknown Controller");
+        m_activeGamepadType = SDL_GetGamepadType(gamepad);
+        return;
+      }
+    }
+  }
+
+  void openExistingGamepads() {
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    if (!ids)
+      return;
+    for (int i = 0; i < count; ++i)
+      openGamepad(ids[i]);
+    SDL_free(ids);
   }
 
   bool queryWindowPixelSize(Vec2U& outSize) const {
@@ -5038,6 +5974,11 @@ private:
   ApplicationUPtr m_application;
   StringList m_runtimeArgs;
 
+  typedef std::unique_ptr<SDL_Gamepad, decltype(&SDL_CloseGamepad)> SDLGamepadUPtr;
+  StableHashMap<SDL_JoystickID, SDLGamepadUPtr> m_sdlGamepads;
+  String m_activeGamepadName;
+  SDL_GamepadType m_activeGamepadType = SDL_GAMEPAD_TYPE_UNKNOWN;
+
   SDL_Window* m_window = nullptr;
   SDL_GLContext m_glContext = nullptr;
   SDL_Sensor* m_gyroSensor = nullptr;
@@ -5089,6 +6030,7 @@ private:
   ApplicationControllerPtr m_appController;
   MobilePlatformServicesUPtr m_platformServices;
   unique_ptr<MobileTouchInputAdapter> m_touchAdapter;
+  unique_ptr<MobileGamepadInputAdapter> m_gamepadAdapter;
   bool m_launcherTouchActive = false;
   uint64_t m_launcherTouchFinger = 0;
   ImVec2 m_launcherTouchLastPos = ImVec2(0.0f, 0.0f);

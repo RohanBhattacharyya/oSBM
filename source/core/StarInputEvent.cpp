@@ -172,6 +172,13 @@ EnumMap<MouseWheel> const MouseWheelNames{
   {MouseWheel::Down, "MouseWheelDown"}
 };
 
+EnumMap<UiNavigationDirection> const UiNavigationDirectionNames{
+  {UiNavigationDirection::Up, "SelectionUp"},
+  {UiNavigationDirection::Down, "SelectionDown"},
+  {UiNavigationDirection::Left, "SelectionLeft"},
+  {UiNavigationDirection::Right, "SelectionRight"}
+};
+
 EnumMap<ControllerAxis> const ControllerAxisNames{
   {ControllerAxis::LeftX, "LeftX"},
   {ControllerAxis::LeftY, "LeftY"},
@@ -193,6 +200,8 @@ EnumMap<ControllerButton> const ControllerButtonNames{
   {ControllerButton::RightStick, "RightStick"},
   {ControllerButton::LeftShoulder, "LeftShoulder"},
   {ControllerButton::RightShoulder, "RightShoulder"},
+  {ControllerButton::TriggerLeft, "TriggerLeft"},
+  {ControllerButton::TriggerRight, "TriggerRight"},
   {ControllerButton::DPadUp, "DPadUp"},
   {ControllerButton::DPadDown, "DPadDown"},
   {ControllerButton::DPadLeft, "DPadLeft"},

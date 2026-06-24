@@ -39,19 +39,20 @@ All you have to do is download your **packed.pak** from your game files. Find th
 </details>
 
 <details>
-<summary>Using/configuring touch controls</summary>
+<summary>Using/configuring controls</summary>
 
 There are many features that oSBM has that you should know about.
 - Direct screen touch gestures
 - Gyro Aiming
 - Aim joystick
 - D-Pad
-- etc. in the touch controls manager.
+- Gamepad controls and remapping
+- etc. in the Controls manager.
 
-### Touch Controls Manager
-The Touch Controls Manager is a menu in the oSBM launcher that can be accessed by clicking the Touch Controls button in the main menu. Opening it up, you will be presented with many options.
+### Controls Manager
+The Controls manager is a menu in the oSBM launcher that can be accessed by clicking the Controls button in the main menu. Opening it up, you will be presented with many options.
 
-There are two sections to the manager, the general toggles at the top, and the configurable buttons/joysticks below. In the top section, you can enable/disable various options about the touch controls.
+There are touch control settings directly in the Controls manager, and a Gamepad Controls button that opens gamepad-specific settings. For touch controls, there are two sections to the manager: the general toggles at the top, and the configurable buttons/joysticks below. In the top section, you can enable/disable various options about the touch controls.
 - **Enable touch overlay:** this toggles the actual usage of all touch controls.
 - **Enable direct screen touch gestures:** this toggles if the user can touch the screen anywhere to act as a left click at that location (the virtual mouse is placed at the place of the tap, and a left click occurs). Holding down with one finger where you want to aim, and then tapping or holding down with a second finger on the screen will initiate a right click/hold, occurring at the aimed location of the first finger.
 - **Invert gyro X/Y axis:** inverts the axis of the gyro if preferred.
@@ -63,7 +64,7 @@ By clicking on the name of a button, it will open up details about it. In genera
 #### Macros
 Macros let one touch button press multiple keyboard keys at the same time. They are useful for shortcuts that normally require a modifier key, such as emotes, menu shortcuts, or any custom keybinds you have set up in Starbound.
 
-To make a macro, open a button in the Touch Controls Manager and use the **Custom keys** field under its interaction. Enter each key name separated by `+`, spaces, commas, or semicolons, then press **Apply**. If you enter one valid key, the button becomes a normal single-key action. If you enter multiple valid keys, the button becomes a macro.
+To make a macro, open a button in the Controls manager and use the **Custom keys** field under its interaction. Enter each key name separated by `+`, spaces, commas, or semicolons, then press **Apply**. If you enter one valid key, the button becomes a normal single-key action. If you enter multiple valid keys, the button becomes a macro.
 
 Examples:
 - `LShift+F1`

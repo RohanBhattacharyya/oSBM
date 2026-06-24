@@ -190,6 +190,14 @@ enum class MouseWheel : uint8_t {
 };
 extern EnumMap<MouseWheel> const MouseWheelNames;
 
+enum class UiNavigationDirection : uint8_t {
+  Up,
+  Down,
+  Left,
+  Right
+};
+extern EnumMap<UiNavigationDirection> const UiNavigationDirectionNames;
+
 typedef uint32_t ControllerId;
 
 enum class ControllerAxis : uint8_t {
@@ -215,6 +223,8 @@ enum class ControllerButton : uint8_t {
   RightStick,
   LeftShoulder,
   RightShoulder,
+  TriggerLeft,
+  TriggerRight,
   DPadUp,
   DPadDown,
   DPadLeft,
@@ -263,6 +273,10 @@ struct MouseWheelEvent {
   Vec2F mousePosition;
 };
 
+struct UiNavigationEvent {
+  UiNavigationDirection direction;
+};
+
 struct ControllerAxisEvent {
   ControllerId controller;
   ControllerAxis controllerAxis;
@@ -287,6 +301,7 @@ typedef Variant<
     MouseButtonDownEvent,
     MouseButtonUpEvent,
     MouseWheelEvent,
+    UiNavigationEvent,
     ControllerAxisEvent,
     ControllerButtonDownEvent,
     ControllerButtonUpEvent>
