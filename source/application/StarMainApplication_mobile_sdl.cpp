@@ -829,6 +829,8 @@ struct MobileTouchConfig {
   float gyroSensitivity = 1.0f;
   bool gyroInvertX = false;
   bool gyroInvertY = false;
+  bool rightStickSmartKeyEnabled = false;
+  MouseButton rightStickSmartKeyMouseButton = MouseButton::Left;
 };
 
 enum class MobileGamepadStickMode {
@@ -1033,6 +1035,7 @@ static std::vector<MobileTouchElement> defaultTouchElements() {
     {"joystick", launcherTextStatic("touchElement.joystick", "Joystick"), MobileTouchElementKind::Joystick, true, {0.14f, 0.78f}, 1.15f, keyAction(Key::Space), {}, {}, {}, {}},
     {"aimJoystick", launcherTextStatic("touchElement.aimJoystick", "Aim"), MobileTouchElementKind::AimJoystick, true, {0.66f, 0.78f}, 1.15f, noneAction(), {}, {}, {}, {}},
     {"leftHand", launcherTextStatic("touchElement.leftHand", "L"), MobileTouchElementKind::Button, true, {0.30f, 0.16f}, 0.92f, mouseAction(MouseButton::Left), {}, {}, {}, {}},
+    {"smartKeyManualAuto", launcherTextStatic("touchElement.smartKeyManualAuto", "Smart"), MobileTouchElementKind::Button, true, {0.47f, 0.16f}, 0.82f, mouseAction(MouseButton::Right), {}, {}, {}, {}, MobileTouchPressMode::Toggle},
     {"rightHand", launcherTextStatic("touchElement.rightHand", "R"), MobileTouchElementKind::Button, true, {0.64f, 0.16f}, 0.92f, mouseAction(MouseButton::Right), {}, {}, {}, {}},
     {"jump", launcherTextStatic("touchElement.jump", "J"), MobileTouchElementKind::Button, true, {0.88f, 0.78f}, 1.00f, keyAction(Key::Space), {}, {}, {}, {}},
     {"interact", launcherTextStatic("touchElement.interact", "E"), MobileTouchElementKind::Button, true, {0.76f, 0.73f}, 0.92f, keyAction(Key::E), {}, {}, {}, {}},
@@ -1373,7 +1376,7 @@ struct LauncherModEntry {
 };
 
 struct LauncherUiConfig {
-  float scale = 1.0f;
+  float scale = 2.0f;
   std::array<float, 3> accentColor = {0.28f, 0.55f, 1.0f};
 };
 
@@ -1616,7 +1619,30 @@ public:
       } else {
         bool held = heldElement(element.id)
             || (element.action.kind == MobileTouchActionKind::GyroToggle && m_gyroAvailable && m_config.gyroEnabled && m_gyroRuntimeEnabled);
-        drawButton(draw, ip(center), drawRadius * 0.55f, held, element.label.utf8Ptr(), base, fill);
+        char const* label = element.label.utf8Ptr();
+        ImU32 buttonFill = fill;
+        if (element.id == "smartKeyManualAuto") {
+          held = m_config.rightStickSmartKeyEnabled;
+          if (held) {
+            label = launcherTextStatic("touchElement.smartKeyManualAuto.on", "Smart").utf8Ptr();
+            buttonFill = IM_COL32(60, 200, 80, (int)(140.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
+          } else {
+            label = launcherTextStatic("touchElement.smartKeyManualAuto.off", "Manual").utf8Ptr();
+          }
+        } else if (element.id == "rightHand" && m_config.rightStickSmartKeyEnabled) {
+          MouseButton smartButton = m_config.rightStickSmartKeyMouseButton;
+          held = (smartButton == MouseButton::Right);
+          if (held) {
+            buttonFill = IM_COL32(220, 60, 60, (int)(140.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
+          }
+        } else if (element.id == "leftHand" && m_config.rightStickSmartKeyEnabled) {
+          MouseButton smartButton = m_config.rightStickSmartKeyMouseButton;
+          held = (smartButton == MouseButton::Left);
+          if (held) {
+            buttonFill = IM_COL32(60, 130, 220, (int)(140.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
+          }
+        }
+        drawButton(draw, ip(center), drawRadius * 0.55f, held, label, base, buttonFill);
       }
     }
   }
@@ -1849,6 +1875,9 @@ private:
         m_aimJoystickCurrent = pos;
         ensureAimTarget();
         updateAimJoystickFinger(state, pos);
+        if (m_config.rightStickSmartKeyEnabled) {
+          setMouseOwner(m_aimJoystickElementId, m_config.rightStickSmartKeyMouseButton, true);
+        }
         claimedControl = true;
         break;
       }
@@ -1953,6 +1982,9 @@ private:
         if (m_aimJoystickActive && !aimJoystickPrecise())
           syncVirtualAimCursor(true, true);
         m_aimJoystickActive = false;
+        if (m_config.rightStickSmartKeyEnabled) {
+          setMouseOwner(m_aimJoystickElementId, m_config.rightStickSmartKeyMouseButton, false);
+        }
         m_aimJoystickElementId.clear();
         m_aimJoystickFinger = 0;
         m_aimVec = {};
@@ -2282,6 +2314,35 @@ private:
 
   void pressActionButton(MobileTouchElement const& element) {
     m_heldElements.add(element.id);
+
+    if ((element.id == "leftHand" || element.id == "rightHand") && m_config.rightStickSmartKeyEnabled) {
+      MouseButton newButton = (element.id == "leftHand") ? MouseButton::Left : MouseButton::Right;
+      if (m_config.rightStickSmartKeyMouseButton != newButton) {
+        MouseButton oldButton = m_config.rightStickSmartKeyMouseButton;
+        m_config.rightStickSmartKeyMouseButton = newButton;
+        if (m_aimJoystickActive) {
+          setMouseOwner(m_aimJoystickElementId, oldButton, false);
+          setMouseOwner(m_aimJoystickElementId, newButton, true);
+        }
+      } else if (m_aimJoystickActive) {
+        setMouseOwner(m_aimJoystickElementId, newButton, false);
+        setMouseOwner(m_aimJoystickElementId, newButton, true);
+      }
+      return;
+    }
+
+    if (element.id == "smartKeyManualAuto") {
+      m_config.rightStickSmartKeyEnabled = !m_config.rightStickSmartKeyEnabled;
+      if (m_config.rightStickSmartKeyEnabled) {
+        if (m_aimJoystickActive)
+          setMouseOwner(m_aimJoystickElementId, m_config.rightStickSmartKeyMouseButton, true);
+      } else {
+        if (m_aimJoystickActive)
+          setMouseOwner(m_aimJoystickElementId, m_config.rightStickSmartKeyMouseButton, false);
+      }
+      return;
+    }
+
     if (element.action.kind == MobileTouchActionKind::GyroToggle) {
       if (m_gyroAvailable && m_config.gyroEnabled) {
         m_gyroRuntimeEnabled = !m_gyroRuntimeEnabled;
@@ -2312,6 +2373,14 @@ private:
 
   void releaseActionButton(FingerState const& state) {
     m_heldElements.remove(state.elementId);
+
+    if ((state.elementId == "leftHand" || state.elementId == "rightHand") && m_config.rightStickSmartKeyEnabled) {
+      MouseButton releasedButton = (state.elementId == "leftHand") ? MouseButton::Left : MouseButton::Right;
+      if (m_aimJoystickActive)
+        setMouseOwner(m_aimJoystickElementId, releasedButton, false);
+      return;
+    }
+
     if (state.pressMode == MobileTouchPressMode::Hold)
       setAction(state.action, state.elementId, false);
     else if (state.pressMode == MobileTouchPressMode::Repeat) {
@@ -3484,13 +3553,25 @@ private:
         alpha);
   }
 
+  // Tone a hue toward the dark ImGui background so the "slot" colors
+  // (frames, borders, scrollbars, child backgrounds) stay readable regardless
+  // of the picked accent.
+  static ImVec4 launcherSlotColor(std::array<float, 3> const& accent, float accentMix, float alpha) {
+    constexpr float bgR = 0.10f, bgG = 0.10f, bgB = 0.12f;
+    return ImVec4(
+        std::clamp(bgR + (accent[0] - bgR) * accentMix, 0.0f, 1.0f),
+        std::clamp(bgG + (accent[1] - bgG) * accentMix, 0.0f, 1.0f),
+        std::clamp(bgB + (accent[2] - bgB) * accentMix, 0.0f, 1.0f),
+        alpha);
+  }
+
   void applyLauncherUiStyle() {
     if (!ImGui::GetCurrentContext())
       return;
 
     ImGui::StyleColorsDark();
 
-    float scale = std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f);
+    float scale = std::clamp(m_launcherUiConfig.scale, 0.75f, 4.0f);
     auto& style = ImGui::GetStyle();
     style.TouchExtraPadding = ImVec2(12.0f * scale, 12.0f * scale);
     style.FramePadding = ImVec2(14.0f * scale, 10.0f * scale);
@@ -3510,6 +3591,49 @@ private:
     colors[ImGuiCol_SliderGrabActive] = launcherColorScaled(accent, 1.25f, 1.0f);
     colors[ImGuiCol_SeparatorActive] = launcherColor(accent, 0.85f);
     colors[ImGuiCol_SeparatorHovered] = launcherColor(accent, 0.65f);
+
+    // Derive the remaining "slot" colors from accent so picking red doesn't
+    // leave blue frames/borders/scrollbars behind.
+    colors[ImGuiCol_Border] = launcherSlotColor(accent, 0.35f, 0.55f);
+    colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_FrameBg] = launcherSlotColor(accent, 0.25f, 0.55f);
+    colors[ImGuiCol_FrameBgHovered] = launcherSlotColor(accent, 0.45f, 0.70f);
+    colors[ImGuiCol_FrameBgActive] = launcherSlotColor(accent, 0.60f, 0.85f);
+    colors[ImGuiCol_TitleBg] = launcherSlotColor(accent, 0.20f, 1.0f);
+    colors[ImGuiCol_TitleBgActive] = launcherSlotColor(accent, 0.35f, 1.0f);
+    colors[ImGuiCol_MenuBarBg] = launcherSlotColor(accent, 0.20f, 1.0f);
+    colors[ImGuiCol_ScrollbarBg] = launcherSlotColor(accent, 0.10f, 0.55f);
+    colors[ImGuiCol_ScrollbarGrab] = launcherSlotColor(accent, 0.45f, 0.80f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = launcherSlotColor(accent, 0.60f, 0.90f);
+    colors[ImGuiCol_ScrollbarGrabActive] = launcherSlotColor(accent, 0.80f, 1.0f);
+    colors[ImGuiCol_ChildBg] = launcherSlotColor(accent, 0.10f, 1.0f);
+    colors[ImGuiCol_PopupBg] = launcherSlotColor(accent, 0.15f, 0.95f);
+    colors[ImGuiCol_Tab] = launcherSlotColor(accent, 0.25f, 0.85f);
+    colors[ImGuiCol_TabHovered] = launcherSlotColor(accent, 0.55f, 0.90f);
+    colors[ImGuiCol_TabActive] = launcherSlotColor(accent, 0.65f, 1.0f);
+    colors[ImGuiCol_TabUnfocused] = launcherSlotColor(accent, 0.20f, 0.85f);
+    colors[ImGuiCol_TabUnfocusedActive] = launcherSlotColor(accent, 0.50f, 1.0f);
+    colors[ImGuiCol_ResizeGrip] = launcherSlotColor(accent, 0.35f, 0.40f);
+    colors[ImGuiCol_ResizeGripHovered] = launcherSlotColor(accent, 0.60f, 0.70f);
+    colors[ImGuiCol_ResizeGripActive] = launcherSlotColor(accent, 0.80f, 1.0f);
+    colors[ImGuiCol_Text] = ImVec4(0.95f, 0.95f, 0.96f, 1.0f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.55f, 0.55f, 0.60f, 1.0f);
+    colors[ImGuiCol_TextSelectedBg] = launcherColor(accent, 0.45f);
+    colors[ImGuiCol_Separator] = launcherSlotColor(accent, 0.30f, 0.60f);
+    colors[ImGuiCol_DragDropTarget] = launcherColor(accent, 0.90f);
+    colors[ImGuiCol_NavHighlight] = launcherColor(accent, 0.80f);
+    colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1, 1, 1, 0.70f);
+    colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0, 0, 0, 0.50f);
+    colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0, 0, 0, 0.55f);
+    colors[ImGuiCol_PlotLines] = launcherColor(accent, 0.80f);
+    colors[ImGuiCol_PlotLinesHovered] = launcherColor(accent, 1.0f);
+    colors[ImGuiCol_PlotHistogram] = launcherColor(accent, 0.80f);
+    colors[ImGuiCol_PlotHistogramHovered] = launcherColor(accent, 1.0f);
+    colors[ImGuiCol_TableHeaderBg] = launcherSlotColor(accent, 0.25f, 0.65f);
+    colors[ImGuiCol_TableBorderStrong] = launcherSlotColor(accent, 0.30f, 0.70f);
+    colors[ImGuiCol_TableBorderLight] = launcherSlotColor(accent, 0.20f, 0.50f);
+    colors[ImGuiCol_TableRowBg] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_TableRowBgAlt] = launcherSlotColor(accent, 0.05f, 0.30f);
   }
 
   void applyLauncherUiConfig(LauncherUiConfig const& config) {
@@ -3705,7 +3829,7 @@ private:
     state.packedPakPath = config.optString("packedPakPath").value(""
     );
 
-    state.uiConfig.scale = std::clamp(config.queryFloat("launcherUi.scale", 1.0f), 0.75f, 1.75f);
+    state.uiConfig.scale = std::clamp(config.queryFloat("launcherUi.scale", 2.0f), 0.75f, 4.0f);
     if (auto accentColor = config.optQueryArray("launcherUi.accentColor")) {
       if (accentColor->size() >= 3) {
         state.uiConfig.accentColor = {
@@ -3748,6 +3872,8 @@ private:
     state.touchConfig.gyroSensitivity = config.queryFloat("touch.gyroSensitivity", 1.0f);
     state.touchConfig.gyroInvertX = config.queryBool("touch.gyroInvertX", false);
     state.touchConfig.gyroInvertY = config.queryBool("touch.gyroInvertY", false);
+    state.touchConfig.rightStickSmartKeyEnabled = config.queryBool("touch.rightStickSmartKeyEnabled", false);
+    state.touchConfig.rightStickSmartKeyMouseButton = (MouseButton)config.queryInt("touch.rightStickSmartKeyMouseButton", (int)MouseButton::Left);
     state.touchElements = touchElementsFromConfig(config);
     state.gamepadConfig = gamepadConfigFromConfig(config);
     state.gamepadBindings = gamepadBindingsFromConfig(config);
@@ -4152,7 +4278,7 @@ private:
     draw->AddRectFilled(min, ImVec2(min.x + displaySize.x, min.y + displaySize.y), IM_COL32(15, 18, 24, 235));
 
     ImGui::SetCursorScreenPos(ImVec2(min.x + 16.0f, min.y + 16.0f));
-    ImGui::BeginChild("TouchPreviewToolbar", ImVec2(std::min(520.0f, displaySize.x - 32.0f), 150.0f), true);
+    ImGui::BeginChild("TouchPreviewToolbar", ImVec2(std::min(520.0f, displaySize.x - 32.0f), 0.0f), false);
     ImGui::TextUnformatted(launcherText("touchPreview.title", "Touch Layout Preview").utf8Ptr());
     if (state.selectedTouchElement >= 0 && state.selectedTouchElement < (int)state.touchElements.size()) {
       auto& selected = state.touchElements[state.selectedTouchElement];
@@ -4215,9 +4341,11 @@ private:
       ImGui::EndCombo();
     }
 
-    ImGui::SliderFloat(launcherText("uiSettings.scale", "Launcher UI size").utf8Ptr(), &state.uiConfig.scale, 0.75f, 1.75f, "%.2fx");
-    ImGui::ColorEdit3(launcherText("uiSettings.accentColor", "Accent color").utf8Ptr(), state.uiConfig.accentColor.data(),
-        ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha);
+    ImGui::SliderFloat(launcherText("uiSettings.scale", "Launcher UI size").utf8Ptr(), &state.uiConfig.scale, 0.75f, 4.0f, "%.2fx");
+    if (ImGui::ColorEdit3(launcherText("uiSettings.accentColor", "Accent color").utf8Ptr(), state.uiConfig.accentColor.data(),
+        ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha)) {
+      applyLauncherUiConfig(state.uiConfig);
+    }
 
     if (ImGui::Button(launcherText("uiSettings.reset", "Reset UI Settings").utf8Ptr())) {
       state.uiConfig = LauncherUiConfig();
@@ -4324,6 +4452,11 @@ private:
           state.selectedTouchElement = i;
         if (selected) {
           ImGui::Indent();
+          if (element.id == "smartKeyManualAuto") {
+            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s",
+              launcherText("touchManager.smartKeyManualAutoHint", "Smart Key: toggles Right Stick Smart Key mode. L = Left, R = Right.").utf8Ptr());
+            ImGui::Separator();
+          }
           if (state.touchLabelBufferElementId != element.id) {
             state.touchLabelBufferElementId = element.id;
             std::snprintf(state.touchLabelBuffer, sizeof(state.touchLabelBuffer), "%s", element.label.utf8Ptr());
@@ -4381,6 +4514,7 @@ private:
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+    drainPendingKeyEvents();
 
     ImVec2 displaySize = imguiDisplaySize();
     float margin = std::max(10.0f, std::min(displaySize.x, displaySize.y) * 0.0125f);
@@ -4962,6 +5096,8 @@ private:
         {"gyroSensitivity", state.touchConfig.gyroSensitivity},
         {"gyroInvertX", state.touchConfig.gyroInvertX},
         {"gyroInvertY", state.touchConfig.gyroInvertY},
+        {"rightStickSmartKeyEnabled", state.touchConfig.rightStickSmartKeyEnabled},
+        {"rightStickSmartKeyMouseButton", (int)state.touchConfig.rightStickSmartKeyMouseButton},
         {"elements", jsonFromTouchElements(state.touchElements)}
       }},
       {"gamepad", JsonObject{
@@ -5038,6 +5174,8 @@ private:
             {"gyroSensitivity", state.touchConfig.gyroSensitivity},
             {"gyroInvertX", state.touchConfig.gyroInvertX},
             {"gyroInvertY", state.touchConfig.gyroInvertY},
+            {"rightStickSmartKeyEnabled", state.touchConfig.rightStickSmartKeyEnabled},
+            {"rightStickSmartKeyMouseButton", (int)state.touchConfig.rightStickSmartKeyMouseButton},
             {"elements", jsonFromTouchElements(state.touchElements)},
             {"invertLook", false}
           }},
@@ -5205,6 +5343,7 @@ private:
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+    drainPendingKeyEvents();
 
     ImVec2 displaySize = imguiDisplaySize();
     float margin = std::max(10.0f, std::min(displaySize.x, displaySize.y) * 0.0125f);
@@ -5270,6 +5409,7 @@ private:
           if (i != 0)
             ImGui::EndFrame();
           ImGui::NewFrame();
+          drainPendingKeyEvents();
         }
         m_application->update();
         m_updateRate = m_updateTicker.tick();
@@ -5659,8 +5799,22 @@ private:
   }
 
   void processWindowEvents() {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+    syncImGuiTextInputState();
+#endif
+
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+      if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+        bool down = (event.type == SDL_EVENT_KEY_DOWN);
+        if (event.key.key == SDLK_BACKSPACE) {
+          m_pendingKeyEvents.push_back({down, ImGuiKey_Backspace});
+          continue;
+        }
+      }
+#endif
+
       if (!processLauncherTouchEvent(event)) {
         if (isTouchDerivedMouseEvent(event))
           continue;
@@ -5912,7 +6066,7 @@ private:
     float shortSide = (float)std::min(m_windowSize[0], m_windowSize[1]) / pixelScale;
     float baseScale = std::clamp(shortSide / 900.0f, 0.85f, 1.15f);
 #endif
-    io.FontGlobalScale = std::clamp(baseScale * std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f), 0.65f, 3.0f);
+    io.FontGlobalScale = std::clamp(baseScale * std::clamp(m_launcherUiConfig.scale, 0.75f, 4.0f), 0.65f, 5.0f);
   }
 
   ImVec2 imguiDisplaySize() const {
@@ -5959,6 +6113,40 @@ private:
 #endif
   }
 
+  // Drain key events captured by processWindowEvents() (called before
+  // NewFrame() while AppAcceptingEvents is false). Call this AFTER NewFrame().
+  void drainPendingKeyEvents() {
+    ImGuiIO& io = ImGui::GetIO();
+    int emittedUp = 0;
+    int emittedDown = 0;
+
+    // Step 1: emit 'up' events carried over from the previous tick.
+    if (!m_pendingKeyUps.empty()) {
+      for (auto& p : m_pendingKeyUps)
+        io.AddKeyEvent(p.second, p.first);
+      emittedUp = (int)m_pendingKeyUps.size();
+      m_pendingKeyUps.clear();
+    }
+
+    // Step 2: emit 'down' events now; queue their matching 'up' events for
+    // the following tick. processWindowEvents pushes a (down, up) pair in
+    // order, so we split it at the midpoint.
+    if (!m_pendingKeyEvents.empty()) {
+      size_t half = m_pendingKeyEvents.size() / 2;
+      for (size_t i = 0; i < m_pendingKeyEvents.size(); ++i) {
+        auto& p = m_pendingKeyEvents[i];
+        if (i < half) {
+          io.AddKeyEvent(p.second, p.first);
+          if (p.first) emittedDown++;
+          else emittedUp++;
+        } else {
+          m_pendingKeyUps.push_back(p);
+        }
+      }
+      m_pendingKeyEvents.clear();
+    }
+  }
+
   String modsDirectoryPath() const {
     auto fallbackModsPath = File::relativeTo(m_storageRoot, "mods");
 #if STAR_SYSTEM_ANDROID
@@ -5998,6 +6186,13 @@ private:
   bool m_textInput = false;
   bool m_textInputApplied = false;
   bool m_textInputDirty = false;
+  // Backspace key events collected during processWindowEvents() (called BEFORE
+  // ImGui::NewFrame()) where AppAcceptingEvents is still false and AddKeyEvent
+  // would silently drop the event. Drained right after NewFrame() so the input
+  // actually reaches ImGui.
+  std::vector<std::pair<bool, ImGuiKey>> m_pendingKeyEvents;
+  // 'up' events whose matching 'down' was emitted in a previous drain tick.
+  std::vector<std::pair<bool, ImGuiKey>> m_pendingKeyUps;
   bool m_audioEnabled = false;
   SDL_AudioStream* m_sdlAudioOutputStream = nullptr;
   std::vector<uint8_t> m_audioOutputData;
