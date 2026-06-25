@@ -3,7 +3,8 @@ plugins {
 }
 
 def sdlJar = System.getenv("STAR_SDL3_JAR")
-def useExternalSdlJar = sdlJar != null && !sdlJar.isEmpty() && file(sdlJar).exists()
+def sdlJarFile = sdlJar != null && !sdlJar.isBlank() ? new File(sdlJar) : null
+def useExternalSdlJar = sdlJarFile != null && sdlJarFile.exists()
 
 android {
     namespace 'com.devoflife.osbm.android'

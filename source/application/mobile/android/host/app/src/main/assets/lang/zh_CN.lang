@@ -13,6 +13,7 @@ launcher.touchControlsStatusLabel=控制
 launcher.exportDiagnostics=导出诊断信息
 launcher.launchDisabledHint=导入 packed.pak 之前无法启动。
 launcher.launch=启动
+launcher.forceLandscape=强制横屏启动游戏
 uiSettings.title=启动器界面设置
 uiSettings.language=语言
 uiSettings.language.system=跟随系统
