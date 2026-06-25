@@ -2,6 +2,7 @@
 #include "StarApplicationController.hpp"
 #include "StarByteArray.hpp"
 #include "StarFile.hpp"
+#include "StarImage.hpp"
 #include "StarJsonExtra.hpp"
 #include "StarLogging.hpp"
 #include "StarRenderer_gles.hpp"
@@ -30,6 +31,7 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #include <atomic>
 #include <cmath>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -72,6 +74,18 @@ struct LauncherActionResult {
   String error;
   bool modListDirty = false;
   Maybe<String> packedPakPath;
+};
+
+struct LauncherTexture {
+  GLuint textureId = 0;
+  Vec2U size;
+};
+
+enum class GamepadGlyphFamily {
+  Xbox,
+  Playstation,
+  Switch,
+  SteamDeck
 };
 
 struct LauncherState {
@@ -653,6 +667,7 @@ private:
   }
 
   void shutdownImGui() {
+    clearLauncherTextures();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
@@ -771,6 +786,69 @@ private:
     if (auto value = m_launcherTranslations.ptr(key))
       return *value;
     return fallback;
+  }
+
+  String launcherBundledAssetsRoot() const {
+    if (!m_launcherLangDirectory.empty())
+      return File::dirName(m_launcherLangDirectory);
+    return File::relativeTo(m_storageRoot, "bundled_assets");
+  }
+
+  String launcherBundledAssetPath(String const& relativePath) const {
+    return File::relativeTo(launcherBundledAssetsRoot(), relativePath);
+  }
+
+  ImTextureID imguiTextureId(LauncherTexture const& texture) const {
+    return (ImTextureID)(intptr_t)texture.textureId;
+  }
+
+  LauncherTexture const* launcherTexture(String const& relativePath) {
+    if (auto texture = m_launcherTextureCache.ptr(relativePath))
+      return texture;
+
+    auto path = launcherBundledAssetPath(relativePath);
+    if (!File::isFile(path))
+      return nullptr;
+
+    try {
+      Image image = Image::readPng(File::open(path, IOMode::Read));
+      if (image.pixelFormat() != PixelFormat::RGBA32)
+        image = image.convert(PixelFormat::RGBA32);
+
+      GLuint textureId = 0;
+      glGenTextures(1, &textureId);
+      if (textureId == 0)
+        return nullptr;
+
+      glBindTexture(GL_TEXTURE_2D, textureId);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width(), image.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, image.data());
+
+      LauncherTexture texture;
+      texture.textureId = textureId;
+      texture.size = image.size();
+      return &m_launcherTextureCache.set(relativePath, std::move(texture));
+    } catch (std::exception const& e) {
+      Logger::warn("Could not load launcher controller texture '{}': {}", path, outputException(e, false));
+      return nullptr;
+    }
+  }
+
+  void renderLauncherTexture(LauncherTexture const& texture, ImVec2 size) const {
+    ImGui::Image(imguiTextureId(texture), size, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+  }
+
+  void clearLauncherTextures() {
+    for (auto const& pair : m_launcherTextureCache) {
+      GLuint textureId = pair.second.textureId;
+      if (textureId != 0)
+        glDeleteTextures(1, &textureId);
+    }
+    m_launcherTextureCache.clear();
   }
 
   void loadLauncherFont(ImGuiIO& io) {
@@ -1088,6 +1166,34 @@ private:
     binding.pressMode = temp.pressMode;
   }
 
+  bool activeGamepadIsPlaystation() const {
+    return m_activeGamepadType == SDL_GAMEPAD_TYPE_PS3
+        || m_activeGamepadType == SDL_GAMEPAD_TYPE_PS4
+        || m_activeGamepadType == SDL_GAMEPAD_TYPE_PS5;
+  }
+
+  bool activeGamepadIsNintendo() const {
+    return m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO
+        || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT
+        || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT
+        || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
+  }
+
+  bool activeGamepadIsSteamDeck() const {
+    return m_activeGamepadName.contains("steam deck", String::CaseInsensitive)
+        || m_activeGamepadName.contains("steamdeck", String::CaseInsensitive);
+  }
+
+  GamepadGlyphFamily activeGamepadGlyphFamily() const {
+    if (activeGamepadIsPlaystation())
+      return GamepadGlyphFamily::Playstation;
+    if (activeGamepadIsNintendo())
+      return GamepadGlyphFamily::Switch;
+    if (activeGamepadIsSteamDeck())
+      return GamepadGlyphFamily::SteamDeck;
+    return GamepadGlyphFamily::Xbox;
+  }
+
   String activeGamepadLayoutName() const {
     if (m_activeGamepadType != SDL_GAMEPAD_TYPE_UNKNOWN) {
       char const* type = SDL_GetGamepadStringForType(m_activeGamepadType);
@@ -1098,13 +1204,7 @@ private:
   }
 
   String gamepadBindingDisplayLabel(MobileGamepadBinding const& binding) const {
-    bool playstation = m_activeGamepadType == SDL_GAMEPAD_TYPE_PS3 || m_activeGamepadType == SDL_GAMEPAD_TYPE_PS4 || m_activeGamepadType == SDL_GAMEPAD_TYPE_PS5;
-    bool nintendo = m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO
-        || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT
-        || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT
-        || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
-
-    if (playstation) {
+    if (activeGamepadIsPlaystation()) {
       if (binding.button == ControllerButton::A)
         return "Cross";
       if (binding.button == ControllerButton::B)
@@ -1127,7 +1227,7 @@ private:
         return "Options";
       if (binding.button == ControllerButton::Touchpad)
         return "Touchpad";
-    } else if (nintendo) {
+    } else if (activeGamepadIsNintendo()) {
       if (binding.button == ControllerButton::A)
         return "B";
       if (binding.button == ControllerButton::B)
@@ -1145,6 +1245,270 @@ private:
     }
 
     return binding.label.empty() ? ControllerButtonNames.getRight(binding.button) : binding.label;
+  }
+
+  String gamepadGlyphFolder(GamepadGlyphFamily family) const {
+    switch (family) {
+      case GamepadGlyphFamily::Playstation:
+        return "ps5";
+      case GamepadGlyphFamily::Switch:
+        return "switch";
+      case GamepadGlyphFamily::SteamDeck:
+        return "steamdeck";
+      case GamepadGlyphFamily::Xbox:
+      default:
+        return "xbox";
+    }
+  }
+
+  String controllerDiagramAssetPath(GamepadGlyphFamily family) const {
+    switch (family) {
+      case GamepadGlyphFamily::Xbox:
+        return "opensb/interface/mobile/controller/xbox/diagram.png";
+      case GamepadGlyphFamily::Playstation:
+        return "opensb/interface/mobile/controller/ps5/diagram.png";
+      case GamepadGlyphFamily::Switch:
+        return "opensb/interface/mobile/controller/switch/Controllers.png";
+      case GamepadGlyphFamily::SteamDeck:
+      default:
+        return "";
+    }
+  }
+
+  String gamepadGlyphName(ControllerButton button, GamepadGlyphFamily family) const {
+    if (family == GamepadGlyphFamily::Playstation) {
+      switch (button) {
+        case ControllerButton::A: return "Cross";
+        case ControllerButton::B: return "Circle";
+        case ControllerButton::X: return "Square";
+        case ControllerButton::Y: return "Triangle";
+        case ControllerButton::LeftShoulder: return "L1";
+        case ControllerButton::RightShoulder: return "R1";
+        case ControllerButton::TriggerLeft: return "L2";
+        case ControllerButton::TriggerRight: return "R2";
+        case ControllerButton::Back: return "Share";
+        case ControllerButton::Start: return "Options";
+        case ControllerButton::LeftStick: return "Left_Stick_Click";
+        case ControllerButton::RightStick: return "Right_Stick_Click";
+        case ControllerButton::DPadUp: return "Dpad_Up";
+        case ControllerButton::DPadDown: return "Dpad_Down";
+        case ControllerButton::DPadLeft: return "Dpad_Left";
+        case ControllerButton::DPadRight: return "Dpad_Right";
+        case ControllerButton::Touchpad: return "Touch_Pad";
+        case ControllerButton::Misc1: return "Microphone";
+        default: return "";
+      }
+    }
+
+    if (family == GamepadGlyphFamily::Switch) {
+      switch (button) {
+        case ControllerButton::A: return "B";
+        case ControllerButton::B: return "A";
+        case ControllerButton::X: return "Y";
+        case ControllerButton::Y: return "X";
+        case ControllerButton::LeftShoulder: return "LB";
+        case ControllerButton::RightShoulder: return "RB";
+        case ControllerButton::TriggerLeft: return "LT";
+        case ControllerButton::TriggerRight: return "RT";
+        case ControllerButton::Back: return "Minus";
+        case ControllerButton::Start: return "Plus";
+        case ControllerButton::Guide: return "Home";
+        case ControllerButton::Misc1: return "Square";
+        case ControllerButton::LeftStick: return "Left_Stick_Click";
+        case ControllerButton::RightStick: return "Right_Stick_Click";
+        case ControllerButton::DPadUp: return "Dpad_Up";
+        case ControllerButton::DPadDown: return "Dpad_Down";
+        case ControllerButton::DPadLeft: return "Dpad_Left";
+        case ControllerButton::DPadRight: return "Dpad_Right";
+        default: return "";
+      }
+    }
+
+    if (family == GamepadGlyphFamily::SteamDeck) {
+      switch (button) {
+        case ControllerButton::A: return "A";
+        case ControllerButton::B: return "B";
+        case ControllerButton::X: return "X";
+        case ControllerButton::Y: return "Y";
+        case ControllerButton::LeftShoulder: return "L1";
+        case ControllerButton::RightShoulder: return "R1";
+        case ControllerButton::TriggerLeft: return "L2";
+        case ControllerButton::TriggerRight: return "R2";
+        case ControllerButton::Back: return "Dots";
+        case ControllerButton::Guide: return "Steam";
+        case ControllerButton::Start: return "Menu";
+        case ControllerButton::Paddle1: return "R4";
+        case ControllerButton::Paddle2: return "L4";
+        case ControllerButton::Paddle3: return "R5";
+        case ControllerButton::Paddle4: return "L5";
+        case ControllerButton::LeftStick: return "Left_Stick_Click";
+        case ControllerButton::RightStick: return "Right_Stick_Click";
+        case ControllerButton::DPadUp: return "Dpad_Up";
+        case ControllerButton::DPadDown: return "Dpad_Down";
+        case ControllerButton::DPadLeft: return "Dpad_Left";
+        case ControllerButton::DPadRight: return "Dpad_Right";
+        default: return "";
+      }
+    }
+
+    switch (button) {
+      case ControllerButton::A: return "A";
+      case ControllerButton::B: return "B";
+      case ControllerButton::X: return "X";
+      case ControllerButton::Y: return "Y";
+      case ControllerButton::LeftShoulder: return "LB";
+      case ControllerButton::RightShoulder: return "RB";
+      case ControllerButton::TriggerLeft: return "LT";
+      case ControllerButton::TriggerRight: return "RT";
+      case ControllerButton::Back: return "View";
+      case ControllerButton::Guide: return "Menu";
+      case ControllerButton::Start: return "Menu";
+      case ControllerButton::Misc1: return "Share";
+      case ControllerButton::LeftStick: return "Left_Stick_Click";
+      case ControllerButton::RightStick: return "Right_Stick_Click";
+      case ControllerButton::DPadUp: return "Dpad_Up";
+      case ControllerButton::DPadDown: return "Dpad_Down";
+      case ControllerButton::DPadLeft: return "Dpad_Left";
+      case ControllerButton::DPadRight: return "Dpad_Right";
+      default: return "";
+    }
+  }
+
+  String gamepadGlyphAssetPath(ControllerButton button, GamepadGlyphFamily family) const {
+    String glyphName = gamepadGlyphName(button, family);
+    if (!glyphName.empty())
+      return strf("opensb/interface/mobile/controller/{}/{}.png", gamepadGlyphFolder(family), glyphName);
+    return "";
+  }
+
+  bool renderGamepadGlyph(ControllerButton button, GamepadGlyphFamily family, ImVec2 size) {
+    String path = gamepadGlyphAssetPath(button, family);
+    if (!path.empty()) {
+      if (auto texture = launcherTexture(path)) {
+        renderLauncherTexture(*texture, size);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Maybe<ImVec2> gamepadDiagramAnchor(ControllerButton button, GamepadGlyphFamily family) const {
+    if (family == GamepadGlyphFamily::Playstation) {
+      switch (button) {
+        case ControllerButton::A: return ImVec2(0.78f, 0.59f);
+        case ControllerButton::B: return ImVec2(0.86f, 0.50f);
+        case ControllerButton::X: return ImVec2(0.72f, 0.50f);
+        case ControllerButton::Y: return ImVec2(0.79f, 0.40f);
+        case ControllerButton::LeftShoulder: return ImVec2(0.27f, 0.16f);
+        case ControllerButton::RightShoulder: return ImVec2(0.73f, 0.16f);
+        case ControllerButton::TriggerLeft: return ImVec2(0.27f, 0.08f);
+        case ControllerButton::TriggerRight: return ImVec2(0.73f, 0.08f);
+        case ControllerButton::Back: return ImVec2(0.37f, 0.39f);
+        case ControllerButton::Start: return ImVec2(0.63f, 0.39f);
+        case ControllerButton::LeftStick: return ImVec2(0.35f, 0.69f);
+        case ControllerButton::RightStick: return ImVec2(0.65f, 0.69f);
+        case ControllerButton::DPadUp: return ImVec2(0.22f, 0.42f);
+        case ControllerButton::DPadDown: return ImVec2(0.22f, 0.58f);
+        case ControllerButton::DPadLeft: return ImVec2(0.16f, 0.50f);
+        case ControllerButton::DPadRight: return ImVec2(0.28f, 0.50f);
+        case ControllerButton::Touchpad: return ImVec2(0.50f, 0.34f);
+        case ControllerButton::Misc1: return ImVec2(0.50f, 0.53f);
+        default: return {};
+      }
+    }
+
+    if (family == GamepadGlyphFamily::Xbox) {
+      switch (button) {
+        case ControllerButton::A: return ImVec2(0.73f, 0.54f);
+        case ControllerButton::B: return ImVec2(0.82f, 0.47f);
+        case ControllerButton::X: return ImVec2(0.70f, 0.45f);
+        case ControllerButton::Y: return ImVec2(0.76f, 0.37f);
+        case ControllerButton::LeftShoulder: return ImVec2(0.25f, 0.14f);
+        case ControllerButton::RightShoulder: return ImVec2(0.75f, 0.14f);
+        case ControllerButton::TriggerLeft: return ImVec2(0.25f, 0.07f);
+        case ControllerButton::TriggerRight: return ImVec2(0.75f, 0.07f);
+        case ControllerButton::Back: return ImVec2(0.45f, 0.41f);
+        case ControllerButton::Start: return ImVec2(0.57f, 0.41f);
+        case ControllerButton::Guide: return ImVec2(0.51f, 0.32f);
+        case ControllerButton::Misc1: return ImVec2(0.51f, 0.48f);
+        case ControllerButton::LeftStick: return ImVec2(0.25f, 0.45f);
+        case ControllerButton::RightStick: return ImVec2(0.58f, 0.62f);
+        case ControllerButton::DPadUp: return ImVec2(0.36f, 0.54f);
+        case ControllerButton::DPadDown: return ImVec2(0.36f, 0.68f);
+        case ControllerButton::DPadLeft: return ImVec2(0.30f, 0.61f);
+        case ControllerButton::DPadRight: return ImVec2(0.42f, 0.61f);
+        default: return {};
+      }
+    }
+
+    return {};
+  }
+
+  void renderGamepadBindingCallout(ImDrawList* draw, ImVec2 imageMin, ImVec2 imageSize, MobileGamepadBinding const& binding, GamepadGlyphFamily family) const {
+    if (!binding.enabled)
+      return;
+
+    auto anchor = gamepadDiagramAnchor(binding.button, family);
+    if (!anchor)
+      return;
+
+    ImVec2 marker(imageMin.x + anchor->x * imageSize.x, imageMin.y + anchor->y * imageSize.y);
+    ImU32 accent = ImGui::GetColorU32(ImGuiCol_CheckMark);
+    ImU32 line = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
+    ImU32 bg = IM_COL32(12, 14, 18, 220);
+    String label = actionName(binding.action);
+    ImVec2 textSize = ImGui::CalcTextSize(label.utf8Ptr());
+    float side = anchor->x < 0.5f ? -1.0f : 1.0f;
+    ImVec2 labelPos(marker.x + side * 18.0f, marker.y - textSize.y * 0.5f);
+    if (side < 0.0f)
+      labelPos.x -= textSize.x + 12.0f;
+    labelPos.x = std::clamp(labelPos.x, imageMin.x, imageMin.x + imageSize.x - textSize.x - 12.0f);
+    labelPos.y = std::clamp(labelPos.y, imageMin.y, imageMin.y + imageSize.y - textSize.y - 8.0f);
+
+    draw->AddLine(marker, ImVec2(labelPos.x + (side < 0.0f ? textSize.x + 8.0f : 0.0f), labelPos.y + textSize.y * 0.5f), line, 1.5f);
+    draw->AddCircleFilled(marker, 4.0f, accent, 16);
+    draw->AddRectFilled(ImVec2(labelPos.x - 4.0f, labelPos.y - 3.0f), ImVec2(labelPos.x + textSize.x + 8.0f, labelPos.y + textSize.y + 3.0f), bg, 4.0f);
+    draw->AddText(labelPos, text, label.utf8Ptr());
+  }
+
+  void renderGamepadReferencePanel(LauncherState& state) {
+    GamepadGlyphFamily family = activeGamepadGlyphFamily();
+    if (!ImGui::CollapsingHeader(launcherText("gamepadManager.controllerMap", "Controller Map").utf8Ptr(), ImGuiTreeNodeFlags_DefaultOpen))
+      return;
+
+    String diagramPath = controllerDiagramAssetPath(family);
+    if (!diagramPath.empty()) {
+      if (auto texture = launcherTexture(diagramPath)) {
+        float availableWidth = ImGui::GetContentRegionAvail().x;
+        float maxWidth = family == GamepadGlyphFamily::Switch ? 180.0f : 520.0f;
+        float width = std::min(availableWidth, maxWidth * std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f));
+        float height = width * (float)texture->size[1] / (float)std::max(1u, texture->size[0]);
+        ImVec2 imageMin = ImGui::GetCursorScreenPos();
+        ImVec2 imageSize(width, height);
+        renderLauncherTexture(*texture, imageSize);
+
+        if (family == GamepadGlyphFamily::Xbox || family == GamepadGlyphFamily::Playstation) {
+          auto* draw = ImGui::GetWindowDrawList();
+          for (auto const& binding : state.gamepadBindings)
+            renderGamepadBindingCallout(draw, imageMin, imageSize, binding, family);
+        }
+      }
+    }
+
+    float glyphSize = 28.0f * std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f);
+    for (auto const& binding : state.gamepadBindings) {
+      if (!binding.enabled)
+        continue;
+
+      String mapId = String("map") + ControllerButtonNames.getRight(binding.button);
+      ImGui::PushID(mapId.utf8Ptr());
+      if (renderGamepadGlyph(binding.button, family, ImVec2(glyphSize, glyphSize)))
+        ImGui::SameLine();
+      String displayLabel = gamepadBindingDisplayLabel(binding);
+      ImGui::Text("%s  %s", displayLabel.utf8Ptr(), actionName(binding.action).utf8Ptr());
+      ImGui::PopID();
+    }
   }
 
   void renderGamepadStickModeCombo(MobileGamepadStickConfig& stick) {
@@ -1191,12 +1555,16 @@ private:
 
   void renderGamepadButtonBindings(LauncherState& state) {
     ImGui::TextUnformatted(launcherText("gamepadManager.bindings", "Button Bindings").utf8Ptr());
+    GamepadGlyphFamily family = activeGamepadGlyphFamily();
+    float glyphSize = 28.0f * std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f);
 
     for (auto& binding : state.gamepadBindings) {
       String displayLabel = gamepadBindingDisplayLabel(binding);
       String summary = strf("{} -> {}", displayLabel, actionName(binding.action));
 
       ImGui::PushID(ControllerButtonNames.getRight(binding.button).utf8Ptr());
+      if (renderGamepadGlyph(binding.button, family, ImVec2(glyphSize, glyphSize)))
+        ImGui::SameLine();
       bool open = ImGui::TreeNodeEx(summary.utf8Ptr(), ImGuiTreeNodeFlags_DefaultOpen);
       if (open) {
         ImGui::Checkbox(launcherText("gamepadManager.bindingEnabled", "Binding enabled").utf8Ptr(), &binding.enabled);
@@ -1223,6 +1591,8 @@ private:
     String connected = m_activeGamepadName.empty() ? launcherText("gamepadManager.noController", "No controller connected") : m_activeGamepadName;
     ImGui::Text("%s: %s", launcherText("gamepadManager.connected", "Connected").utf8Ptr(), connected.utf8Ptr());
     ImGui::Text("%s: %s", launcherText("gamepadManager.layout", "Layout").utf8Ptr(), activeGamepadLayoutName().utf8Ptr());
+
+    renderGamepadReferencePanel(state);
 
     ImGui::Checkbox(launcherText("gamepadManager.enable", "Enable gamepad controls").utf8Ptr(), &state.gamepadConfig.enabled);
     ImGui::SliderFloat(launcherText("gamepadManager.triggerThreshold", "Trigger press threshold").utf8Ptr(), &state.gamepadConfig.triggerThreshold, 0.05f, 0.95f);
@@ -3149,6 +3519,7 @@ private:
   String m_launcherLangDirectory;
   String m_launcherFontPath;
   StringMap<String> m_launcherTranslations;
+  StringMap<LauncherTexture> m_launcherTextureCache;
   ByteArray m_launcherFontData;
   std::vector<ByteArray> m_launcherFallbackFontData;
   LauncherUiConfig m_launcherUiConfig;
