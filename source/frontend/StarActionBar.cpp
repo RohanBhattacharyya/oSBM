@@ -337,8 +337,12 @@ void ActionBar::essentialBarClick(uint8_t index) {
   m_player->inventory()->selectActionBarLocation((EssentialItem)index);
 }
 
-void ActionBar::swapCustomBar() {
+void ActionBar::swapHotbar() {
   m_player->inventory()->setCustomBarGroup((m_player->inventory()->customBarGroup() + 1) % m_player->inventory()->customBarGroups());
+}
+
+void ActionBar::swapCustomBar() {
+  swapHotbar();
 }
 
 }

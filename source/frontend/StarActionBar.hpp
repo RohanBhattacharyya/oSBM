@@ -23,6 +23,8 @@ public:
 
   void update(float dt) override;
 
+  void swapHotbar();
+
   Maybe<String> cursorOverride(Vec2I const& screenPosition) override;
 
 private:

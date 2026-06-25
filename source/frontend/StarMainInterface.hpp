@@ -133,6 +133,26 @@ public:
   void reviveScriptPanes(List<ScriptPaneInfo>& panes);
   void displayDefaultPanes();
 private:
+  enum class ActionWheelAction {
+    Inventory,
+    Crafting,
+    Codex,
+    QuestLog,
+    Collections,
+    MatterManipulator,
+    SwapHotbar,
+    Deploy,
+    BeamDown
+  };
+
+  struct ActionWheelItem {
+    ActionWheelAction action;
+    String label;
+    String icon;
+    bool enabled = true;
+    float iconScale = 1.0f;
+  };
+
   PanePtr createEscapeDialog();
   void initHttpTrustDialog();
 
@@ -146,6 +166,7 @@ private:
   void renderMonsterHealthBar();
   void renderSpecialDamageBar();
   void renderMainBar();
+  void renderActionWheel();
   void renderWindows();
   void renderDebug();
 
@@ -155,6 +176,12 @@ private:
   bool overButton(PolyI const& buttonPoly, Vec2F const& mousePos) const;
 
   bool overlayClick(Vec2F const& mousePos, MouseButton mouseButton);
+  bool handleActionWheelEvent(ActionWheelEvent const& event);
+  bool handleDirectionalAimEvent(DirectionalAimEvent const& event);
+  List<ActionWheelItem> actionWheelItems() const;
+  void updateActionWheelSelection(Vec2F const& direction);
+  void activateActionWheelSelection();
+  void activateActionWheelAction(ActionWheelAction action);
 
   void displayScriptPane(ScriptPanePtr& scriptPane, EntityId sourceEntity);
 
@@ -214,6 +241,10 @@ private:
   ChatBubbleManagerPtr m_chatBubbleManager;
 
   bool m_disableHud = false;
+  bool m_actionWheelActive = false;
+  Maybe<size_t> m_actionWheelSelection;
+  Vec2F m_actionWheelDirection;
+  bool m_mobileDirectionalAimActive = false;
 
   String m_lastCommand;
 

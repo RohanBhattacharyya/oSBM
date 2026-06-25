@@ -29,12 +29,20 @@ IF (STAR_PLATFORM_MOBILE)
   SET (star_application_HEADERS ${star_application_HEADERS}
       StarPlatformServices_mobile.hpp
       StarRenderer_gles.hpp
+      mobile/StarMobileAndroidGyro.hpp
+      mobile/StarMobileControls.hpp
+      mobile/StarMobileLauncherSupport.hpp
+      mobile/StarMobilePlatform.hpp
       mobile/android/StarAndroidFileAccessBridge.hpp
       mobile/ios/StarIosFileAccessBridge.hpp
     )
   SET (star_application_SOURCES ${star_application_SOURCES}
       StarMainApplication_mobile_sdl.cpp
       StarPlatformServices_mobile.cpp
+      mobile/StarMobileAndroidGyro.cpp
+      mobile/StarMobileControls.cpp
+      mobile/StarMobileLauncherSupport.cpp
+      mobile/StarMobilePlatform.cpp
       mobile/android/StarAndroidFileAccessBridge.cpp
       mobile/ios/StarIosFileAccessBridge.cpp
       StarRenderer_gles.cpp

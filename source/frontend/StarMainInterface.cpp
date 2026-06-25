@@ -61,6 +61,8 @@
 #include "StarNpc.hpp"
 #include "StarCharSelection.hpp"
 
+#include <cmath>
+
 namespace Star {
 
 GuiMessage::GuiMessage() : message(), cooldown(), springState() {}
@@ -285,17 +287,34 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
   if (auto mouseMove = event.ptr<MouseMoveEvent>()) {
     m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = mouseMove->mousePosition);
     m_cursorVisible = mouseMove->cursorVisible;
+    m_mobileDirectionalAimActive = false;
     if (!mouseMove->cursorVisible)
       return false;
   }
 
-  if (m_paneManager.sendInputEvent(event)) {
-    if (!event.is<MouseButtonUpEvent>() && !event.is<KeyUpEvent>())
+  if (auto actionWheel = event.ptr<ActionWheelEvent>())
+    return handleActionWheelEvent(*actionWheel);
+
+  if (auto directionalAim = event.ptr<DirectionalAimEvent>())
+    return handleDirectionalAimEvent(*directionalAim);
+
+  InputEvent effectiveEvent = event;
+  if (m_mobileDirectionalAimActive) {
+    if (auto mouseDown = event.ptr<MouseButtonDownEvent>())
+      effectiveEvent = MouseButtonDownEvent{mouseDown->mouseButton, m_cursorScreenPos};
+    else if (auto mouseUp = event.ptr<MouseButtonUpEvent>())
+      effectiveEvent = MouseButtonUpEvent{mouseUp->mouseButton, m_cursorScreenPos};
+    else if (auto mouseWheel = event.ptr<MouseWheelEvent>())
+      effectiveEvent = MouseWheelEvent{mouseWheel->mouseWheel, m_cursorScreenPos};
+  }
+
+  if (m_paneManager.sendInputEvent(effectiveEvent)) {
+    if (!effectiveEvent.is<MouseButtonUpEvent>() && !effectiveEvent.is<KeyUpEvent>())
       return true;
   }
 
-  if (event.is<KeyDownEvent>()) {
-    auto actions = m_guiContext->actions(event);
+  if (effectiveEvent.is<KeyDownEvent>()) {
+    auto actions = m_guiContext->actions(effectiveEvent);
 
     if (m_chat->hasFocus()) {
       if (actions.contains(InterfaceAction::ChatSendLine)) {
@@ -365,13 +384,13 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
 
     return false;
 
-  } else if (auto keyUp = event.ptr<KeyUpEvent>()) {
+  } else if (auto keyUp = effectiveEvent.ptr<KeyUpEvent>()) {
     if (m_guiContext->actionsForKey(keyUp->key).contains(InterfaceAction::GuiShifting))
       m_guiContext->setShiftHeld(false);
 
     return false;
 
-  } else if (auto mouseDown = event.ptr<MouseButtonDownEvent>()) {
+  } else if (auto mouseDown = effectiveEvent.ptr<MouseButtonDownEvent>()) {
     auto mouseButton = mouseDown->mouseButton;
     if (mouseButton >= MouseButton::Left && mouseButton <= MouseButton::Right
     && overlayClick(mouseDown->mousePosition, mouseDown->mouseButton)) {
@@ -384,7 +403,7 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
       if (mouseButton == MouseButton::Middle)
         player->beginTrigger();
     }
-  } else if (auto mouseUp = event.ptr<MouseButtonUpEvent>()) {
+  } else if (auto mouseUp = effectiveEvent.ptr<MouseButtonUpEvent>()) {
     if (mouseUp->mouseButton == MouseButton::Left)
       player->endPrimaryFire();
     if (mouseUp->mouseButton == MouseButton::Right)
@@ -396,7 +415,7 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
   bool captured = false;
 
   for (auto& pair : m_canvases)
-    captured |= pair.second->sendEvent(event);
+    captured |= pair.second->sendEvent(effectiveEvent);
 
   return captured;
 }
@@ -878,6 +897,7 @@ void MainInterface::render() {
     pair.second->render(screenRect);
 
   renderWindows();
+  renderActionWheel();
   renderCursor();
 }
 
@@ -1409,6 +1429,94 @@ void MainInterface::renderMainBar() {
       assets->json("/interface.config:cursorTooltip.questsText").toString());
 }
 
+void MainInterface::renderActionWheel() {
+  if (!m_actionWheelActive)
+    return;
+
+  auto items = actionWheelItems();
+  if (items.empty())
+    return;
+
+  Vec2F screenSize(windowWidth(), windowHeight());
+  Vec2F center = screenSize / 2.0f;
+  float shortSide = std::max(1.0f, std::min(screenSize[0], screenSize[1]));
+  float scale = interfaceScale();
+  float outerRadius = std::clamp(shortSide * 0.18f, 68.0f * scale, 118.0f * scale);
+  float innerRadius = outerRadius * 0.50f;
+  float step = Constants::pi * 2.0f / items.size();
+  float gap = std::min(0.035f, step * 0.18f);
+
+  m_guiContext->drawQuad(RectF::withSize(Vec2F(), screenSize), Vec4B(0, 0, 0, 96));
+
+  for (size_t i = 0; i < items.size(); ++i) {
+    bool selected = m_actionWheelSelection && *m_actionWheelSelection == i;
+    bool enabled = items[i].enabled;
+    Vec4B fill = selected ? Vec4B(210, 224, 230, enabled ? 215 : 130)
+        : enabled ? Vec4B(54, 60, 60, 205)
+        : Vec4B(40, 40, 40, 145);
+    Vec4B line = selected ? Vec4B(255, 255, 235, 245)
+        : enabled ? Vec4B(144, 154, 154, 220)
+        : Vec4B(95, 95, 95, 170);
+
+    float mid = Constants::pi / 2.0f - (float)i * step;
+    float start = mid - step / 2.0f + gap;
+    float end = mid + step / 2.0f - gap;
+    int slices = std::max(4, (int)std::ceil(std::abs(end - start) / 0.16f));
+    List<tuple<Vec2F, Vec2F, Vec2F>> triangles;
+    PolyF outline;
+
+    auto point = [&](float angle, float radius) {
+      return center + Vec2F(std::cos(angle), -std::sin(angle)) * radius;
+    };
+
+    Vec2F previousInner = point(start, innerRadius);
+    Vec2F previousOuter = point(start, outerRadius);
+    outline.add(previousOuter);
+    for (int s = 1; s <= slices; ++s) {
+      float angle = start + (end - start) * (float)s / slices;
+      Vec2F currentInner = point(angle, innerRadius);
+      Vec2F currentOuter = point(angle, outerRadius);
+      triangles.append({previousInner, previousOuter, currentOuter});
+      triangles.append({previousInner, currentOuter, currentInner});
+      outline.add(currentOuter);
+      previousInner = currentInner;
+      previousOuter = currentOuter;
+    }
+    for (int s = slices; s >= 0; --s) {
+      float angle = start + (end - start) * (float)s / slices;
+      outline.add(point(angle, innerRadius));
+    }
+
+    m_guiContext->drawTriangles(triangles, fill);
+    m_guiContext->drawPolyLines(outline, line, selected ? 2.2f * scale : 1.2f * scale);
+
+    if (!items[i].icon.empty()) {
+      float iconScale = std::clamp(scale * 0.95f * items[i].iconScale, 1.0f, 2.8f);
+      Vec2F iconSize = Vec2F(m_guiContext->textureSize(items[i].icon)) * iconScale;
+      Vec2F iconPos = point(mid, (innerRadius + outerRadius) * 0.5f) - iconSize / 2.0f;
+      m_guiContext->drawQuad(items[i].icon, iconPos, iconScale, enabled ? Vec4B::filled(255) : Vec4B(170, 170, 170, 155));
+    }
+  }
+
+  String label = "Cancel";
+  if (m_actionWheelSelection && *m_actionWheelSelection < items.size())
+    label = items[*m_actionWheelSelection].label;
+
+  m_guiContext->setTextStyle(m_config->textStyle);
+  m_guiContext->setFontSize(6);
+  m_guiContext->setFontColor(m_actionWheelSelection ? Vec4B(245, 245, 230, 255) : Vec4B(180, 184, 176, 230));
+
+  RectF textBounds = m_guiContext->determineTextSize(label, TextPositioning(center, HorizontalAnchor::HMidAnchor, VerticalAnchor::VMidAnchor));
+  Vec2F labelSize(
+      std::max(54.0f * scale, textBounds.width() + 12.0f * scale),
+      std::max(14.0f * scale, textBounds.height() + 6.0f * scale));
+  RectF labelRect = RectF::withCenter(center, labelSize);
+  m_guiContext->drawQuad(labelRect, Vec4B(22, 24, 24, 230));
+  m_guiContext->drawPolyLines(PolyF(labelRect), Vec4B(238, 238, 226, 235), 1.0f * scale);
+  m_guiContext->renderText(label, TextPositioning(center, HorizontalAnchor::HMidAnchor, VerticalAnchor::VMidAnchor));
+  m_guiContext->clearTextStyle();
+}
+
 void MainInterface::renderWindows() {
   m_paneManager.render();
 }
@@ -1653,6 +1761,141 @@ bool MainInterface::overlayClick(Vec2F const& mousePos, MouseButton) {
   }
 
   return false;
+}
+
+bool MainInterface::handleActionWheelEvent(ActionWheelEvent const& event) {
+  if (event.open) {
+    m_actionWheelActive = true;
+    m_actionWheelSelection = {};
+  }
+
+  if (!m_actionWheelActive)
+    return event.open || event.confirm || event.cancel;
+
+  updateActionWheelSelection(event.direction);
+
+  if (event.confirm) {
+    activateActionWheelSelection();
+    m_actionWheelActive = false;
+    m_actionWheelSelection = {};
+  } else if (event.cancel) {
+    m_actionWheelActive = false;
+    m_actionWheelSelection = {};
+  }
+
+  return true;
+}
+
+bool MainInterface::handleDirectionalAimEvent(DirectionalAimEvent const& event) {
+  auto player = m_client->mainPlayer();
+  Vec2F anchor = m_worldPainter->camera().worldToScreen(player->position());
+  Vec2F target = anchor + event.direction * event.radius;
+  target[0] = std::clamp(target[0], 0.0f, (float)windowWidth());
+  target[1] = std::clamp(target[1], 0.0f, (float)windowHeight());
+
+  m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = target);
+  m_cursorVisible = event.cursorVisible;
+  m_mobileDirectionalAimActive = true;
+  return true;
+}
+
+List<MainInterface::ActionWheelItem> MainInterface::actionWheelItems() const {
+  List<ActionWheelItem> items;
+
+  items.append({ActionWheelAction::Inventory, "Inventory", m_inventoryWindow->containsNewItems() ? m_config->inventoryImageGlow : m_config->inventoryImage, true});
+  items.append({ActionWheelAction::Crafting, "Crafting", m_config->craftImage, true});
+  items.append({ActionWheelAction::Codex, "Codex", m_config->codexImage, true});
+  items.append({ActionWheelAction::QuestLog, "Quests", m_config->questLogImage, true});
+  items.append({ActionWheelAction::Collections, "Collections", m_config->collectionsImage, true});
+
+  bool hasMatterManipulator = (bool)m_client->mainPlayer()->inventory()->essentialItem(EssentialItem::BeamAxe);
+  items.append({ActionWheelAction::MatterManipulator, "Matter Manipulator", hasMatterManipulator ? m_config->mmUpgradeImage : m_config->mmUpgradeImageDisabled, hasMatterManipulator});
+
+  String swapHotbarImage = m_client->mainPlayer()->inventory()->customBarGroup() != 0
+      ? "/interface/actionbar/swapcustombartwo.png"
+      : "/interface/actionbar/swapcustombarone.png";
+  items.append({ActionWheelAction::SwapHotbar, "Swap Hotbar", swapHotbarImage, true, 1.35f});
+
+  if (m_client->canBeamUp())
+    items.append({ActionWheelAction::Deploy, "Beam Up", m_config->beamUpImage, true});
+  else
+    items.append({ActionWheelAction::Deploy, "Deploy", m_client->canBeamDown(true) ? m_config->deployImage : m_config->deployImageDisabled, m_client->canBeamDown(true)});
+
+  if (m_client->canBeamDown())
+    items.append({ActionWheelAction::BeamDown, "Beam Down", m_config->beamDownImage, true});
+
+  return items;
+}
+
+void MainInterface::updateActionWheelSelection(Vec2F const& direction) {
+  m_actionWheelDirection = direction;
+  if (direction.magnitudeSquared() < 0.25f) {
+    m_actionWheelSelection = {};
+    return;
+  }
+
+  auto items = actionWheelItems();
+  if (items.empty())
+    return;
+
+  float angle = std::atan2(direction[1], direction[0]);
+  float step = Constants::pi * 2.0f / items.size();
+  float wheelAngle = Constants::pi / 2.0f - angle;
+  while (wheelAngle < 0.0f)
+    wheelAngle += Constants::pi * 2.0f;
+  while (wheelAngle >= Constants::pi * 2.0f)
+    wheelAngle -= Constants::pi * 2.0f;
+
+  m_actionWheelSelection = (size_t)std::floor((wheelAngle + step / 2.0f) / step) % items.size();
+}
+
+void MainInterface::activateActionWheelSelection() {
+  auto items = actionWheelItems();
+  if (!m_actionWheelSelection || *m_actionWheelSelection >= items.size())
+    return;
+
+  auto item = items[*m_actionWheelSelection];
+  if (!item.enabled)
+    return;
+
+  activateActionWheelAction(item.action);
+}
+
+void MainInterface::activateActionWheelAction(ActionWheelAction action) {
+  switch (action) {
+    case ActionWheelAction::Inventory:
+      m_paneManager.toggleRegisteredPane(MainInterfacePanes::Inventory);
+      break;
+    case ActionWheelAction::Crafting:
+      togglePlainCraftingWindow();
+      break;
+    case ActionWheelAction::Codex:
+      m_paneManager.toggleRegisteredPane(MainInterfacePanes::Codex);
+      break;
+    case ActionWheelAction::QuestLog:
+      m_paneManager.toggleRegisteredPane(MainInterfacePanes::QuestLog);
+      break;
+    case ActionWheelAction::Collections:
+      m_paneManager.toggleRegisteredPane(MainInterfacePanes::Collections);
+      break;
+    case ActionWheelAction::MatterManipulator:
+      if (m_client->mainPlayer()->inventory()->essentialItem(EssentialItem::BeamAxe))
+        m_paneManager.toggleRegisteredPane(MainInterfacePanes::MmUpgrade);
+      break;
+    case ActionWheelAction::SwapHotbar:
+      m_actionBar->swapHotbar();
+      break;
+    case ActionWheelAction::Deploy:
+      if (m_client->canBeamDown(true))
+        warpToOrbitedWorld(true);
+      else if (m_client->canBeamUp())
+        warpToOwnShip();
+      break;
+    case ActionWheelAction::BeamDown:
+      if (m_client->canBeamDown())
+        warpToOrbitedWorld();
+      break;
+  }
 }
 
 void MainInterface::initHttpTrustDialog() {

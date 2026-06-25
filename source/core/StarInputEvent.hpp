@@ -277,6 +277,19 @@ struct UiNavigationEvent {
   UiNavigationDirection direction;
 };
 
+struct ActionWheelEvent {
+  bool open = false;
+  bool confirm = false;
+  bool cancel = false;
+  Vec2F direction;
+};
+
+struct DirectionalAimEvent {
+  Vec2F direction;
+  float radius = 0.0f;
+  bool cursorVisible = true;
+};
+
 struct ControllerAxisEvent {
   ControllerId controller;
   ControllerAxis controllerAxis;
@@ -302,6 +315,8 @@ typedef Variant<
     MouseButtonUpEvent,
     MouseWheelEvent,
     UiNavigationEvent,
+    ActionWheelEvent,
+    DirectionalAimEvent,
     ControllerAxisEvent,
     ControllerButtonDownEvent,
     ControllerButtonUpEvent>
