@@ -75,6 +75,8 @@ String actionName(MobileTouchAction const& action) {
       return launcherTextStatic("gamepadAction.aimModeToggle", "Toggle Aim Mode");
     case MobileTouchActionKind::ActionWheel:
       return launcherTextStatic("gamepadAction.actionWheel", "Action Wheel");
+    case MobileTouchActionKind::InventoryWheel:
+      return launcherTextStatic("gamepadAction.inventoryWheel", "Inventory Wheel");
     case MobileTouchActionKind::UiNavigation:
       return action.uiNavigationDirection == UiNavigationDirection::Up ? launcherTextStatic("gamepadAction.selectionUp", "Selection Up")
           : action.uiNavigationDirection == UiNavigationDirection::Down ? launcherTextStatic("gamepadAction.selectionDown", "Selection Down")
@@ -127,6 +129,12 @@ MobileTouchAction gamepadAimModeToggleAction() {
 MobileTouchAction actionWheelAction() {
   MobileTouchAction action;
   action.kind = MobileTouchActionKind::ActionWheel;
+  return action;
+}
+
+MobileTouchAction inventoryWheelAction() {
+  MobileTouchAction action;
+  action.kind = MobileTouchActionKind::InventoryWheel;
   return action;
 }
 
@@ -192,9 +200,9 @@ std::vector<MobileGamepadBinding> defaultGamepadBindings() {
     {ControllerButton::A, "A", true, keyAction(Key::Space), MobileTouchPressMode::Hold},
     {ControllerButton::B, "B", true, keyAction(Key::F), MobileTouchPressMode::Hold},
     {ControllerButton::X, "X", true, keyAction(Key::E), MobileTouchPressMode::Hold},
-    {ControllerButton::Y, "Y", true, actionWheelAction(), MobileTouchPressMode::Hold},
-    {ControllerButton::LeftShoulder, "LB", true, wheelAction(true), MobileTouchPressMode::Repeat},
-    {ControllerButton::RightShoulder, "RB", true, wheelAction(false), MobileTouchPressMode::Repeat},
+    {ControllerButton::Y, "Y", true, keyAction(Key::I), MobileTouchPressMode::SinglePress},
+    {ControllerButton::LeftShoulder, "LB", true, inventoryWheelAction(), MobileTouchPressMode::Hold},
+    {ControllerButton::RightShoulder, "RB", true, actionWheelAction(), MobileTouchPressMode::Hold},
     {ControllerButton::TriggerLeft, "LT", true, mouseAction(MouseButton::Right), MobileTouchPressMode::Hold},
     {ControllerButton::TriggerRight, "RT", true, mouseAction(MouseButton::Left), MobileTouchPressMode::Hold},
     {ControllerButton::Back, "Back", true, keyAction(Key::I), MobileTouchPressMode::Hold},
@@ -291,6 +299,8 @@ Json jsonFromTouchAction(MobileTouchAction const& action) {
     return JsonObject{{"type", "gamepadAimModeToggle"}};
   if (action.kind == MobileTouchActionKind::ActionWheel)
     return JsonObject{{"type", "actionWheel"}};
+  if (action.kind == MobileTouchActionKind::InventoryWheel)
+    return JsonObject{{"type", "inventoryWheel"}};
   if (action.kind == MobileTouchActionKind::UiNavigation)
     return JsonObject{{"type", "uiNavigation"}, {"direction", UiNavigationDirectionNames.getRight(action.uiNavigationDirection)}};
   if (action.kind == MobileTouchActionKind::None)
@@ -314,6 +324,8 @@ MobileTouchAction touchActionFromJson(Json const& json, MobileTouchAction def) {
     return gamepadAimModeToggleAction();
   if (type.equals("actionWheel", String::CaseInsensitive) || type.equals("wheelMenu", String::CaseInsensitive))
     return actionWheelAction();
+  if (type.equals("inventoryWheel", String::CaseInsensitive) || type.equals("inventoryWheelMenu", String::CaseInsensitive))
+    return inventoryWheelAction();
   if (type.equals("uiNavigation", String::CaseInsensitive) || type.equals("selection", String::CaseInsensitive))
     return uiNavigationAction(UiNavigationDirectionNames.valueLeft(json.getString("direction", UiNavigationDirectionNames.getRight(def.uiNavigationDirection)), def.uiNavigationDirection));
   if (type.equals("none", String::CaseInsensitive))
@@ -478,6 +490,21 @@ MobileGamepadBinding gamepadBindingFromJson(Json const& json, MobileGamepadBindi
   }
 
   if (def.button == ControllerButton::Y && def.action.kind == MobileTouchActionKind::Key && def.action.key == Key::Q) {
+    def.action = actionWheelAction();
+    def.pressMode = MobileTouchPressMode::Hold;
+  }
+
+  if (def.button == ControllerButton::Y && def.action.kind == MobileTouchActionKind::ActionWheel) {
+    def.action = keyAction(Key::I);
+    def.pressMode = MobileTouchPressMode::SinglePress;
+  }
+
+  if (def.button == ControllerButton::LeftShoulder && def.action.kind == MobileTouchActionKind::MouseWheelUp) {
+    def.action = inventoryWheelAction();
+    def.pressMode = MobileTouchPressMode::Hold;
+  }
+
+  if (def.button == ControllerButton::RightShoulder && def.action.kind == MobileTouchActionKind::MouseWheelDown) {
     def.action = actionWheelAction();
     def.pressMode = MobileTouchPressMode::Hold;
   }
@@ -1675,7 +1702,7 @@ public:
     if (m_actionWheelActive) {
       clearStickMovement("gamepad:leftStick");
       clearStickMovement("gamepad:rightStick");
-      emitEvent(ActionWheelEvent{false, false, false, actionWheelDirection()});
+      emitEvent(ActionWheelEvent{false, false, false, actionWheelDirection(), m_actionWheelType});
     } else {
       updateStickMovement("gamepad:leftStick", m_config.leftStick, m_leftStick);
       updateStickMovement("gamepad:rightStick", m_config.rightStick, m_rightStick);
@@ -1849,8 +1876,8 @@ private:
       return;
     }
 
-    if (binding->action.kind == MobileTouchActionKind::ActionWheel) {
-      openActionWheel(owner);
+    if (binding->action.kind == MobileTouchActionKind::ActionWheel || binding->action.kind == MobileTouchActionKind::InventoryWheel) {
+      openActionWheel(owner, binding->action.kind == MobileTouchActionKind::InventoryWheel ? ActionWheelType::Inventory : ActionWheelType::Actions);
       return;
     }
 
@@ -1878,7 +1905,7 @@ private:
 
     m_heldButtons.remove(owner);
     if (auto active = m_activeButtons.ptr(owner)) {
-      if (active->action.kind == MobileTouchActionKind::ActionWheel)
+      if (active->action.kind == MobileTouchActionKind::ActionWheel || active->action.kind == MobileTouchActionKind::InventoryWheel)
         closeActionWheel(true);
       else if (active->pressMode == MobileTouchPressMode::Hold)
         setAction(active->action, owner, false);
@@ -2032,9 +2059,9 @@ private:
     } else if (desired && action.kind == MobileTouchActionKind::GamepadAimModeToggle) {
       auto stick = aimModeToggleStick();
       stick->preciseAim = !stick->preciseAim;
-    } else if (action.kind == MobileTouchActionKind::ActionWheel) {
+    } else if (action.kind == MobileTouchActionKind::ActionWheel || action.kind == MobileTouchActionKind::InventoryWheel) {
       if (desired)
-        openActionWheel(owner);
+        openActionWheel(owner, action.kind == MobileTouchActionKind::InventoryWheel ? ActionWheelType::Inventory : ActionWheelType::Actions);
       else
         closeActionWheel(true);
     } else if (desired && action.kind == MobileTouchActionKind::UiNavigation) {
@@ -2081,24 +2108,27 @@ private:
   }
 
   Vec2F actionWheelDirection() const {
-    Vec2F stick = m_rightStick.magnitudeSquared() >= m_leftStick.magnitudeSquared() ? m_rightStick : m_leftStick;
-    return {stick[0], -stick[1]};
+    if (m_rightStick.magnitudeSquared() >= m_leftStick.magnitudeSquared())
+      return {m_rightStick[0], -m_rightStick[1]};
+    return m_leftStick;
   }
 
-  void openActionWheel(String const& owner) {
+  void openActionWheel(String const& owner, ActionWheelType type) {
     if (m_actionWheelActive)
       return;
     m_actionWheelActive = true;
     m_actionWheelOwner = owner;
-    emitEvent(ActionWheelEvent{true, false, false, actionWheelDirection()});
+    m_actionWheelType = type;
+    emitEvent(ActionWheelEvent{true, false, false, actionWheelDirection(), m_actionWheelType});
   }
 
   void closeActionWheel(bool confirm) {
     if (!m_actionWheelActive)
       return;
-    emitEvent(ActionWheelEvent{false, confirm, !confirm, actionWheelDirection()});
+    emitEvent(ActionWheelEvent{false, confirm, !confirm, actionWheelDirection(), m_actionWheelType});
     m_actionWheelActive = false;
     m_actionWheelOwner = {};
+    m_actionWheelType = ActionWheelType::Actions;
   }
 
   void emitEvent(InputEvent const& event) {
@@ -2117,6 +2147,7 @@ private:
   StringSet m_toggledButtons;
   bool m_actionWheelActive = false;
   String m_actionWheelOwner;
+  ActionWheelType m_actionWheelType = ActionWheelType::Actions;
   StringMap<ActiveButton> m_activeButtons;
   StringMap<int64_t> m_nextButtonRepeatMs;
   StringMap<MobileTouchAction> m_pulsedActions;

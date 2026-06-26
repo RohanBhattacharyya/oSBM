@@ -17,6 +17,7 @@
 #include "StarJoinRequestDialog.hpp"
 #include "StarImageMetadataDatabase.hpp"
 #include "StarGuiReader.hpp"
+#include "StarGuiTypes.hpp"
 #include "StarPaneManager.hpp"
 #include "StarClientCommandProcessor.hpp"
 #include "StarChat.hpp"
@@ -64,6 +65,42 @@
 #include <cmath>
 
 namespace Star {
+
+static String actionWheelShortCount(uint64_t n) {
+  if (n < 10000)
+    return toString(n);
+
+  uint64_t divisor = 1000ull;
+  char suffix = 'k';
+  if (n >= 1000000000000000000ull) {
+    divisor = 1000000000000000000ull;
+    suffix = 'Q';
+  } else if (n >= 1000000000000000ull) {
+    divisor = 1000000000000000ull;
+    suffix = 'q';
+  } else if (n >= 1000000000000ull) {
+    divisor = 1000000000000ull;
+    suffix = 't';
+  } else if (n >= 1000000000ull) {
+    divisor = 1000000000ull;
+    suffix = 'b';
+  } else if (n >= 1000000ull) {
+    divisor = 1000000ull;
+    suffix = 'm';
+  }
+
+  uint64_t whole = n / divisor;
+  if (whole >= 100ull)
+    return strf("{}{:c}", whole, suffix);
+
+  uint64_t frac = (n - whole * divisor) / (divisor / 1000);
+  if (frac == 0)
+    return strf("{}{:c}", whole, suffix);
+  else if (whole >= 10)
+    return strf("{}.{}{:c}", whole, frac / 100, suffix);
+  else
+    return strf("{}.{:02d}{:c}", whole, frac / 10, suffix);
+}
 
 GuiMessage::GuiMessage() : message(), cooldown(), springState() {}
 
@@ -1446,7 +1483,7 @@ void MainInterface::renderActionWheel() {
   if (!m_actionWheelActive)
     return;
 
-  auto items = actionWheelItems();
+  auto items = activeActionWheelItems();
   if (items.empty())
     return;
 
@@ -1503,7 +1540,49 @@ void MainInterface::renderActionWheel() {
     m_guiContext->drawTriangles(triangles, fill);
     m_guiContext->drawPolyLines(outline, line, selected ? 2.2f * scale : 1.2f * scale);
 
-    if (!items[i].icon.empty()) {
+    if (items[i].inventoryLocation) {
+      bool pairSlot = items[i].inventoryLocation->is<CustomBarIndex>();
+      Vec2F iconCenter = point(mid, (innerRadius + outerRadius) * 0.5f);
+      float cellScale = std::clamp(scale * 0.92f * items[i].iconScale, 1.0f, 2.5f);
+      float cellSize = 17.0f * cellScale;
+      float cellGap = 1.0f * cellScale;
+      Vec2F groupSize(pairSlot ? cellSize * 2.0f + cellGap : cellSize, cellSize);
+      RectF groupRect = RectF::withSize(iconCenter - groupSize / 2.0f, groupSize);
+
+      auto drawCell = [&](Vec2F const& pos, ItemPtr const& item, bool secondaryIcon) {
+        RectF cellRect = RectF::withSize(pos, Vec2F::filled(cellSize));
+        m_guiContext->drawQuad(cellRect, enabled ? Vec4B(22, 26, 28, 218) : Vec4B(18, 18, 18, 150));
+        m_guiContext->drawPolyLines(PolyF(cellRect), Vec4B(82, 88, 88, enabled ? 235 : 150), 1.0f * scale);
+
+        if (!item)
+          return;
+
+        String border = rarityBorder(item->rarity());
+        Vec2F borderSize = Vec2F(m_guiContext->textureSize(border)) * cellScale;
+        m_guiContext->drawQuad(border, cellRect.center() - borderSize / 2.0f, cellScale, enabled ? Vec4B::filled(255) : Vec4B(170, 170, 170, 155));
+
+        List<Drawable> iconDrawables = secondaryIcon ? item->secondaryDrawables().value(item->iconDrawables()) : item->iconDrawables();
+        for (auto drawable : iconDrawables)
+          m_guiContext->drawDrawable(std::move(drawable), cellRect.center(), cellScale, enabled ? Vec4B::filled(255) : Vec4B(170, 170, 170, 155));
+
+        if (item->count() > 1 && !secondaryIcon) {
+          m_guiContext->setFontSize(5, scale);
+          m_guiContext->setFontColor(enabled ? Vec4B(245, 245, 238, 255) : Vec4B(180, 180, 180, 160));
+          m_guiContext->renderText(actionWheelShortCount(item->count()), TextPositioning(cellRect.max() + Vec2F(-1.0f, 1.0f) * scale, HorizontalAnchor::RightAnchor, VerticalAnchor::BottomAnchor));
+        }
+      };
+
+      if (pairSlot) {
+        drawCell(groupRect.min(), items[i].primaryItem, false);
+        if (itemSafeTwoHanded(items[i].primaryItem))
+          drawCell(groupRect.min() + Vec2F(cellSize + cellGap, 0.0f), items[i].primaryItem, true);
+        else
+          drawCell(groupRect.min() + Vec2F(cellSize + cellGap, 0.0f), items[i].secondaryItem, false);
+      } else {
+          drawCell(groupRect.min(), items[i].primaryItem, false);
+      }
+
+    } else if (!items[i].icon.empty()) {
       float iconScale = std::clamp(scale * 0.95f * items[i].iconScale, 1.0f, 2.8f);
       Vec2F iconSize = Vec2F(m_guiContext->textureSize(items[i].icon)) * iconScale;
       Vec2F iconPos = point(mid, (innerRadius + outerRadius) * 0.5f) - iconSize / 2.0f;
@@ -1779,6 +1858,7 @@ bool MainInterface::overlayClick(Vec2F const& mousePos, MouseButton) {
 bool MainInterface::handleActionWheelEvent(ActionWheelEvent const& event) {
   if (event.open) {
     m_actionWheelActive = true;
+    m_actionWheelType = event.type;
     m_actionWheelSelection = {};
   }
 
@@ -1790,9 +1870,11 @@ bool MainInterface::handleActionWheelEvent(ActionWheelEvent const& event) {
   if (event.confirm) {
     activateActionWheelSelection();
     m_actionWheelActive = false;
+    m_actionWheelType = ActionWheelType::Actions;
     m_actionWheelSelection = {};
   } else if (event.cancel) {
     m_actionWheelActive = false;
+    m_actionWheelType = ActionWheelType::Actions;
     m_actionWheelSelection = {};
   }
 
@@ -1815,29 +1897,67 @@ bool MainInterface::handleDirectionalAimEvent(DirectionalAimEvent const& event) 
 List<MainInterface::ActionWheelItem> MainInterface::actionWheelItems() const {
   List<ActionWheelItem> items;
 
-  items.append({ActionWheelAction::Inventory, "Inventory", m_inventoryWindow->containsNewItems() ? m_config->inventoryImageGlow : m_config->inventoryImage, true});
-  items.append({ActionWheelAction::Crafting, "Crafting", m_config->craftImage, true});
-  items.append({ActionWheelAction::Codex, "Codex", m_config->codexImage, true});
-  items.append({ActionWheelAction::QuestLog, "Quests", m_config->questLogImage, true});
-  items.append({ActionWheelAction::Collections, "Collections", m_config->collectionsImage, true});
+  items.append({ActionWheelAction::Inventory, {}, "Inventory", m_inventoryWindow->containsNewItems() ? m_config->inventoryImageGlow : m_config->inventoryImage, {}, {}, true});
+  items.append({ActionWheelAction::Crafting, {}, "Crafting", m_config->craftImage, {}, {}, true});
+  items.append({ActionWheelAction::Codex, {}, "Codex", m_config->codexImage, {}, {}, true});
+  items.append({ActionWheelAction::QuestLog, {}, "Quests", m_config->questLogImage, {}, {}, true});
+  items.append({ActionWheelAction::Collections, {}, "Collections", m_config->collectionsImage, {}, {}, true});
 
   bool hasMatterManipulator = (bool)m_client->mainPlayer()->inventory()->essentialItem(EssentialItem::BeamAxe);
-  items.append({ActionWheelAction::MatterManipulator, "Matter Manipulator", hasMatterManipulator ? m_config->mmUpgradeImage : m_config->mmUpgradeImageDisabled, hasMatterManipulator});
+  items.append({ActionWheelAction::MatterManipulator, {}, "Matter Manipulator", hasMatterManipulator ? m_config->mmUpgradeImage : m_config->mmUpgradeImageDisabled, {}, {}, hasMatterManipulator});
 
   String swapHotbarImage = m_client->mainPlayer()->inventory()->customBarGroup() != 0
       ? "/interface/actionbar/swapcustombartwo.png"
       : "/interface/actionbar/swapcustombarone.png";
-  items.append({ActionWheelAction::SwapHotbar, "Swap Hotbar", swapHotbarImage, true, 1.35f});
+  items.append({ActionWheelAction::SwapHotbar, {}, "Swap Hotbar", swapHotbarImage, {}, {}, true, 1.35f});
 
   if (m_client->canBeamUp())
-    items.append({ActionWheelAction::Deploy, "Beam Up", m_config->beamUpImage, true});
+    items.append({ActionWheelAction::Deploy, {}, "Beam Up", m_config->beamUpImage, {}, {}, true});
   else
-    items.append({ActionWheelAction::Deploy, "Deploy", m_client->canBeamDown(true) ? m_config->deployImage : m_config->deployImageDisabled, m_client->canBeamDown(true)});
+    items.append({ActionWheelAction::Deploy, {}, "Deploy", m_client->canBeamDown(true) ? m_config->deployImage : m_config->deployImageDisabled, {}, {}, m_client->canBeamDown(true)});
 
   if (m_client->canBeamDown())
-    items.append({ActionWheelAction::BeamDown, "Beam Down", m_config->beamDownImage, true});
+    items.append({ActionWheelAction::BeamDown, {}, "Beam Down", m_config->beamDownImage, {}, {}, true});
 
   return items;
+}
+
+List<MainInterface::ActionWheelItem> MainInterface::inventoryWheelItems() const {
+  List<ActionWheelItem> items;
+  auto inventory = m_client->mainPlayer()->inventory();
+
+  auto addCustomBarItem = [&](CustomBarIndex index) {
+    ItemPtr primaryItem;
+    ItemPtr secondaryItem;
+    if (auto slot = inventory->customBarPrimarySlot(index))
+      primaryItem = inventory->itemsAt(*slot);
+    if (auto slot = inventory->customBarSecondarySlot(index))
+      secondaryItem = inventory->itemsAt(*slot);
+
+    String label = primaryItem ? primaryItem->friendlyName()
+        : secondaryItem ? secondaryItem->friendlyName()
+        : strf("Slot {}", index + 1);
+    items.append({ActionWheelAction::Inventory, SelectedActionBarLocation(index), label, {}, primaryItem, secondaryItem, (bool)(primaryItem || secondaryItem)});
+  };
+
+  auto customBarIndexes = inventory->customBarIndexes();
+  for (uint8_t i = 0; i < customBarIndexes / 2; ++i)
+    addCustomBarItem((CustomBarIndex)i);
+
+  for (uint8_t i = 0; i < EssentialItemCount; ++i) {
+    auto item = inventory->essentialItem((EssentialItem)i);
+    String label = item ? item->friendlyName() : strf("Tool {}", i + 1);
+    items.append({ActionWheelAction::Inventory, SelectedActionBarLocation((EssentialItem)i), label, {}, item, {}, (bool)item});
+  }
+
+  for (uint8_t i = customBarIndexes / 2; i < customBarIndexes; ++i)
+    addCustomBarItem((CustomBarIndex)i);
+
+  return items;
+}
+
+List<MainInterface::ActionWheelItem> MainInterface::activeActionWheelItems() const {
+  return m_actionWheelType == ActionWheelType::Inventory ? inventoryWheelItems() : actionWheelItems();
 }
 
 void MainInterface::updateActionWheelSelection(Vec2F const& direction) {
@@ -1847,7 +1967,7 @@ void MainInterface::updateActionWheelSelection(Vec2F const& direction) {
     return;
   }
 
-  auto items = actionWheelItems();
+  auto items = activeActionWheelItems();
   if (items.empty())
     return;
 
@@ -1863,7 +1983,7 @@ void MainInterface::updateActionWheelSelection(Vec2F const& direction) {
 }
 
 void MainInterface::activateActionWheelSelection() {
-  auto items = actionWheelItems();
+  auto items = activeActionWheelItems();
   if (!m_actionWheelSelection || *m_actionWheelSelection >= items.size())
     return;
 
@@ -1871,7 +1991,10 @@ void MainInterface::activateActionWheelSelection() {
   if (!item.enabled)
     return;
 
-  activateActionWheelAction(item.action);
+  if (item.inventoryLocation)
+    activateInventoryWheelLocation(*item.inventoryLocation);
+  else
+    activateActionWheelAction(item.action);
 }
 
 void MainInterface::activateActionWheelAction(ActionWheelAction action) {
@@ -1909,6 +2032,10 @@ void MainInterface::activateActionWheelAction(ActionWheelAction action) {
         warpToOrbitedWorld();
       break;
   }
+}
+
+void MainInterface::activateInventoryWheelLocation(SelectedActionBarLocation const& location) {
+  m_client->mainPlayer()->inventory()->selectActionBarLocation(location);
 }
 
 void MainInterface::initHttpTrustDialog() {

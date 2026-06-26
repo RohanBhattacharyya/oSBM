@@ -147,8 +147,11 @@ private:
 
   struct ActionWheelItem {
     ActionWheelAction action;
+    Maybe<SelectedActionBarLocation> inventoryLocation;
     String label;
     String icon;
+    ItemPtr primaryItem;
+    ItemPtr secondaryItem;
     bool enabled = true;
     float iconScale = 1.0f;
   };
@@ -179,9 +182,12 @@ private:
   bool handleActionWheelEvent(ActionWheelEvent const& event);
   bool handleDirectionalAimEvent(DirectionalAimEvent const& event);
   List<ActionWheelItem> actionWheelItems() const;
+  List<ActionWheelItem> inventoryWheelItems() const;
+  List<ActionWheelItem> activeActionWheelItems() const;
   void updateActionWheelSelection(Vec2F const& direction);
   void activateActionWheelSelection();
   void activateActionWheelAction(ActionWheelAction action);
+  void activateInventoryWheelLocation(SelectedActionBarLocation const& location);
 
   void displayScriptPane(ScriptPanePtr& scriptPane, EntityId sourceEntity);
 
@@ -247,6 +253,7 @@ private:
 
   bool m_disableHud = false;
   bool m_actionWheelActive = false;
+  ActionWheelType m_actionWheelType = ActionWheelType::Actions;
   Maybe<size_t> m_actionWheelSelection;
   Vec2F m_actionWheelDirection;
   bool m_mobileDirectionalAimActive = false;

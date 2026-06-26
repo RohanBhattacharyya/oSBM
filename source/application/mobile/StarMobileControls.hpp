@@ -74,6 +74,7 @@ enum class MobileTouchActionKind {
   GyroToggle,
   GamepadAimModeToggle,
   ActionWheel,
+  InventoryWheel,
   UiNavigation,
   None
 };
@@ -128,6 +129,7 @@ MobileTouchAction wheelAction(bool up);
 MobileTouchAction gyroToggleAction();
 MobileTouchAction gamepadAimModeToggleAction();
 MobileTouchAction actionWheelAction();
+MobileTouchAction inventoryWheelAction();
 MobileTouchAction uiNavigationAction(UiNavigationDirection direction);
 MobileTouchAction noneAction();
 String pressModeName(MobileTouchPressMode mode);

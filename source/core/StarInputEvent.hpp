@@ -277,11 +277,17 @@ struct UiNavigationEvent {
   UiNavigationDirection direction;
 };
 
+enum class ActionWheelType {
+  Actions,
+  Inventory
+};
+
 struct ActionWheelEvent {
   bool open = false;
   bool confirm = false;
   bool cancel = false;
   Vec2F direction;
+  ActionWheelType type = ActionWheelType::Actions;
 };
 
 struct DirectionalAimEvent {

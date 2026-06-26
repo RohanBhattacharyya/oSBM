@@ -1008,6 +1008,7 @@ private:
     auto choices = touchActionChoices();
     choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.aimModeToggle", "Toggle Aim Mode"), gamepadAimModeToggleAction()});
     choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.actionWheel", "Action Wheel"), actionWheelAction()});
+    choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.inventoryWheel", "Inventory Wheel"), inventoryWheelAction()});
     choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.selectionUp", "Selection Up"), uiNavigationAction(UiNavigationDirection::Up)});
     choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.selectionDown", "Selection Down"), uiNavigationAction(UiNavigationDirection::Down)});
     choices.insert(choices.end() - 1, {launcherText("gamepadActionChoice.selectionLeft", "Selection Left"), uiNavigationAction(UiNavigationDirection::Left)});
