@@ -1793,7 +1793,7 @@ private:
 
     float scaled = (std::abs(value) - deadzone) / std::max(0.001f, 1.0f - deadzone);
     scaled = std::copysign(std::clamp(scaled, 0.0f, 1.0f), value);
-    if (axis == ControllerAxis::LeftY || axis == ControllerAxis::RightY)
+    if (axis == ControllerAxis::RightY)
       scaled = -scaled;
     if ((axis == ControllerAxis::LeftX || axis == ControllerAxis::RightX) && stick.invertX)
       scaled = -scaled;

@@ -650,6 +650,9 @@ private:
     colors[ImGuiCol_Button] = launcherColor(accent, 0.62f);
     colors[ImGuiCol_ButtonHovered] = launcherColorScaled(accent, 1.15f, 0.86f);
     colors[ImGuiCol_ButtonActive] = launcherColorScaled(accent, 0.82f, 0.96f);
+    colors[ImGuiCol_FrameBg] = launcherColor(accent, 0.36f);
+    colors[ImGuiCol_FrameBgHovered] = launcherColorScaled(accent, 1.12f, 0.62f);
+    colors[ImGuiCol_FrameBgActive] = launcherColorScaled(accent, 0.90f, 0.78f);
     colors[ImGuiCol_Header] = launcherColor(accent, 0.45f);
     colors[ImGuiCol_HeaderHovered] = launcherColor(accent, 0.68f);
     colors[ImGuiCol_HeaderActive] = launcherColor(accent, 0.86f);
@@ -1657,7 +1660,12 @@ private:
     draw->AddRectFilled(min, ImVec2(min.x + displaySize.x, min.y + displaySize.y), IM_COL32(15, 18, 24, 235));
 
     ImGui::SetCursorScreenPos(ImVec2(min.x + 16.0f, min.y + 16.0f));
-    ImGui::BeginChild("TouchPreviewToolbar", ImVec2(std::min(520.0f, displaySize.x - 32.0f), 150.0f), true);
+    auto const& style = ImGui::GetStyle();
+    float toolbarHeight = style.WindowPadding.y * 2.0f
+        + ImGui::GetTextLineHeightWithSpacing() * 2.0f
+        + ImGui::GetFrameHeightWithSpacing()
+        + ImGui::GetFrameHeight();
+    ImGui::BeginChild("TouchPreviewToolbar", ImVec2(std::min(520.0f, displaySize.x - 32.0f), toolbarHeight), true);
     ImGui::TextUnformatted(launcherText("touchPreview.title", "Touch Layout Preview").utf8Ptr());
     if (state.selectedTouchElement >= 0 && state.selectedTouchElement < (int)state.touchElements.size()) {
       auto& selected = state.touchElements[state.selectedTouchElement];
@@ -3017,19 +3025,11 @@ private:
       if (event.type == SDL_EVENT_WINDOW_RESIZED
           || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
           || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) {
-        if (m_touchAdapter)
-          m_touchAdapter->cancelAll();
-        if (m_gamepadAdapter)
-          m_gamepadAdapter->cancelAll();
         syncWindowMetrics(true);
         continue;
       }
 
       if (event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
-        if (m_touchAdapter)
-          m_touchAdapter->cancelAll();
-        if (m_gamepadAdapter)
-          m_gamepadAdapter->cancelAll();
         syncWindowMetrics(true);
         continue;
       }

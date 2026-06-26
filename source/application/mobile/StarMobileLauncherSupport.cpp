@@ -436,10 +436,6 @@ bool shouldCancelMobileTouchState(SDL_Event const& event) {
   return event.type == SDL_EVENT_WINDOW_FOCUS_LOST
       || event.type == SDL_EVENT_WINDOW_HIDDEN
       || event.type == SDL_EVENT_WINDOW_MINIMIZED
-      || event.type == SDL_EVENT_WINDOW_RESIZED
-      || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
-      || event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED
-      || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED
       || event.type == SDL_EVENT_WILL_ENTER_BACKGROUND
       || event.type == SDL_EVENT_DID_ENTER_BACKGROUND;
 }
