@@ -1,6 +1,7 @@
 package org.libsdl.app;
 
 import android.content.*;
+import android.os.Build;
 import android.text.InputType;
 import android.view.*;
 import android.view.inputmethod.EditorInfo;
@@ -32,6 +33,9 @@ public class SDLDummyEdit extends View implements View.OnKeyListener
 
     @Override
     public boolean onKey(View v, int keyCode, KeyEvent event) {
+        if (SDLInputConnection.isEditingKeyCode(keyCode) && SDLInputConnection.handleEditingKeyEvent(event))
+            return true;
+
         return SDLActivity.handleKeyEvent(v, keyCode, event, ic);
     }
 
@@ -59,8 +63,14 @@ public class SDLDummyEdit extends View implements View.OnKeyListener
         outAttrs.inputType = input_type;
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI |
                               EditorInfo.IME_FLAG_NO_FULLSCREEN /* API 11 */;
+        SDLInputConnection sdlInputConnection = (SDLInputConnection)ic;
+        int selectionAnchor = sdlInputConnection.selectionAnchor();
+        outAttrs.initialSelStart = selectionAnchor;
+        outAttrs.initialSelEnd = selectionAnchor;
+        if (Build.VERSION.SDK_INT >= 30) {
+            outAttrs.setInitialSurroundingText(sdlInputConnection.navigationBufferText());
+        }
 
         return ic;
     }
 }
-

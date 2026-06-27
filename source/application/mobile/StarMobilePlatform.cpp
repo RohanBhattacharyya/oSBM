@@ -41,7 +41,6 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #include <thread>
 #include <vector>
 #ifdef STAR_SYSTEM_ANDROID
-#include <android/log.h>
 #include <jni.h>
 #endif
 
@@ -49,6 +48,83 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #include "mobile/StarMobileControls.hpp"
 #include "mobile/StarMobileLauncherSupport.hpp"
 #include "mobile/StarMobilePlatform.hpp"
+
+#ifdef STAR_SYSTEM_ANDROID
+std::mutex g_androidImGuiEditKeyMutex;
+constexpr int AndroidImGuiEditKeyCount = 9;
+constexpr std::array<ImGuiKey, AndroidImGuiEditKeyCount> AndroidImGuiKeys = {
+  ImGuiKey_Backspace, ImGuiKey_Delete, ImGuiKey_Enter, ImGuiKey_LeftArrow, ImGuiKey_RightArrow,
+  ImGuiKey_UpArrow, ImGuiKey_DownArrow, ImGuiKey_Home, ImGuiKey_End
+};
+struct AndroidImGuiKeyEvent {
+  int key = 0;
+  bool down = false;
+};
+std::vector<AndroidImGuiKeyEvent> g_androidImGuiEditKeys;
+std::atomic_bool g_androidImGuiTextInputActive = false;
+
+ImGuiKey androidImGuiEditKey(int key) {
+  if (key < 0 || key >= AndroidImGuiEditKeyCount)
+    return ImGuiKey_None;
+  return AndroidImGuiKeys[(size_t)key];
+}
+
+void setAndroidImGuiTextInputActive(bool active) {
+  g_androidImGuiTextInputActive.store(active, std::memory_order_release);
+}
+
+void drainAndroidImGuiEditKeys() {
+  std::vector<AndroidImGuiKeyEvent> keys;
+  {
+    std::lock_guard<std::mutex> lock(g_androidImGuiEditKeyMutex);
+    keys.swap(g_androidImGuiEditKeys);
+  }
+
+  if (keys.empty())
+    return;
+
+  if (!ImGui::GetCurrentContext())
+    return;
+
+  std::vector<AndroidImGuiKeyEvent> deferredEvents;
+  std::array<bool, AndroidImGuiEditKeyCount> emittedKey = {};
+  auto& io = ImGui::GetIO();
+  for (auto const& event : keys) {
+    if (event.key >= 0 && event.key < (int)emittedKey.size()) {
+      auto keyIndex = (size_t)event.key;
+      if (emittedKey[keyIndex]) {
+        deferredEvents.push_back(event);
+        continue;
+      }
+      emittedKey[keyIndex] = true;
+    }
+    if (auto imguiKey = androidImGuiEditKey(event.key); imguiKey != ImGuiKey_None)
+      io.AddKeyEvent(imguiKey, event.down);
+  }
+
+  if (!deferredEvents.empty()) {
+    std::lock_guard<std::mutex> lock(g_androidImGuiEditKeyMutex);
+    g_androidImGuiEditKeys.insert(g_androidImGuiEditKeys.begin(), deferredEvents.begin(), deferredEvents.end());
+  }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_org_libsdl_app_SDLInputConnection_nativeTapEditingKey(JNIEnv*, jclass, jint key) {
+  if (androidImGuiEditKey(key) == ImGuiKey_None || !g_androidImGuiTextInputActive.load(std::memory_order_acquire))
+    return JNI_FALSE;
+
+  std::lock_guard<std::mutex> lock(g_androidImGuiEditKeyMutex);
+  g_androidImGuiEditKeys.push_back(AndroidImGuiKeyEvent{(int)key, true});
+  g_androidImGuiEditKeys.push_back(AndroidImGuiKeyEvent{(int)key, false});
+  return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_org_libsdl_app_SDLInputConnection_nativeIsEditingKeyTarget(JNIEnv*, jclass) {
+  return g_androidImGuiTextInputActive.load(std::memory_order_acquire) ? JNI_TRUE : JNI_FALSE;
+}
+#else
+void setAndroidImGuiTextInputActive(bool) {}
+void drainAndroidImGuiEditKeys() {}
+#endif
 
 namespace Star {
 
@@ -1934,6 +2010,7 @@ private:
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    drainAndroidImGuiEditKeys();
     ImGui::NewFrame();
 
     ImVec2 displaySize = imguiDisplaySize();
@@ -2767,6 +2844,7 @@ private:
   void renderStartupScreen(String const& status) {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    drainAndroidImGuiEditKeys();
     ImGui::NewFrame();
 
     ImVec2 displaySize = imguiDisplaySize();
@@ -2784,6 +2862,7 @@ private:
     ImGui::End();
 
     ImGui::Render();
+    setAndroidImGuiTextInputActive(false);
 #ifdef STAR_SYSTEM_IOS
     glBindFramebuffer(GL_FRAMEBUFFER, m_renderer->screenFramebuffer());
 #endif
@@ -2823,6 +2902,9 @@ private:
       if (overlayEnabled) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
+        drainAndroidImGuiEditKeys();
+      } else {
+        setAndroidImGuiTextInputActive(false);
       }
 
       int updatesBehind = std::max<int>(round(m_updateTicker.ticksBehind()), 1);
@@ -2844,6 +2926,7 @@ private:
       if (overlayEnabled) {
         m_touchAdapter->drawOverlay();
         ImGui::Render();
+        setAndroidImGuiTextInputActive(ImGui::GetIO().WantTextInput);
       }
 
       m_renderer->finishFrame();
@@ -3520,6 +3603,9 @@ private:
   void syncImGuiTextInputState() {
 #if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
     bool wantTextInput = ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput;
+#ifdef STAR_SYSTEM_ANDROID
+    setAndroidImGuiTextInputActive(wantTextInput);
+#endif
     if (m_textInput != wantTextInput) {
       m_textInput = wantTextInput;
       m_textInputDirty = true;

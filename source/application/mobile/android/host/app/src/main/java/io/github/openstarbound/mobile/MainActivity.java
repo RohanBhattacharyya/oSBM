@@ -42,6 +42,7 @@ import androidx.core.content.FileProvider;
 import androidx.documentfile.provider.DocumentFile;
 
 import org.libsdl.app.SDLActivity;
+import org.libsdl.app.SDLInputConnection;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -99,6 +100,26 @@ public final class MainActivity extends SDLActivity {
         return device != null && isControllerSource(device.getSources());
     }
 
+    private static boolean isControllerEvent(int source, int deviceId, InputDevice device) {
+        if (isControllerSource(source)) {
+            return true;
+        }
+        if (deviceId < 0) {
+            return false;
+        }
+        return isControllerDevice(device);
+    }
+
+    private static boolean isSoftKeyboardEditKey(KeyEvent event) {
+        if (event == null || !SDLInputConnection.isEditingKeyCode(event.getKeyCode())) {
+            return false;
+        }
+        if (event.getDeviceId() < 0 && event.getSource() == 0) {
+            return true;
+        }
+        return SDLInputConnection.nativeIsEditingKeyTarget();
+    }
+
     private void restoreSdlFocusBeforeControllerInput() {
         View currentFocus = getCurrentFocus();
         if (mTextEdit != null
@@ -111,7 +132,10 @@ public final class MainActivity extends SDLActivity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event != null && (isControllerSource(event.getSource()) || isControllerDevice(event.getDevice()))) {
+        if (isSoftKeyboardEditKey(event) && SDLInputConnection.handleEditingKeyEvent(event))
+            return true;
+
+        if (event != null && isControllerEvent(event.getSource(), event.getDeviceId(), event.getDevice())) {
             restoreSdlFocusBeforeControllerInput();
         }
         return super.dispatchKeyEvent(event);
@@ -119,7 +143,7 @@ public final class MainActivity extends SDLActivity {
 
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent event) {
-        if (event != null && (isControllerSource(event.getSource()) || isControllerDevice(event.getDevice()))) {
+        if (event != null && isControllerEvent(event.getSource(), event.getDeviceId(), event.getDevice())) {
             restoreSdlFocusBeforeControllerInput();
         }
         return super.dispatchGenericMotionEvent(event);

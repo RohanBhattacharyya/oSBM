@@ -1,25 +1,243 @@
 package org.libsdl.app;
 
 import android.content.*;
-import android.os.Build;
 import android.text.Editable;
+import android.text.Selection;
 import android.view.*;
 import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.ExtractedText;
+import android.view.inputmethod.ExtractedTextRequest;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 
 public class SDLInputConnection extends BaseInputConnection
 {
+    private static final int EDIT_KEY_BACKSPACE = 0;
+    private static final int EDIT_KEY_DELETE = 1;
+    private static final int EDIT_KEY_ENTER = 2;
+    private static final int EDIT_KEY_LEFT = 3;
+    private static final int EDIT_KEY_RIGHT = 4;
+    private static final int EDIT_KEY_UP = 5;
+    private static final int EDIT_KEY_DOWN = 6;
+    private static final int EDIT_KEY_HOME = 7;
+    private static final int EDIT_KEY_END = 8;
+    private static final int NAVIGATION_PADDING = 64;
+    private static final char NAVIGATION_PADDING_CHAR = 'x';
+    private static final String NAVIGATION_PADDING_TEXT = buildNavigationPadding();
+
+    protected View mTargetView;
     protected EditText mEditText;
     protected String mCommittedText = "";
 
+    private static int editKeyFromKeyCode(int keyCode) {
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_DEL:
+                return EDIT_KEY_BACKSPACE;
+            case KeyEvent.KEYCODE_FORWARD_DEL:
+                return EDIT_KEY_DELETE;
+            case KeyEvent.KEYCODE_ENTER:
+                return EDIT_KEY_ENTER;
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                return EDIT_KEY_LEFT;
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                return EDIT_KEY_RIGHT;
+            case KeyEvent.KEYCODE_DPAD_UP:
+                return EDIT_KEY_UP;
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                return EDIT_KEY_DOWN;
+            case KeyEvent.KEYCODE_MOVE_HOME:
+                return EDIT_KEY_HOME;
+            case KeyEvent.KEYCODE_MOVE_END:
+                return EDIT_KEY_END;
+            default:
+                return -1;
+        }
+    }
+
+    public static boolean isEditingKeyCode(int keyCode) {
+        return editKeyFromKeyCode(keyCode) >= 0;
+    }
+
+    private static String buildNavigationPadding() {
+        StringBuilder padding = new StringBuilder(NAVIGATION_PADDING);
+        for (int i = 0; i < NAVIGATION_PADDING; ++i) {
+            padding.append(NAVIGATION_PADDING_CHAR);
+        }
+        return padding.toString();
+    }
+
+    public static boolean handleEditingKeyEvent(KeyEvent event) {
+        int editKey = editKeyFromKeyCode(event.getKeyCode());
+        if (editKey < 0) {
+            return false;
+        }
+
+        if (event.getAction() == KeyEvent.ACTION_DOWN)
+            return nativeTapEditingKey(editKey);
+        return event.getAction() == KeyEvent.ACTION_UP && nativeIsEditingKeyTarget();
+    }
+
     public SDLInputConnection(View targetView, boolean fullEditor) {
         super(targetView, fullEditor);
+        mTargetView = targetView;
         mEditText = new EditText(SDL.getContext());
+        ensureNavigationBuffer();
     }
 
     @Override
     public Editable getEditable() {
-        return mEditText.getEditableText();
+        Editable content = mEditText.getEditableText();
+        ensureNavigationBuffer(content);
+        return content;
+    }
+
+    protected void ensureNavigationBuffer() {
+        ensureNavigationBuffer(mEditText.getEditableText());
+    }
+
+    protected void ensureNavigationBuffer(Editable content) {
+        if (content == null) {
+            return;
+        }
+
+        if (!hasNavigationPadding(content)) {
+            replaceEditableWithApplicationText(content, applicationText(content));
+        }
+
+        int selectionStart = Selection.getSelectionStart(content);
+        int selectionEnd = Selection.getSelectionEnd(content);
+        if (selectionStart < NAVIGATION_PADDING / 2
+                || selectionEnd < NAVIGATION_PADDING / 2
+                || content.length() - selectionStart < NAVIGATION_PADDING / 2
+                || content.length() - selectionEnd < NAVIGATION_PADDING / 2) {
+            recenterNavigationSelection(content);
+        }
+    }
+
+    protected String applicationText(Editable content) {
+        if (content == null) {
+            return "";
+        }
+        if (hasNavigationPadding(content)) {
+            return content.subSequence(NAVIGATION_PADDING, content.length() - NAVIGATION_PADDING).toString();
+        }
+        return content.toString();
+    }
+
+    protected boolean hasNavigationPadding(Editable content) {
+        if (content == null || content.length() < NAVIGATION_PADDING * 2) {
+            return false;
+        }
+        for (int i = 0; i < NAVIGATION_PADDING; ++i) {
+            if (content.charAt(i) != NAVIGATION_PADDING_CHAR
+                    || content.charAt(content.length() - 1 - i) != NAVIGATION_PADDING_CHAR) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    protected void replaceEditableWithApplicationText(Editable content, String text) {
+        content.replace(0, content.length(), NAVIGATION_PADDING_TEXT + text + NAVIGATION_PADDING_TEXT);
+        recenterNavigationSelection(content);
+    }
+
+    protected int navigationAnchor(Editable content) {
+        return Math.max(NAVIGATION_PADDING, content.length() - NAVIGATION_PADDING);
+    }
+
+    protected void recenterNavigationSelection(Editable content) {
+        int oldStart = Selection.getSelectionStart(content);
+        int oldEnd = Selection.getSelectionEnd(content);
+        int anchor = navigationAnchor(content);
+        Selection.setSelection(content, anchor, anchor);
+        notifySelectionChanged(oldStart, oldEnd, anchor, anchor);
+    }
+
+    public int selectionAnchor() {
+        ensureNavigationBuffer();
+        return navigationAnchor(mEditText.getEditableText());
+    }
+
+    public String navigationBufferText() {
+        ensureNavigationBuffer();
+        return mEditText.getEditableText().toString();
+    }
+
+    protected void notifySelectionChanged(int oldStart, int oldEnd, int newStart, int newEnd) {
+        if (mTargetView == null) {
+            return;
+        }
+
+        InputMethodManager imm = (InputMethodManager)SDL.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.updateSelection(mTargetView, oldStart, oldEnd, newStart, newEnd);
+        }
+    }
+
+    @Override
+    public CharSequence getTextBeforeCursor(int length, int flags) {
+        ensureNavigationBuffer();
+        return super.getTextBeforeCursor(length, flags);
+    }
+
+    @Override
+    public CharSequence getTextAfterCursor(int length, int flags) {
+        ensureNavigationBuffer();
+        return super.getTextAfterCursor(length, flags);
+    }
+
+    @Override
+    public ExtractedText getExtractedText(ExtractedTextRequest request, int flags) {
+        ensureNavigationBuffer();
+        return super.getExtractedText(request, flags);
+    }
+
+    @Override
+    public boolean setSelection(int start, int end) {
+        Editable content = mEditText.getEditableText();
+        ensureNavigationBuffer(content);
+        int contentLength = content.length();
+        int safeStart = Math.min(contentLength - 1, Math.max(1, start));
+        int safeEnd = Math.min(contentLength - 1, Math.max(1, end));
+        int oldStart = Selection.getSelectionStart(content);
+        int oldEnd = Selection.getSelectionEnd(content);
+        boolean active = nativeIsEditingKeyTarget();
+        if (active) {
+            handleSelectionMovement(oldStart, oldEnd, safeStart, safeEnd, content);
+            recenterNavigationSelection(content);
+            return true;
+        }
+        return super.setSelection(safeStart, safeEnd);
+    }
+
+    protected boolean handleSelectionMovement(int oldStart, int oldEnd, int newStart, int newEnd, Editable content) {
+        if (oldStart < 0 || oldEnd < 0 || oldStart != oldEnd || newStart != newEnd) {
+            return false;
+        }
+
+        int editKey = -1;
+        int contentLength = content.length();
+        int anchor = navigationAnchor(content);
+        if (newStart <= 1) {
+            editKey = EDIT_KEY_HOME;
+        } else if (newStart >= contentLength - 1) {
+            editKey = EDIT_KEY_END;
+        } else if (newStart < oldStart) {
+            editKey = EDIT_KEY_LEFT;
+        } else if (newStart > oldStart) {
+            editKey = EDIT_KEY_RIGHT;
+        } else if (newStart < anchor) {
+            editKey = EDIT_KEY_LEFT;
+        } else if (newStart > anchor) {
+            editKey = EDIT_KEY_RIGHT;
+        }
+
+        if (editKey < 0) {
+            return false;
+        }
+
+        return nativeTapEditingKey(editKey);
     }
 
     @Override
@@ -37,7 +255,42 @@ public class SDLInputConnection extends BaseInputConnection
          */
 
         if (event.getKeyCode() == KeyEvent.KEYCODE_ENTER) {
-            if (SDLActivity.onNativeSoftReturnKey()) {
+            boolean sent = false;
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                sent = nativeTapEditingKey(EDIT_KEY_ENTER);
+            }
+            if (sent || event.getAction() == KeyEvent.ACTION_UP) {
+                return true;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN && SDLActivity.onNativeSoftReturnKey()) {
+                return true;
+            }
+        }
+        if (event.getKeyCode() == KeyEvent.KEYCODE_DEL) {
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                return true;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                sendBackspace(1);
+            }
+            return true;
+        }
+        if (event.getKeyCode() == KeyEvent.KEYCODE_FORWARD_DEL) {
+            boolean sent = false;
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                sent = nativeTapEditingKey(EDIT_KEY_DELETE);
+            }
+            if (sent || event.getAction() == KeyEvent.ACTION_UP) {
+                return true;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_FORWARD_DEL);
+                SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_FORWARD_DEL);
+            }
+            return true;
+        }
+        if (isEditingKeyCode(event.getKeyCode())) {
+            if (handleEditingKeyEvent(event)) {
                 return true;
             }
         }
@@ -47,6 +300,7 @@ public class SDLInputConnection extends BaseInputConnection
 
     @Override
     public boolean commitText(CharSequence text, int newCursorPosition) {
+        ensureNavigationBuffer();
         if (!super.commitText(text, newCursorPosition)) {
             return false;
         }
@@ -56,6 +310,7 @@ public class SDLInputConnection extends BaseInputConnection
 
     @Override
     public boolean setComposingText(CharSequence text, int newCursorPosition) {
+        ensureNavigationBuffer();
         if (!super.setComposingText(text, newCursorPosition)) {
             return false;
         }
@@ -65,16 +320,19 @@ public class SDLInputConnection extends BaseInputConnection
 
     @Override
     public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-        if (Build.VERSION.SDK_INT <= 29 /* Android 10.0 (Q) */) {
-            // Workaround to capture backspace key. Ref: http://stackoverflow.com/questions>/14560344/android-backspace-in-webview-baseinputconnection
-            // and https://bugzilla.libsdl.org/show_bug.cgi?id=2265
-            if (beforeLength > 0 && afterLength == 0) {
-                // backspace(s)
-                while (beforeLength-- > 0) {
-                    nativeGenerateScancodeForUnichar('\b');
+        ensureNavigationBuffer();
+        if (beforeLength > 0 && afterLength == 0) {
+            sendBackspace(beforeLength);
+            return true;
+        }
+        if (beforeLength == 0 && afterLength > 0) {
+            while (afterLength-- > 0) {
+                if (!nativeTapEditingKey(EDIT_KEY_DELETE)) {
+                    SDLActivity.onNativeKeyDown(KeyEvent.KEYCODE_FORWARD_DEL);
+                    SDLActivity.onNativeKeyUp(KeyEvent.KEYCODE_FORWARD_DEL);
                 }
-                return true;
-           }
+            }
+            return true;
         }
 
         if (!super.deleteSurroundingText(beforeLength, afterLength)) {
@@ -84,13 +342,40 @@ public class SDLInputConnection extends BaseInputConnection
         return true;
     }
 
+    protected void sendBackspace(int count) {
+        trimCommittedText(count);
+        while (count-- > 0) {
+            if (!nativeTapEditingKey(EDIT_KEY_BACKSPACE)) {
+                nativeGenerateScancodeForUnichar('\b');
+            }
+        }
+    }
+
+    protected void trimCommittedText(int count) {
+        int end = mCommittedText.length();
+        for (int i = 0; i < count && end > 0; ++i) {
+            end = mCommittedText.offsetByCodePoints(end, -1);
+        }
+        mCommittedText = mCommittedText.substring(0, end);
+
+        final Editable content = mEditText.getEditableText();
+        if (content != null) {
+            replaceEditableWithApplicationText(content, mCommittedText);
+        }
+    }
+
+    @Override
+    public boolean deleteSurroundingTextInCodePoints(int beforeLength, int afterLength) {
+        return deleteSurroundingText(beforeLength, afterLength);
+    }
+
     protected void updateText() {
         final Editable content = getEditable();
         if (content == null) {
             return;
         }
 
-        String text = content.toString();
+        String text = applicationText(content);
         int compareLength = Math.min(text.length(), mCommittedText.length());
         int matchLength, offset;
 
@@ -102,10 +387,13 @@ public class SDLInputConnection extends BaseInputConnection
             }
             matchLength += Character.charCount(codePoint);
         }
+
         /* FIXME: This doesn't handle graphemes, like '🌬️' */
         for (offset = matchLength; offset < mCommittedText.length(); ) {
             int codePoint = mCommittedText.codePointAt(offset);
-            nativeGenerateScancodeForUnichar('\b');
+            if (!nativeTapEditingKey(EDIT_KEY_BACKSPACE)) {
+                nativeGenerateScancodeForUnichar('\b');
+            }
             offset += Character.charCount(codePoint);
         }
 
@@ -129,10 +417,14 @@ public class SDLInputConnection extends BaseInputConnection
             SDLInputConnection.nativeCommitText(pendingText, 0);
         }
         mCommittedText = text;
+        ensureNavigationBuffer(content);
     }
 
     public static native void nativeCommitText(String text, int newCursorPosition);
 
     public static native void nativeGenerateScancodeForUnichar(char c);
-}
 
+    public static native boolean nativeTapEditingKey(int key);
+
+    public static native boolean nativeIsEditingKeyTarget();
+}

@@ -3,7 +3,7 @@ plugins {
 }
 
 def sdlJar = System.getenv("STAR_SDL3_JAR")
-def useExternalSdlJar = sdlJar != null && !sdlJar.isEmpty() && file(sdlJar).exists()
+def useExternalSdlJar = sdlJar != null && !sdlJar.isEmpty() && file(sdlJar).exists() && System.getenv("STAR_USE_EXTERNAL_SDL3_JAR") == "1"
 
 android {
     namespace 'com.devoflife.osbm.android'
@@ -65,8 +65,5 @@ dependencies {
     if (useExternalSdlJar) {
         // Prefer exact SDL Java glue from the matching vcpkg artifact.
         implementation files(sdlJar)
-    } else {
-        // Fallback to checked-in org.libsdl.app sources.
-        logger.lifecycle("STAR_SDL3_JAR not set/found, using local SDL Java sources")
     }
 }
