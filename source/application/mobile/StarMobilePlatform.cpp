@@ -58,9 +58,9 @@ constexpr std::array<ImGuiKey, AndroidImGuiEditKeyCount> AndroidImGuiKeys = {
 };
 struct AndroidImGuiKeyEvent {
   int key = 0;
-  bool down = false;
 };
-std::vector<AndroidImGuiKeyEvent> g_androidImGuiEditKeys;
+std::vector<AndroidImGuiKeyEvent> g_androidImGuiEditKeyTaps;
+std::array<bool, AndroidImGuiEditKeyCount> g_androidImGuiEditKeyDown = {};
 std::atomic_bool g_androidImGuiTextInputActive = false;
 
 ImGuiKey androidImGuiEditKey(int key) {
@@ -74,38 +74,44 @@ void setAndroidImGuiTextInputActive(bool active) {
 }
 
 void drainAndroidImGuiEditKeys() {
-  std::vector<AndroidImGuiKeyEvent> keys;
-  {
-    std::lock_guard<std::mutex> lock(g_androidImGuiEditKeyMutex);
-    keys.swap(g_androidImGuiEditKeys);
-  }
-
-  if (keys.empty())
-    return;
-
   if (!ImGui::GetCurrentContext())
     return;
 
-  std::vector<AndroidImGuiKeyEvent> deferredEvents;
-  std::array<bool, AndroidImGuiEditKeyCount> emittedKey = {};
   auto& io = ImGui::GetIO();
-  for (auto const& event : keys) {
-    if (event.key >= 0 && event.key < (int)emittedKey.size()) {
-      auto keyIndex = (size_t)event.key;
-      if (emittedKey[keyIndex]) {
-        deferredEvents.push_back(event);
-        continue;
-      }
-      emittedKey[keyIndex] = true;
+  bool releasedKey = false;
+  for (size_t key = 0; key < g_androidImGuiEditKeyDown.size(); ++key) {
+    if (g_androidImGuiEditKeyDown[key]) {
+      if (auto imguiKey = androidImGuiEditKey((int)key); imguiKey != ImGuiKey_None)
+        io.AddKeyEvent(imguiKey, false);
+      g_androidImGuiEditKeyDown[key] = false;
+      releasedKey = true;
     }
-    if (auto imguiKey = androidImGuiEditKey(event.key); imguiKey != ImGuiKey_None)
-      io.AddKeyEvent(imguiKey, event.down);
+  }
+  if (releasedKey)
+    return;
+
+  AndroidImGuiKeyEvent event;
+  {
+    std::lock_guard<std::mutex> lock(g_androidImGuiEditKeyMutex);
+    if (g_androidImGuiEditKeyTaps.empty())
+      return;
+    event = g_androidImGuiEditKeyTaps.front();
+    g_androidImGuiEditKeyTaps.erase(g_androidImGuiEditKeyTaps.begin());
   }
 
-  if (!deferredEvents.empty()) {
+  auto imguiKey = androidImGuiEditKey(event.key);
+  if (imguiKey == ImGuiKey_None)
+    return;
+
+  if (ImGui::IsKeyDown(imguiKey)) {
+    io.AddKeyEvent(imguiKey, false);
     std::lock_guard<std::mutex> lock(g_androidImGuiEditKeyMutex);
-    g_androidImGuiEditKeys.insert(g_androidImGuiEditKeys.begin(), deferredEvents.begin(), deferredEvents.end());
+    g_androidImGuiEditKeyTaps.insert(g_androidImGuiEditKeyTaps.begin(), event);
+    return;
   }
+
+  io.AddKeyEvent(imguiKey, true);
+  g_androidImGuiEditKeyDown[(size_t)event.key] = true;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL Java_org_libsdl_app_SDLInputConnection_nativeTapEditingKey(JNIEnv*, jclass, jint key) {
@@ -113,8 +119,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_org_libsdl_app_SDLInputConnection_nat
     return JNI_FALSE;
 
   std::lock_guard<std::mutex> lock(g_androidImGuiEditKeyMutex);
-  g_androidImGuiEditKeys.push_back(AndroidImGuiKeyEvent{(int)key, true});
-  g_androidImGuiEditKeys.push_back(AndroidImGuiKeyEvent{(int)key, false});
+  g_androidImGuiEditKeyTaps.push_back(AndroidImGuiKeyEvent{(int)key});
   return JNI_TRUE;
 }
 

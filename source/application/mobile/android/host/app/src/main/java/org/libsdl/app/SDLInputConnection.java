@@ -21,13 +21,16 @@ public class SDLInputConnection extends BaseInputConnection
     private static final int EDIT_KEY_DOWN = 6;
     private static final int EDIT_KEY_HOME = 7;
     private static final int EDIT_KEY_END = 8;
-    private static final int NAVIGATION_PADDING = 64;
+    private static final int NAVIGATION_PADDING = 512;
     private static final char NAVIGATION_PADDING_CHAR = 'x';
     private static final String NAVIGATION_PADDING_TEXT = buildNavigationPadding();
 
     protected View mTargetView;
     protected EditText mEditText;
     protected String mCommittedText = "";
+    // Tracks the IME's requested cursor, which may lag behind our recentered hidden selection.
+    protected int mNavigationSelectionStart = -1;
+    protected int mNavigationSelectionEnd = -1;
 
     private static int editKeyFromKeyCode(int keyCode) {
         switch (keyCode) {
@@ -38,12 +41,16 @@ public class SDLInputConnection extends BaseInputConnection
             case KeyEvent.KEYCODE_ENTER:
                 return EDIT_KEY_ENTER;
             case KeyEvent.KEYCODE_DPAD_LEFT:
+            case KeyEvent.KEYCODE_SYSTEM_NAVIGATION_LEFT:
                 return EDIT_KEY_LEFT;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
+            case KeyEvent.KEYCODE_SYSTEM_NAVIGATION_RIGHT:
                 return EDIT_KEY_RIGHT;
             case KeyEvent.KEYCODE_DPAD_UP:
+            case KeyEvent.KEYCODE_SYSTEM_NAVIGATION_UP:
                 return EDIT_KEY_UP;
             case KeyEvent.KEYCODE_DPAD_DOWN:
+            case KeyEvent.KEYCODE_SYSTEM_NAVIGATION_DOWN:
                 return EDIT_KEY_DOWN;
             case KeyEvent.KEYCODE_MOVE_HOME:
                 return EDIT_KEY_HOME;
@@ -146,12 +153,40 @@ public class SDLInputConnection extends BaseInputConnection
         return Math.max(NAVIGATION_PADDING, content.length() - NAVIGATION_PADDING);
     }
 
+    protected void setNavigationSelection(int start, int end) {
+        mNavigationSelectionStart = start;
+        mNavigationSelectionEnd = end;
+    }
+
+    protected int trackedSelectionStart(Editable content) {
+        if (mNavigationSelectionStart >= 0) {
+            return Math.min(content.length(), Math.max(0, mNavigationSelectionStart));
+        }
+        return Math.min(content.length(), Math.max(0, Selection.getSelectionStart(content)));
+    }
+
+    protected int trackedSelectionEnd(Editable content) {
+        if (mNavigationSelectionEnd >= 0) {
+            return Math.min(content.length(), Math.max(0, mNavigationSelectionEnd));
+        }
+        return Math.min(content.length(), Math.max(0, Selection.getSelectionEnd(content)));
+    }
+
     protected void recenterNavigationSelection(Editable content) {
+        recenterNavigationSelection(content, true, true);
+    }
+
+    protected void recenterNavigationSelection(Editable content, boolean updateTrackedSelection, boolean notifyIme) {
         int oldStart = Selection.getSelectionStart(content);
         int oldEnd = Selection.getSelectionEnd(content);
         int anchor = navigationAnchor(content);
         Selection.setSelection(content, anchor, anchor);
-        notifySelectionChanged(oldStart, oldEnd, anchor, anchor);
+        if (updateTrackedSelection) {
+            setNavigationSelection(anchor, anchor);
+        }
+        if (notifyIme) {
+            notifySelectionChanged(oldStart, oldEnd, anchor, anchor);
+        }
     }
 
     public int selectionAnchor() {
@@ -177,20 +212,36 @@ public class SDLInputConnection extends BaseInputConnection
 
     @Override
     public CharSequence getTextBeforeCursor(int length, int flags) {
-        ensureNavigationBuffer();
-        return super.getTextBeforeCursor(length, flags);
+        Editable content = mEditText.getEditableText();
+        ensureNavigationBuffer(content);
+        int end = trackedSelectionStart(content);
+        int start = Math.max(0, end - Math.max(0, length));
+        return content.subSequence(start, end);
     }
 
     @Override
     public CharSequence getTextAfterCursor(int length, int flags) {
-        ensureNavigationBuffer();
-        return super.getTextAfterCursor(length, flags);
+        Editable content = mEditText.getEditableText();
+        ensureNavigationBuffer(content);
+        int start = trackedSelectionEnd(content);
+        int end = Math.min(content.length(), start + Math.max(0, length));
+        return content.subSequence(start, end);
     }
 
     @Override
     public ExtractedText getExtractedText(ExtractedTextRequest request, int flags) {
-        ensureNavigationBuffer();
-        return super.getExtractedText(request, flags);
+        Editable content = mEditText.getEditableText();
+        ensureNavigationBuffer(content);
+
+        ExtractedText extracted = new ExtractedText();
+        extracted.text = content.toString();
+        extracted.startOffset = 0;
+        extracted.partialStartOffset = -1;
+        extracted.partialEndOffset = -1;
+        extracted.selectionStart = trackedSelectionStart(content);
+        extracted.selectionEnd = trackedSelectionEnd(content);
+        extracted.flags = 0;
+        return extracted;
     }
 
     @Override
@@ -200,15 +251,21 @@ public class SDLInputConnection extends BaseInputConnection
         int contentLength = content.length();
         int safeStart = Math.min(contentLength - 1, Math.max(1, start));
         int safeEnd = Math.min(contentLength - 1, Math.max(1, end));
-        int oldStart = Selection.getSelectionStart(content);
-        int oldEnd = Selection.getSelectionEnd(content);
+        int oldStart = mNavigationSelectionStart >= 0 ? mNavigationSelectionStart : Selection.getSelectionStart(content);
+        int oldEnd = mNavigationSelectionEnd >= 0 ? mNavigationSelectionEnd : Selection.getSelectionEnd(content);
         boolean active = nativeIsEditingKeyTarget();
         if (active) {
             handleSelectionMovement(oldStart, oldEnd, safeStart, safeEnd, content);
-            recenterNavigationSelection(content);
+            setNavigationSelection(safeStart, safeEnd);
+            recenterNavigationSelection(content, false, false);
+            notifySelectionChanged(oldStart, oldEnd, safeStart, safeEnd);
             return true;
         }
-        return super.setSelection(safeStart, safeEnd);
+        boolean changed = super.setSelection(safeStart, safeEnd);
+        if (changed) {
+            setNavigationSelection(safeStart, safeEnd);
+        }
+        return changed;
     }
 
     protected boolean handleSelectionMovement(int oldStart, int oldEnd, int newStart, int newEnd, Editable content) {
