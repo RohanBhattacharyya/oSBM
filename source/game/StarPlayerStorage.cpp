@@ -38,6 +38,19 @@ PlayerStorage::PlayerStorage(String const& storageDir) {
 
       String filename = File::relativeTo(m_storageDirectory, file.first);
       if (filename.endsWith(".player")) {
+#ifdef STAR_SYSTEM_SWITCH
+        // On the Switch NRO run thread C++ exceptions do not unwind, so the
+        // try/catch below cannot save us: a throw from VersionedJson::readFile
+        // on a 0-byte / crash-truncated .player file (a common artifact of a
+        // save write interrupted by a process kill) would terminate the whole
+        // process at the title transition instead of being logged and skipped.
+        // Pre-skip obviously-invalid empty player files. The valid backups in
+        // backup/*.player.bak* are unaffected and remain recoverable.
+        if (File::fileSize(filename) == 0) {
+          Logger::error("Skipping empty/corrupt player file {} (0 bytes)", file.first);
+          continue;
+        }
+#endif
         try {
           auto json = VersionedJson::readFile(filename);
           Uuid uuid(json.content.getString("uuid"));
@@ -94,6 +107,13 @@ PlayerStorage::PlayerStorage(String const& storageDir) {
       metadataPresent = true;
       break;
     }
+  }
+  // A 0-byte metadata file (also a crash-truncation artifact) would make
+  // Json::parseJson("") throw below, which -- as above -- cannot be caught on
+  // the run thread. Treat empty metadata as absent so it is simply regenerated.
+  if (metadataPresent && File::fileSize(File::relativeTo(m_storageDirectory, "metadata")) == 0) {
+    Logger::warn("Ignoring empty/corrupt player metadata file (0 bytes), will regenerate");
+    metadataPresent = false;
   }
 #endif
   if (metadataPresent) {

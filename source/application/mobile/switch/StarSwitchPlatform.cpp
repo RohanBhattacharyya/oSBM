@@ -91,6 +91,26 @@ void switchPlatformInit() {
   // writable root from being created.
   socketInitializeDefault();
   switchDebugLog("switchPlatformInit: socket init done");
+
+  // Pin the main thread (which runs the game loop = client update + rendering)
+  // to the first allowed core, and hint a preferred core so Horizon keeps it
+  // there. Star's worker/server/lighting threads are round-robined onto the
+  // OTHER allowed cores in StarThread_unix.cpp's switchDistributeCurrentThread,
+  // which reserves this core[0] for the main thread. Without this, every libnx
+  // pthread defaults to the same core and the engine runs effectively
+  // single-threaded -- the dominant cause of the in-game 2-5 FPS.
+  {
+    u64 coreMask = 0;
+    if (R_SUCCEEDED(svcGetInfo(&coreMask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0))) {
+      int firstCore = -1;
+      for (int core = 0; core < 4; ++core) {
+        if (coreMask & (1ull << core)) { firstCore = core; break; }
+      }
+      if (firstCore >= 0)
+        svcSetThreadCoreMask(CUR_THREAD_HANDLE, firstCore, coreMask);
+    }
+    switchDebugLog("switchPlatformInit: main thread core affinity set");
+  }
 }
 
 String switchDefaultStorageRoot() {

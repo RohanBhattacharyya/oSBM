@@ -1140,6 +1140,13 @@ void WorldClient::update(float dt) {
 
   auto assets = Root::singleton().assets();
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  static int64_t s_wcEntityUs = 0, s_wcParticleUs = 0, s_wcSectorUs = 0, s_wcOtherUs = 0;
+  static int64_t s_wcFrames = 0;
+  int64_t wcT = Time::monotonicMicroseconds();
+  auto wcLap = [&wcT](int64_t& accum) { int64_t n = Time::monotonicMicroseconds(); accum += n - wcT; wcT = n; };
+#endif
+
   float expireTime = min(float(m_latency + 800), 2000.f);
   auto now = Time::monotonicMilliseconds();
   eraseWhere(m_predictedTiles, [&](auto& pair) {
@@ -1182,6 +1189,9 @@ void WorldClient::update(float dt) {
 
   List<EntityId> toRemove;
   List<EntityId> clientPresenceEntities;
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcOtherUs);
+#endif
   m_entityMap->updateAllEntities([&](EntityPtr const& entity) {
       try { entity->update(dt, m_currentStep); }
       catch (StarException const& e) {
@@ -1206,6 +1216,9 @@ void WorldClient::update(float dt) {
     }, [](EntityPtr const& a, EntityPtr const& b) {
       return a->entityType() < b->entityType();
     });
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcEntityUs);
+#endif
 
   m_clientState.setPlayer(m_mainPlayer->entityId());
   m_clientState.setClientPresenceEntities(std::move(clientPresenceEntities));
@@ -1248,8 +1261,14 @@ void WorldClient::update(float dt) {
 
   sparkDamagedBlocks();
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcOtherUs);
+#endif
   m_particles->addParticles(m_weather.pullNewParticles());
   m_particles->update(dt, RectF(particleRegion), m_weather.wind());
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcParticleUs);
+#endif
 
   if (auto audioSample = m_ambientSounds.updateAmbient(currentAmbientNoises(), m_sky->isDayTime()))
     m_samples.append(audioSample);
@@ -1303,6 +1322,9 @@ void WorldClient::update(float dt) {
 
   LogMap::set("client_ping", m_latency);
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcOtherUs);
+#endif
   // Remove active sectors that are outside of the current monitoring region
   Set<ClientTileSectorArray::Sector> neededSectors;
   auto monitoredRegions = m_clientState.monitoringRegions([this](EntityId entityId) -> Maybe<RectI> {
@@ -1325,6 +1347,17 @@ void WorldClient::update(float dt) {
   LogMap::set("client_entities", m_entityMap->size());
   LogMap::set("client_sectors", toString(loadedSectors.size()));
   LogMap::set("client_lua_mem", m_luaRoot->luaMemoryUsage());
+
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcSectorUs);
+  if (++s_wcFrames >= 120) {
+    Logger::info("[perf-wc] entities={}us particles={}us sectors={}us other={}us | entityCount={}",
+        s_wcEntityUs / s_wcFrames, s_wcParticleUs / s_wcFrames, s_wcSectorUs / s_wcFrames,
+        s_wcOtherUs / s_wcFrames, m_entityMap->size());
+    s_wcEntityUs = s_wcParticleUs = s_wcSectorUs = s_wcOtherUs = 0;
+    s_wcFrames = 0;
+  }
+#endif
 }
 
 ConnectionId WorldClient::connection() const {

@@ -934,21 +934,50 @@ void MainInterface::render() {
   if (m_disableHud)
     return;
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  static int64_t s_miBarsUs = 0, s_miDebugUs = 0, s_miCanvasUs = 0, s_miWindowsUs = 0, s_miWheelCursorUs = 0;
+  static int64_t s_miFrames = 0;
+  int64_t miT = Time::monotonicMicroseconds();
+  auto miLap = [&miT](int64_t& accum) { int64_t n = Time::monotonicMicroseconds(); accum += n - miT; miT = n; };
+#endif
+
   m_guiContext->clearTextStyle();
   renderBreath();
   renderMessages();
   renderMonsterHealthBar();
   renderSpecialDamageBar();
   renderMainBar();
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  miLap(s_miBarsUs);
+#endif
   renderDebug();
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  miLap(s_miDebugUs);
+#endif
 
   RectI screenRect = RectI::withSize(Vec2I(), Vec2I(m_guiContext->windowSize()));
   for (auto& pair : m_canvases)
     pair.second->render(screenRect);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  miLap(s_miCanvasUs);
+#endif
 
   renderWindows();
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  miLap(s_miWindowsUs);
+#endif
   renderActionWheel();
   renderCursor();
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  miLap(s_miWheelCursorUs);
+  if (++s_miFrames >= 120) {
+    Logger::info("[perf-mi] bars={}us debug={}us canvases={}us windows={}us wheelCursor={}us (avg/frame)",
+        s_miBarsUs / s_miFrames, s_miDebugUs / s_miFrames, s_miCanvasUs / s_miFrames,
+        s_miWindowsUs / s_miFrames, s_miWheelCursorUs / s_miFrames);
+    s_miBarsUs = s_miDebugUs = s_miCanvasUs = s_miWindowsUs = s_miWheelCursorUs = 0;
+    s_miFrames = 0;
+  }
+#endif
 }
 
 Vec2F MainInterface::cursorWorldPosition() const {

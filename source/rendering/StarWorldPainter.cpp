@@ -4,6 +4,8 @@
 #include "StarConfiguration.hpp"
 #include "StarAssets.hpp"
 #include "StarJsonExtra.hpp"
+#include "StarLogging.hpp"
+#include "StarTime.hpp"
 
 namespace Star {
 
@@ -49,13 +51,31 @@ void WorldPainter::update(float dt) {
   m_environmentPainter->update(dt);
 }
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+namespace {
+  // Phase breakdown of WorldPainter::render (the in-world "paint" cost, which
+  // profiling showed is CPU-bound primitive generation, NOT GL submission --
+  // only ~34 draw calls/frame). Logged every 120 frames.
+  int64_t g_wpSetupUs = 0, g_wpEnvUs = 0, g_wpLightUs = 0, g_wpMapUs = 0, g_wpDrawUs = 0, g_wpCleanupUs = 0;
+  int64_t g_wpStarsUs = 0, g_wpDebrisUs = 0;
+  int64_t g_wpFrames = 0;
+}
+#endif
+
 void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWaiter) {
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  int64_t wpT = Time::monotonicMicroseconds();
+  auto wpLap = [&wpT](int64_t& accum) { int64_t n = Time::monotonicMicroseconds(); accum += n - wpT; wpT = n; };
+#endif
   m_camera.setScreenSize(m_renderer->screenSize());
   m_camera.setTargetPixelRatio(Root::singleton().configuration()->get("zoomLevel").toFloat());
 
   m_assets = Root::singleton().assets();
 
   m_tilePainter->setup(m_camera, renderData);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wpLap(g_wpSetupUs);
+#endif
 
   // Stars, Debris Fields, Sky, and Orbiters
 
@@ -65,7 +85,13 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   float orbiterAndPlanetRatio = lerp(0.125f, pixelRatioBasis * 3.0f, m_camera.pixelRatio());
 
   m_environmentPainter->renderStars(starAndDebrisRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wpLap(g_wpStarsUs);
+#endif
   m_environmentPainter->renderDebrisFields(starAndDebrisRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wpLap(g_wpDebrisUs);
+#endif
   if (renderData.skyRenderData.type != SkyType::Atmosphereless)
     m_environmentPainter->renderBackOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
   m_environmentPainter->renderPlanetHorizon(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
@@ -75,6 +101,9 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
     m_environmentPainter->renderBackOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
 
   m_renderer->flush();
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wpLap(g_wpEnvUs);
+#endif
 
   bool lightMapUpdated = lightWaiter ? lightWaiter() : false;
 
@@ -107,11 +136,18 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
 
   // Main world layers
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wpLap(g_wpLightUs);
+#endif
+
   Map<EntityRenderLayer, List<pair<EntityHighlightEffect, List<Drawable>>>> entityDrawables;
   for (auto& ed : renderData.entityDrawables) {
     for (auto& p : ed.layers)
       entityDrawables[p.first].append({ed.highlightEffect, std::move(p.second)});
   }
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wpLap(g_wpMapUs);
+#endif
 
   auto entityDrawableIterator = entityDrawables.begin();
   auto renderEntitiesUntil = [this, &entityDrawables, &entityDrawableIterator](Maybe<EntityRenderLayer> until) {
@@ -154,12 +190,26 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   auto dimLevel = round(renderData.dimLevel * 255);
   if (dimLevel != 0)
     m_renderer->render(renderFlatRect(RectF::withSize({}, Vec2F(m_camera.screenSize())), Vec4B(renderData.dimColor, dimLevel), 0.0f));
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wpLap(g_wpDrawUs);
+#endif
 
   int64_t textureTimeout = m_assets->json("/rendering.config:textureTimeout").toInt();
   m_textPainter->cleanup(textureTimeout);
   m_drawablePainter->cleanup(textureTimeout);
   m_environmentPainter->cleanup(textureTimeout);
   m_tilePainter->cleanup();
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wpLap(g_wpCleanupUs);
+  if (++g_wpFrames >= 120) {
+    Logger::info("[perf-wp] setup={}us stars={}us debris={}us skyrest={}us light={}us entityMap={}us draw={}us cleanup={}us (avg/frame)",
+        g_wpSetupUs / g_wpFrames, g_wpStarsUs / g_wpFrames, g_wpDebrisUs / g_wpFrames, g_wpEnvUs / g_wpFrames,
+        g_wpLightUs / g_wpFrames, g_wpMapUs / g_wpFrames, g_wpDrawUs / g_wpFrames, g_wpCleanupUs / g_wpFrames);
+    g_wpSetupUs = g_wpEnvUs = g_wpLightUs = g_wpMapUs = g_wpDrawUs = g_wpCleanupUs = 0;
+    g_wpStarsUs = g_wpDebrisUs = 0;
+    g_wpFrames = 0;
+  }
+#endif
 }
 
 void WorldPainter::adjustLighting(WorldRenderData& renderData) {

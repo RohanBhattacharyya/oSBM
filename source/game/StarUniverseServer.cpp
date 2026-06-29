@@ -1401,7 +1401,18 @@ void UniverseServer::loadSettings() {
 
   auto versioningDatabase = Root::singleton().versioningDatabase();
   auto storageFile = File::relativeTo(m_storageDirectory, "universe.dat");
-  if (File::isFile(storageFile)) {
+  bool storageUsable = File::isFile(storageFile);
+#ifdef STAR_SYSTEM_SWITCH
+  // A 0-byte / crash-truncated universe.dat would make VersionedJson::readFile
+  // throw; on the Switch that throw may land on a thread where C++ exceptions
+  // do not unwind (the catch below cannot run), silently killing the process on
+  // world entry. Treat an empty file as absent and regenerate defaults instead.
+  if (storageUsable && File::fileSize(storageFile) == 0) {
+    Logger::warn("UniverseServer: empty/corrupt universe.dat (0 bytes), loading defaults");
+    storageUsable = false;
+  }
+#endif
+  if (storageUsable) {
     try {
       auto settings = versioningDatabase->loadVersionedJson(VersionedJson::readFile(storageFile), "UniverseSettings");
       m_universeSettings = make_shared<UniverseSettings>(settings);

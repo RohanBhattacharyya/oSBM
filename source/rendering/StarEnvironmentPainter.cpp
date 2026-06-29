@@ -117,28 +117,58 @@ void EnvironmentPainter::renderDebrisFields(float pixelRatio, Vec2F const& scree
 
       JsonArray imageOptions = debrisField.query("list").toArray();
       Vec2U biggest = Vec2U();
+      // Pre-resolve each debris image to its Texture ONCE per frame, indexed
+      // parallel to imageOptions. The generator stores the image as a size_t
+      // INDEX (see header) so generate()'s per-frame appendAll no longer copies
+      // a heap String per debris item -- that String copy, not the drawing, was
+      // ~38ms/frame (stars are cheap for exactly this reason).
+      List<TexturePtr> debrisTextures;
+      debrisTextures.reserve(imageOptions.size());
       for (Json const& json : imageOptions) {
         TexturePtr texture = m_textureGroup->loadTexture(*json.stringPtr());
         biggest = biggest.piecewiseMax(texture->size());
+        debrisTextures.append(std::move(texture));
       }
+      size_t imageOptionCount = imageOptions.size();
 
       float screenBuffer = ceil((float)biggest.max() * (float)Constants::sqrt2);
       PolyD field = PolyD(RectD::withSize(viewMin + velocityOffset, Vec2D(viewSize)).padded(screenBuffer));
       Vec2F debrisAngularVelocityRange = jsonToVec2F(debrisField.query("angularVelocityRange"));
       auto debrisItems = m_debrisGenerators[i]->generate(field,
           [&](RandomSource& rand) {
-            StringView debrisImage = *rand.randFrom(imageOptions).stringPtr();
+            // Mirrors randFrom(imageOptions) (== randUInt(size-1)) to keep the
+            // debris layout identical, but stores the index, not the String.
+            size_t debrisIndex = imageOptionCount ? rand.randUInt(imageOptionCount - 1) : 0;
             float debrisAngularVelocity = rand.randf(debrisAngularVelocityRange[0], debrisAngularVelocityRange[1]);
 
-            return pair<StringView, float>(debrisImage, debrisAngularVelocity);
+            return pair<size_t, float>(debrisIndex, debrisAngularVelocity);
           });
 
       Vec2D debrisPositionOffset = viewMin + velocityOffset;
 
+      auto& primitives = m_renderer->immediatePrimitives();
       for (auto& debrisItem : debrisItems) {
+        if (debrisItem.second.first >= debrisTextures.size())
+          continue;
+        TexturePtr const& texture = debrisTextures[debrisItem.second.first];
+        if (!texture)
+          continue;
+
         Vec2F debrisPosition = rotMatrix.transformVec2(Vec2F(debrisItem.first - debrisPositionOffset));
         float debrisAngle = fmod(Constants::deg2rad * debrisItem.second.second * sky.epochTime, Constants::pi * 2) + sky.starRotation;
-        drawOrbiter(pixelRatio, screenSize, sky, {SkyOrbiterType::SpaceDebris, 1.0f, debrisAngle, debrisItem.second.first, debrisPosition});
+
+        // Inlined SpaceDebris branch of drawOrbiter() using the pre-resolved
+        // texture (identical output, no per-item texture re-resolution).
+        Vec2F position = debrisPosition * pixelRatio;
+        Mat3F renderMatrix = Mat3F::rotation(debrisAngle, position);
+        Vec2F texSize = Vec2F(texture->size());
+        RectF renderRect = RectF::withCenter(position, texSize * pixelRatio);
+        primitives.emplace_back(std::in_place_type_t<RenderQuad>(), texture,
+            renderMatrix.transformVec2(renderRect.min()), Vec2F(0, 0),
+            renderMatrix.transformVec2(Vec2F{renderRect.xMax(), renderRect.yMin()}), Vec2F(texSize[0], 0),
+            renderMatrix.transformVec2(renderRect.max()), Vec2F(texSize[0], texSize[1]),
+            renderMatrix.transformVec2(Vec2F{renderRect.xMin(), renderRect.yMax()}), Vec2F(0, texSize[1]),
+          Vec4B(255, 255, 255, 255), 0.0f);
       }
     }
 
@@ -484,7 +514,7 @@ void EnvironmentPainter::setupStars(SkyRenderData const& sky) {
     int debrisCellSize = debrisFields[i].getInt("cellSize");
     Vec2I debrisCountRange = jsonToVec2I(debrisFields[i].get("cellCountRange"));
     uint64_t debrisSeed = staticRandomU64(sky.skyParameters.seed, i, "DebrisFieldSeed");
-    m_debrisGenerators[i] = make_shared<Random2dPointGenerator<pair<String, float>, double>>(debrisSeed, debrisCellSize, debrisCountRange);
+    m_debrisGenerators[i] = make_shared<Random2dPointGenerator<pair<size_t, float>, double>>(debrisSeed, debrisCellSize, debrisCountRange);
   }
 }
 

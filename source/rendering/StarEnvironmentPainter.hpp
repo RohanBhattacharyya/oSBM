@@ -71,7 +71,11 @@ private:
   uint64_t m_starsHash{};
   List<TexturePtr> m_starTextures;
   shared_ptr<Random2dPointGenerator<pair<size_t, float>>> m_starGenerator;
-  List<shared_ptr<Random2dPointGenerator<pair<String, float>, double>>> m_debrisGenerators;
+  // PointData is the index into the debris field's image list (NOT the image
+  // String): a String here heap-allocates a copy for every debris item on every
+  // frame inside generate()'s appendAll, which dominated the in-world frame.
+  // Stars use the same size_t-index approach, which is why they were ~10x cheaper.
+  List<shared_ptr<Random2dPointGenerator<pair<size_t, float>, double>>> m_debrisGenerators;
 };
 
 }

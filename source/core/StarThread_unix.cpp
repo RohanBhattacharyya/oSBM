@@ -18,6 +18,11 @@
 #include <sys/time.h>
 #include <errno.h>
 
+#ifdef STAR_SYSTEM_SWITCH
+#include <switch.h>
+#include <atomic>
+#endif
+
 #ifdef MAXCOMLEN
 #define MAX_THREAD_NAMELEN MAXCOMLEN
 #else
@@ -30,9 +35,73 @@
 
 namespace Star {
 
+#ifdef STAR_SYSTEM_SWITCH
+// On the Switch, libnx newlib pthreads are all created on the process default
+// core; they do NOT spread across CPUs on their own. Left alone, the main game
+// loop, the per-world server simulation and the async lighting calculation all
+// serialize onto ONE of the 4 Tegra cores while the rest sit idle -- the
+// dominant cause of the 2-5 FPS seen in-game.
+//
+// We deliberately distribute ONLY the small set of heavy, long-lived threads
+// that Starbound is architecturally designed to run concurrently with the
+// client (the same threads desktop already runs on separate cores): the
+// per-world server thread, the async world-lighting thread, and the universe
+// server. These are created only once a world is entered, so the asset-load
+// phase and the Splash->Title transition behave EXACTLY as before -- important
+// because forcing true parallelism across every thread (loaders, workers, etc.)
+// surfaces latent data races in the Switch's hand-written libc/syscall shims
+// (the lseek-based pread, the malloc-backed mmap, etc.) that the effectively
+// single-core execution had been masking, and that crashed the PlayerStorage
+// constructor during startup.
+//
+// We only ever pick cores reported as allowed by the kernel (svcGetInfo
+// InfoType_CoreMask), so this stays correct on retail HW where core 3 is
+// reserved. We set a preferred core but pass the full allowed mask, letting
+// Horizon migrate threads for load-balancing rather than hard-pinning.
+static bool switchThreadWantsOwnCore(String const& name) {
+  return name.beginsWith("WorldServerThread")
+      || name == "WorldClient::lightingMain"
+      || name == "UniverseServer";
+}
+
+static void switchDistributeCurrentThread(String const& name) {
+  if (!switchThreadWantsOwnCore(name))
+    return;
+
+  static std::atomic<unsigned> threadCounter{0};
+
+  u64 coreMask = 0;
+  if (R_FAILED(svcGetInfo(&coreMask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)))
+    return;
+
+  int allowedCores[4];
+  int allowedCount = 0;
+  for (int core = 0; core < 4; ++core) {
+    if (coreMask & (1ull << core))
+      allowedCores[allowedCount++] = core;
+  }
+
+  // Nothing to distribute across (single permitted core); leave it alone.
+  if (allowedCount <= 1)
+    return;
+
+  // Reserve allowedCores[0] for the main thread (game loop = client update +
+  // render); it is explicitly pinned there in switchPlatformInit. Spread the
+  // heavy gameplay threads round-robin over the remaining cores so they run in
+  // parallel with rendering instead of fighting it.
+  int spreadBase = 1;
+  int spreadCount = allowedCount - spreadBase;
+  int preferred = allowedCores[spreadBase + (threadCounter.fetch_add(1) % spreadCount)];
+  svcSetThreadCoreMask(CUR_THREAD_HANDLE, preferred, coreMask);
+}
+#endif
+
 struct ThreadImpl {
   static void* runThread(void* data) {
     ThreadImpl* ptr = static_cast<ThreadImpl*>(data);
+#ifdef STAR_SYSTEM_SWITCH
+    switchDistributeCurrentThread(ptr->name);
+#endif
     try {
 #if defined(STAR_SYSTEM_MACOS) || defined(STAR_SYSTEM_IOS)
       // ensure the name is under the max allowed

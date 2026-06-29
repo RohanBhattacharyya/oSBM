@@ -547,7 +547,30 @@ void ClientApplication::processInput(InputEvent const& event) {
     m_input->handleInput(event, processed);
 }
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+namespace {
+  // Lightweight cross-mobile (Android / iOS / Switch) frame profiler. Splits
+  // main-thread time between update() (sim/client logic) and render() (geometry
+  // build + draw submit) and logs a rolling average roughly every 2s, so the
+  // in-game bottleneck is visible in starbound.log on real hardware where there
+  // is no debug HUD. Negligible overhead (a couple of clock reads per frame).
+  int64_t g_profUpdateUs = 0;
+  int64_t g_profRenderUs = 0;
+  int64_t g_profUpdateCalls = 0;
+  int64_t g_profFrames = 0;
+  int64_t g_profWindowStartMs = 0;
+  // render() sub-section accumulators (in-world only)
+  int64_t g_profWorldClientUs = 0;  // worldClient->render: builds RenderData (CPU)
+  int64_t g_profWorldPaintUs = 0;   // worldPainter->render: tiles/entities draw + lighting
+  int64_t g_profPostUs = 0;         // full-screen post-process effect passes
+  int64_t g_profInterfaceUs = 0;    // main interface / HUD
+}
+#endif
+
 void ClientApplication::update() {
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  int64_t profStartUs = Time::monotonicMicroseconds();
+#endif
   float dt = GlobalTimestep * GlobalTimescale;
   auto& app = appController();
   if (m_state >= MainAppState::Title) {
@@ -601,9 +624,16 @@ void ClientApplication::update() {
   if (m_input)
     m_input->update();
   ++m_framesSkipped;
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  g_profUpdateUs += Time::monotonicMicroseconds() - profStartUs;
+  ++g_profUpdateCalls;
+#endif
 }
 
 void ClientApplication::render() {
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  int64_t profStartUs = Time::monotonicMicroseconds();
+#endif
   m_framesSkipped = 0;
   auto config = m_root->configuration();
   auto assets = m_root->assets();
@@ -643,7 +673,13 @@ void ClientApplication::render() {
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       auto clientStart = totalStart;
 #endif
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+      int64_t subStart = Time::monotonicMicroseconds();
+#endif
       worldClient->render(m_renderData, TilePainter::BorderTileSize);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+      g_profWorldClientUs += Time::monotonicMicroseconds() - subStart;
+#endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       LogMap::set("client_render_world_client", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - clientStart));
 #endif
@@ -651,14 +687,23 @@ void ClientApplication::render() {
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       auto paintStart = Time::monotonicMicroseconds();
 #endif
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+      subStart = Time::monotonicMicroseconds();
+#endif
       m_worldPainter->render(m_renderData, [&]() -> bool {
         return worldClient->waitForLighting(&m_renderData);
       });
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+      g_profWorldPaintUs += Time::monotonicMicroseconds() - subStart;
+#endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       LogMap::set("client_render_world_painter", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - paintStart));
       LogMap::set("client_render_world_total", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - totalStart));
 #endif
-      
+
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+      subStart = Time::monotonicMicroseconds();
+#endif
       auto size = Vec2F(renderer->screenSize());
       auto quad = renderFlatRect(RectF::withSize(size / -2, size), Vec4B::filled(0), 0.0f);
       for (auto& layer : m_postProcessLayers) {
@@ -671,14 +716,23 @@ void ClientApplication::render() {
           }
         }
       }
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+      g_profPostUs += Time::monotonicMicroseconds() - subStart;
+#endif
     }
     renderer->switchEffectConfig("interface");
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     auto start = Time::monotonicMicroseconds();
 #endif
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+    int64_t ifaceStart = Time::monotonicMicroseconds();
+#endif
     m_mainInterface->renderInWorldElements();
     m_mainInterface->render();
     m_cinematicOverlay->render();
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+    g_profInterfaceUs += Time::monotonicMicroseconds() - ifaceStart;
+#endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     LogMap::set("client_render_interface", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - start));
 #endif
@@ -686,6 +740,36 @@ void ClientApplication::render() {
 
   if (!m_errorScreen->accepted())
     m_errorScreen->render();
+
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  g_profRenderUs += Time::monotonicMicroseconds() - profStartUs;
+  ++g_profFrames;
+  int64_t nowMs = Time::monotonicMilliseconds();
+  if (g_profWindowStartMs == 0)
+    g_profWindowStartMs = nowMs;
+  int64_t elapsedMs = nowMs - g_profWindowStartMs;
+  if (elapsedMs >= 2000 && g_profFrames > 0) {
+    double fps = g_profFrames * 1000.0 / (double)elapsedMs;
+    int64_t updateMsPerSec = g_profUpdateUs / (elapsedMs > 0 ? elapsedMs : 1);
+    int64_t renderMsPerSec = g_profRenderUs / (elapsedMs > 0 ? elapsedMs : 1);
+    int64_t usPerUpdate = g_profUpdateCalls > 0 ? g_profUpdateUs / g_profUpdateCalls : 0;
+    int64_t usPerFrame = g_profRenderUs / g_profFrames;
+    Logger::info("[perf] fps={:4.1f} | update {}ms/s ({}us/call) | render {}ms/s ({}us/frame) "
+        "[worldClient {}us paint {}us post {}us iface {}us]/frame",
+        fps, updateMsPerSec, usPerUpdate, renderMsPerSec, usPerFrame,
+        g_profWorldClientUs / g_profFrames, g_profWorldPaintUs / g_profFrames,
+        g_profPostUs / g_profFrames, g_profInterfaceUs / g_profFrames);
+    g_profUpdateUs = 0;
+    g_profRenderUs = 0;
+    g_profUpdateCalls = 0;
+    g_profFrames = 0;
+    g_profWorldClientUs = 0;
+    g_profWorldPaintUs = 0;
+    g_profPostUs = 0;
+    g_profInterfaceUs = 0;
+    g_profWindowStartMs = nowMs;
+  }
+#endif
 }
 
 void ClientApplication::getAudioData(int16_t* sampleData, size_t frameCount) {

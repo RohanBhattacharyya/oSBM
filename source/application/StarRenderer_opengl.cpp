@@ -828,6 +828,17 @@ void OpenGlRenderer::setScreenViewportSize(Vec2U viewportSize) {
   glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
 }
 
+namespace {
+  // Lightweight per-frame draw-call instrumentation. glDrawArrays count and
+  // immediate-flush count are the metrics that reveal whether the in-world frame
+  // is draw-call bound (the suspected cause of the slow mobile/Switch frames).
+  int64_t g_glDrawCalls = 0;
+  int64_t g_glImmediateFlushes = 0;
+  int64_t g_glAccumDraws = 0;
+  int64_t g_glAccumFlushes = 0;
+  int64_t g_glAccumFrames = 0;
+}
+
 void OpenGlRenderer::startFrame() {
   if (m_scissorRect)
     glDisable(GL_SCISSOR_TEST);
@@ -854,6 +865,18 @@ void OpenGlRenderer::finishFrame() {
   // from being compressed.
   List<RenderPrimitive> empty;
   m_immediateRenderBuffer->set(empty);
+
+  g_glAccumDraws += g_glDrawCalls;
+  g_glAccumFlushes += g_glImmediateFlushes;
+  if (++g_glAccumFrames >= 120) {
+    Logger::info("[perf-gl] avg draws/frame={} immediateFlushes/frame={}",
+        g_glAccumDraws / g_glAccumFrames, g_glAccumFlushes / g_glAccumFrames);
+    g_glAccumDraws = 0;
+    g_glAccumFlushes = 0;
+    g_glAccumFrames = 0;
+  }
+  g_glDrawCalls = 0;
+  g_glImmediateFlushes = 0;
 
   filter(m_liveTextureGroups, [](auto const& p) {
         unsigned const CompressionsPerFrame = 1;
@@ -1230,6 +1253,7 @@ void OpenGlRenderer::flushImmediatePrimitives(Mat3F const& transformation) {
   if (m_immediatePrimitives.empty())
     return;
 
+  ++g_glImmediateFlushes;
   m_immediateRenderBuffer->set(m_immediatePrimitives);
   m_immediatePrimitives.resize(0);
   renderGlBuffer(*m_immediateRenderBuffer, transformation);
@@ -1305,6 +1329,7 @@ void OpenGlRenderer::renderGlBuffer(GlRenderBuffer const& renderBuffer, Mat3F co
     glVertexAttribIPointer(m_dataAttribute, 1, GL_INT, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, pack));
 
     glDrawArrays(GL_TRIANGLES, 0, vb.vertexCount);
+    ++g_glDrawCalls;
   }
 }
 

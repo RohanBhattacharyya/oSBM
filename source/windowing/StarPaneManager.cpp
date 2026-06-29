@@ -3,11 +3,14 @@
 #include "StarJsonExtra.hpp"
 #include "StarAssets.hpp"
 #include "StarRoot.hpp"
+#include "StarLogging.hpp"
+#include "StarTime.hpp"
 #include "StarImageWidget.hpp"
 #include "StarLabelWidget.hpp"
 #include "StarPortraitWidget.hpp"
 
 #include <limits>
+#include <typeinfo>
 
 namespace Star {
 
@@ -297,6 +300,12 @@ void PaneManager::render() {
     m_backgroundWidget->render(RectI(Vec2I(), windowSize()));
   }
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  static StringMap<int64_t> s_pmPerType;
+  static int s_paneCount = 0;
+  static int64_t s_pmFrames = 0, s_pmTotalUs = 0;
+  int s_thisFrameCount = 0;
+#endif
   for (auto const& layerPair : reverseIterate(m_displayedPanes)) {
     for (auto const& panePair : reverseIterate(layerPair.second)) {
       if (panePair.first->active()) {
@@ -305,10 +314,30 @@ void PaneManager::render() {
               calculateNewInterfacePosition(panePair.first, (float)m_context->interfaceScale() / m_prevInterfaceScale));
 
         panePair.first->setDrawingOffset(calculatePaneOffset(panePair.first));
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+        int64_t paneStart = Time::monotonicMicroseconds();
+#endif
         panePair.first->render(RectI(Vec2I(), windowSize()));
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+        int64_t paneUs = Time::monotonicMicroseconds() - paneStart;
+        s_pmTotalUs += paneUs;
+        ++s_thisFrameCount;
+        s_pmPerType[typeid(*panePair.first).name()] += paneUs;
+#endif
       }
     }
   }
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  s_paneCount = s_thisFrameCount;
+  if (++s_pmFrames >= 120) {
+    String breakdown;
+    for (auto const& p : s_pmPerType)
+      breakdown += strf(" {}={}us", p.first, p.second / s_pmFrames);
+    Logger::info("[perf-pm] panesDisplayed={} totalPaneRender={}us/frame |{}",
+        s_paneCount, s_pmTotalUs / s_pmFrames, breakdown);
+    s_pmPerType.clear(); s_pmTotalUs = 0; s_pmFrames = 0;
+  }
+#endif
 
   m_context->resetInterfaceScissorRect();
   drawUiSelection();
