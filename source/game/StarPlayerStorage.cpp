@@ -79,19 +79,38 @@ PlayerStorage::PlayerStorage(String const& storageDir) {
     }
   }
 
-  try {
-    String filename = File::relativeTo(m_storageDirectory, "metadata");
-    m_metadata = Json::parseJson(File::readFileString(filename)).toObject();
-
-    if (auto order = m_metadata.value("order")) {
-      for (auto const& jUuid : order.iterateArray()) {
-        auto entry = m_savedPlayersCache.find(Uuid(jUuid.toString()));
-        if (entry != m_savedPlayersCache.end())
-          m_savedPlayersCache.toBack(entry);
-      }
+  bool metadataPresent = true;
+#ifdef STAR_SYSTEM_SWITCH
+  // libnx's fsdev does not cleanly report a missing file via stat()/open() under
+  // sdmc -- instead of returning ENOENT it silently aborts the whole process, so
+  // a try/catch around the open cannot save us. readdir DOES behave, so decide
+  // whether the optional "metadata" file exists from a directory listing (which
+  // already succeeds above) rather than letting File::readFileString open a path
+  // that may not exist. This is what was freezing the loader on every run after
+  // the player directory had been created.
+  metadataPresent = false;
+  for (auto const& entry : File::dirList(m_storageDirectory)) {
+    if (!entry.second && entry.first == "metadata") {
+      metadataPresent = true;
+      break;
     }
-  } catch (std::exception const& e) {
-    Logger::warn("Error loading player storage metadata file, resetting: {}", outputException(e, false));
+  }
+#endif
+  if (metadataPresent) {
+    try {
+      String filename = File::relativeTo(m_storageDirectory, "metadata");
+      m_metadata = Json::parseJson(File::readFileString(filename)).toObject();
+
+      if (auto order = m_metadata.value("order")) {
+        for (auto const& jUuid : order.iterateArray()) {
+          auto entry = m_savedPlayersCache.find(Uuid(jUuid.toString()));
+          if (entry != m_savedPlayersCache.end())
+            m_savedPlayersCache.toBack(entry);
+        }
+      }
+    } catch (std::exception const& e) {
+      Logger::warn("Error loading player storage metadata file, resetting: {}", outputException(e, false));
+    }
   }
 }
 

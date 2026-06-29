@@ -17,6 +17,8 @@
 extern "C" void StarIosBridge_setSdlWindow(void* window);
 extern "C" void StarIosBridge_getSafeAreaInsets(float* top, float* left, float* bottom, float* right);
 extern "C" int  StarIosBridge_getInterfaceOrientation();
+#elif STAR_SYSTEM_SWITCH
+#include "mobile/switch/StarSwitchPlatform.hpp"
 #endif
 
 #include "SDL3/SDL.h"
@@ -231,12 +233,18 @@ public:
   int run() {
     androidLogInfo("Mobile run() start");
     setupSdl();
+    androidLogInfo("run: setupSdl done");
     setupWindowAndRenderer();
+    androidLogInfo("run: setupWindowAndRenderer done");
 
     m_legacyStorageRoot = defaultMobileStorageRoot();
+    androidLogInfo("run: storage root resolved");
     m_storageRoot = writableMobileStorageRoot(m_legacyStorageRoot);
+    androidLogInfo("run: writable storage root ready");
     m_platformServices = MobilePlatformServices::create(m_storageRoot);
+    androidLogInfo("run: platform services created");
     syncLauncherBundledAssets();
+    androidLogInfo("run: bundled assets synced");
     reloadLauncherLocalization();
     setupImGui();
 
@@ -247,6 +255,7 @@ public:
       Thread::sleepPrecise(4);
     }
 
+    androidLogInfo("run: first launcher loop exited (quitRequested=%d)", (int)m_quitRequested);
     if (m_quitRequested)
       return 0;
 
@@ -639,9 +648,11 @@ private:
     int windowHeight = 720;
 #endif
 
+    androidLogInfo("setupWindowAndRenderer: creating SDL window");
     m_window = SDL_CreateWindow("OpenStarbound", windowWidth, windowHeight, windowFlags);
     if (!m_window)
       throw ApplicationException::format("Could not create SDL window: {}", SDL_GetError());
+    androidLogInfo("setupWindowAndRenderer: window created, creating GL context");
 
 #ifdef STAR_SYSTEM_IOS
     StarIosBridge_setSdlWindow(m_window);
@@ -656,12 +667,14 @@ private:
     m_glContext = SDL_GL_CreateContext(m_window);
     if (!m_glContext)
       throw ApplicationException::format("Could not create GLES context: {}", SDL_GetError());
+    androidLogInfo("setupWindowAndRenderer: GL context created, constructing renderer");
 
     // Avoid touching swap interval at startup on Android. Some devices crash
     // in VsyncReceiver when swap interval state mutates while surfaces settle.
     m_vsync = false;
 
     m_renderer = make_shared<GlesRenderer>();
+    androidLogInfo("setupWindowAndRenderer: renderer constructed");
 
 #ifdef STAR_SYSTEM_IOS
     // iOS EAGL binds a non-zero viewFramebuffer after context creation.
@@ -850,6 +863,17 @@ private:
       if (File::isFile(bundledFontPath))
         m_launcherFontPath = bundledFontPath;
     }
+#elif STAR_SYSTEM_SWITCH
+    // Stage romfs:/bundled_assets into the SD-card storage root, mirroring the
+    // app-package sync the Android/iOS hosts perform.
+    switchSyncBundledAssets(m_storageRoot);
+    String syncedRoot = File::relativeTo(m_storageRoot, "bundled_assets");
+    auto bundledLangDirectory = File::relativeTo(syncedRoot, LauncherLangDirectory);
+    auto bundledFontPath = File::relativeTo(syncedRoot, PreferredLauncherFontPath);
+    if (File::isDirectory(bundledLangDirectory))
+      m_launcherLangDirectory = bundledLangDirectory;
+    if (File::isFile(bundledFontPath))
+      m_launcherFontPath = bundledFontPath;
 #endif
   }
 
@@ -1035,7 +1059,28 @@ private:
       }
     }
 
+#ifdef STAR_SYSTEM_SWITCH
+    // A packed.pak may be embedded directly into the NRO's romfs at build time
+    // (STAR_SWITCH_PACKED_PAK), producing a fully self-contained build. Prefer
+    // it whenever there is no valid persisted pak so the launcher needs no
+    // in-app file selection (the Switch has no native file picker).
+    if (state.packedPakPath.empty() || !File::isFile(state.packedPakPath)) {
+      if (File::isFile("romfs:/packed.pak"))
+        state.packedPakPath = "romfs:/packed.pak";
+    }
+#endif
+
+#ifdef STAR_SYSTEM_SWITCH
+    // Default the on-screen touch control OVERLAY off on Switch: the d-pad/button
+    // elements are unwanted on a console, but disabling the overlay still leaves
+    // touch passthrough intact (finger taps fall through as mouse clicks, so the
+    // user can tap buttons directly). Matches the in-game adapter default below;
+    // both sites must agree because this value is what gets persisted into the
+    // launcher config that the adapter then reads back. Still user-togglable.
+    state.touchConfig.enabled = config.queryBool("touch.enabled", false);
+#else
     state.touchConfig.enabled = config.queryBool("touch.enabled", true);
+#endif
     state.touchConfig.directTouchGestures = config.queryBool("touch.directTouchGestures", true);
     state.touchConfig.gyroEnabled = config.queryBool("touch.gyroEnabled", false);
     if (!platformGyroAvailable())
@@ -2579,9 +2624,12 @@ private:
     if (launchPressed) {
       androidLogInfo("Launch pressed");
       resetLauncherQuickStart();
+      androidLogInfo("Launch: persisting launcher state");
       persistLauncherState(state);
+      androidLogInfo("Launch: launcher state persisted");
     }
 
+    androidLogInfo("runLauncher: returning %d", (int)launchPressed);
     return launchPressed;
   }
 
@@ -2618,18 +2666,24 @@ private:
       }}
     };
 
+    androidLogInfo("persistLauncherState: json built, saving config");
     if (auto configService = m_platformServices->launchConfigService())
       configService->saveLauncherConfig(config);
+    androidLogInfo("persistLauncherState: config saved");
   }
 
   bool prepareBootConfig(LauncherState const& state, String& errorMessage) {
+    androidLogInfo("prepareBootConfig: begin (pak=%s)", state.packedPakPath.utf8Ptr());
     if (!File::isFile(state.packedPakPath)) {
+      androidLogInfo("prepareBootConfig: packedPak not found, returning false");
       errorMessage = launcherText("runtime.missingPackedPak", "Selected packed.pak was not found. Please re-select it.");
       return false;
     }
 
+    androidLogInfo("prepareBootConfig: pak ok, ensuring mods dir");
     auto modsPath = modsDirectoryPath();
     File::makeDirectoryRecursive(modsPath);
+    androidLogInfo("prepareBootConfig: mods dir ready, syncing bundled assets");
 
     String bundledAssetsRoot;
 #if STAR_SYSTEM_ANDROID
@@ -2646,6 +2700,13 @@ private:
       bundledAssetsRoot = *synced;
     } else {
       errorMessage = launcherText("runtime.failedBundledAssetsIos", "Failed to load bundled OpenStarbound assets from the iOS app package.");
+      return false;
+    }
+#elif STAR_SYSTEM_SWITCH
+    switchSyncBundledAssets(m_storageRoot);
+    bundledAssetsRoot = File::relativeTo(m_storageRoot, "bundled_assets");
+    if (!File::isDirectory(bundledAssetsRoot)) {
+      errorMessage = launcherText("runtime.failedBundledAssetsSwitch", "Failed to load bundled OpenStarbound assets from romfs.");
       return false;
     }
 #else
@@ -2807,7 +2868,11 @@ private:
       if (auto configService = m_platformServices->launchConfigService()) {
         auto cfg = configService->loadLauncherConfig();
         MobileTouchConfig touch;
+#ifdef STAR_SYSTEM_SWITCH
+        touch.enabled = cfg.queryBool("touch.enabled", false);
+#else
         touch.enabled = cfg.queryBool("touch.enabled", true);
+#endif
         touch.directTouchGestures = cfg.queryBool("touch.directTouchGestures", true);
         touch.gyroEnabled = cfg.queryBool("touch.gyroEnabled", false);
         if (!platformGyroAvailable())
@@ -2948,9 +3013,16 @@ private:
       if (spare > 0)
         Thread::sleepPrecise(spare);
     }
+
+    androidLogInfo("runGameLoop exited: quitRequested=%d softQuitRequested=%d interrupt=%d",
+      (int)m_quitRequested, (int)m_softQuitRequested, (int)m_signalHandler.interruptCaught());
+    Logger::info("runGameLoop exited: quitRequested={} softQuitRequested={} interrupt={}",
+      (int)m_quitRequested, (int)m_softQuitRequested, (int)m_signalHandler.interruptCaught());
   }
 
   void shutdownApplication() {
+    androidLogInfo("shutdownApplication begin");
+    Logger::info("shutdownApplication begin");
     std::lock_guard<std::mutex> lock(m_audioMutex);
     m_audioEnabled = false;
     if (m_sdlAudioOutputStream)
@@ -3154,6 +3226,17 @@ private:
         // Ignore synthetic/native quit events on Android to avoid racing
         // teardown against in-flight SDL VSync callbacks.
         continue;
+#elif defined(STAR_SYSTEM_SWITCH)
+        // SDL's Switch backend (SDL_switchvideo.c) posts SDL_EVENT_QUIT once
+        // libnx appletMainLoop() returns false, i.e. on AppletMessage_ExitRequest
+        // from the system. Once that happens it is STICKY (SDL re-posts QUIT on
+        // every PumpEvents), so we must NOT ignore-and-continue (that turns the
+        // event-drain loop into an infinite spin = freeze). Honor it as a quit.
+        // Log the moment via the guest debug channel so we can correlate the
+        // trigger (e.g. Ryujinx window focus loss).
+        androidLogInfo("Switch: SDL_EVENT_QUIT in runGameLoop (appletMainLoop->false)");
+        m_quitRequested = true;
+        continue;
 #else
         m_quitRequested = true;
         continue;
@@ -3315,12 +3398,20 @@ private:
         convertEventToRenderCoordinatesIfPossible(m_window, &event);
         ImGui_ImplSDL3_ProcessEvent(&event);
       }
-      if (event.type == SDL_EVENT_QUIT)
+      if (event.type == SDL_EVENT_QUIT) {
 #ifdef STAR_SYSTEM_ANDROID
         continue;
+#elif defined(STAR_SYSTEM_SWITCH)
+        // See runGameLoop's handler: appletMainLoop()->false is sticky and SDL
+        // re-posts QUIT every PumpEvents, so break out of the drain loop (a
+        // `continue` would spin forever and freeze) and honor the quit.
+        androidLogInfo("Switch: SDL_EVENT_QUIT in processWindowEvents (appletMainLoop->false)");
+        m_quitRequested = true;
+        break;
 #else
         m_quitRequested = true;
 #endif
+      }
       if (event.type == SDL_EVENT_WINDOW_RESIZED
           || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
           || event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED

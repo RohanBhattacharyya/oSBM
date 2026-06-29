@@ -1,5 +1,27 @@
 #include "StarDynamicLib.hpp"
 
+#ifdef STAR_SYSTEM_SWITCH
+
+// The Nintendo Switch (libnx/newlib) homebrew runtime has no dynamic loader, so
+// native dynamic libraries are unsupported. Provide inert stubs.
+namespace Star {
+
+String DynamicLib::libraryExtension() {
+  return ".so";
+}
+
+DynamicLibUPtr DynamicLib::loadLibrary(String const&) {
+  return {};
+}
+
+DynamicLibUPtr DynamicLib::currentExecutable() {
+  return {};
+}
+
+}
+
+#else
+
 #include <dlfcn.h>
 #include <pthread.h>
 #include <sys/time.h>
@@ -44,3 +66,5 @@ DynamicLibUPtr DynamicLib::currentExecutable() {
 }
 
 }
+
+#endif

@@ -2,7 +2,7 @@
 #include "StarCasting.hpp"
 #include "StarLogging.hpp"
 
-#if !STAR_SYSTEM_ANDROID
+#if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_SWITCH
 #include <execinfo.h>
 #endif
 #include <cstdlib>
@@ -31,7 +31,7 @@ typedef pair<Array<void*, StackLimit>, size_t> StackCapture;
 
 inline StackCapture captureStack() {
   StackCapture stackCapture;
-#if STAR_SYSTEM_ANDROID
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_SWITCH
   stackCapture.second = 0;
 #else
   stackCapture.second = backtrace(stackCapture.first.ptr(), StackLimit);
@@ -41,9 +41,9 @@ inline StackCapture captureStack() {
 
 OutputProxy outputStack(StackCapture stack) {
   return OutputProxy([stack = std::move(stack)](std::ostream & os) {
-#if STAR_SYSTEM_ANDROID
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_SWITCH
       (void)stack;
-      os << "[stack trace unavailable on android]";
+      os << "[stack trace unavailable]";
 #else
       char** symbols = backtrace_symbols(stack.first.ptr(), stack.second);
       for (size_t i = 0; i < stack.second; ++i) {

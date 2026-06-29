@@ -32,7 +32,7 @@ bool isFloatTextureFormat(PixelFormat pixelFormat) {
 }
 
 bool supportsLinearFloatTextures() {
-#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
   static bool initialized = false;
   static bool supported = false;
 
@@ -71,7 +71,7 @@ String normalizeShaderSource(String const& sourceText, GLenum type) {
   _unused(type);
   String adjusted = sourceText.trimBeg();
 
-#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
   size_t newline = adjusted.find('\n');
   String versionLine = newline == NPos ? adjusted : adjusted.substr(0, newline);
   if (versionLine.beginsWith("#version ") && !versionLine.contains("es")) {
@@ -96,7 +96,7 @@ String normalizeShaderSource(String const& sourceText, GLenum type) {
 
 }
 
-#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
 char const* DefaultVertexShader = R"SHADER(
 #version 300 es
 precision highp float;
@@ -182,7 +182,7 @@ void main() {
 )SHADER";
 #endif
 
-#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
 char const* DefaultFragmentShader = R"SHADER(
 #version 300 es
 precision highp float;
@@ -405,7 +405,6 @@ void OpenGlRenderer::loadEffectConfig(String const& name, Json const& effectConf
     GLuint shader = glCreateShader(type);
     glShaderSource(shader, 1, &sourcePtr, NULL);
     glCompileShader(shader);
-
     glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
     if (!status) {
       glGetShaderInfoLog(shader, sizeof(logBuffer), NULL, logBuffer);

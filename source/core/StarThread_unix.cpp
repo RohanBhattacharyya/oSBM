@@ -7,7 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifndef STAR_SYSTEM_SWITCH
 #include <dlfcn.h>
+#endif
 #include <dirent.h>
 #include <pthread.h>
 #ifdef STAR_SYSTEM_FREEBSD
@@ -71,6 +73,23 @@ struct ThreadImpl {
     pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
     int ret = pthread_create(&pthread, &attr, &runThread, (void*)this);
     pthread_attr_destroy(&attr);
+#elif defined(STAR_SYSTEM_SWITCH)
+    // libnx's default newlib pthread stack (~128KB) is far too small for Star's
+    // deeply recursive JSON / world / asset loading. Loading the ship world
+    // overflows it and faults past the stack guard page (observed as a libnx
+    // fsdev readdir tipping an already-exhausted stack over). Use a larger stack.
+    // NOT the 8MB iOS uses: libnx maps every pthread stack as a svcMapMemory
+    // "stack mirror", so 8MB x (many worker/universe/network threads) would
+    // strain the homebrew stack-mirror address space. 4MB is ample for the
+    // recursion while staying conservative; fall back to the default stack if
+    // the larger one cannot be allocated rather than failing hard.
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 4 * 1024 * 1024);
+    int ret = pthread_create(&pthread, &attr, &runThread, (void*)this);
+    pthread_attr_destroy(&attr);
+    if (ret != 0)
+      ret = pthread_create(&pthread, NULL, &runThread, (void*)this);
 #else
     int ret = pthread_create(&pthread, NULL, &runThread, (void*)this);
 #endif
@@ -90,7 +109,7 @@ struct ThreadImpl {
     pthread_setname_np(pthread, "%s", tname);
 #elif defined(STAR_SYSTEM_IOS)
     // iOS only supports naming the current thread; this is handled in runThread.
-#elif !defined(STAR_SYSTEM_MACOS)
+#elif !defined(STAR_SYSTEM_MACOS) && !defined(STAR_SYSTEM_SWITCH)
     pthread_setname_np(pthread, tname);
 #endif
     return true;
@@ -147,7 +166,7 @@ struct MutexImpl {
   }
 
   void lock() {
-#if defined(STAR_MUTEX_TIMED) && !defined(STAR_SYSTEM_IOS)
+#if defined(STAR_MUTEX_TIMED) && !defined(STAR_SYSTEM_IOS) && !defined(STAR_SYSTEM_SWITCH)
     timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 15;
@@ -225,7 +244,7 @@ struct RecursiveMutexImpl {
   }
 
   void lock() {
-#if defined(STAR_RECURSIVE_MUTEX_TIMED) && !defined(STAR_SYSTEM_IOS)
+#if defined(STAR_RECURSIVE_MUTEX_TIMED) && !defined(STAR_SYSTEM_IOS) && !defined(STAR_SYSTEM_SWITCH)
     timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 15;

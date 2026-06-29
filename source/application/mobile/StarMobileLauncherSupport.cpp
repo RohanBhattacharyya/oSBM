@@ -16,6 +16,8 @@
 extern "C" void StarIosBridge_setSdlWindow(void* window);
 extern "C" void StarIosBridge_getSafeAreaInsets(float* top, float* left, float* bottom, float* right);
 extern "C" int  StarIosBridge_getInterfaceOrientation();
+#elif STAR_SYSTEM_SWITCH
+#include "mobile/switch/StarSwitchPlatform.hpp"
 #endif
 
 #include "SDL3/SDL.h"
@@ -58,7 +60,7 @@ void androidLogInfo(char const* fmt, ...);
 #elif defined(STAR_SYSTEM_IOS)
 void androidLogInfo(char const* fmt, ...);
 #else
-inline void androidLogInfo(char const*, ...) {}
+void androidLogInfo(char const*, ...);
 #endif
 
 String normalizeLauncherLocale(String locale) {
@@ -230,6 +232,17 @@ void androidLogInfo(char const* fmt, ...) {
   fflush(stderr);
   va_end(args);
 }
+#elif defined(STAR_SYSTEM_SWITCH)
+void androidLogInfo(char const* fmt, ...) {
+  if (!fmt)
+    return;
+  char buf[1024];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  switchDebugLog(buf);
+}
 #else
 void androidLogInfo(char const*, ...) {}
 #endif
@@ -364,10 +377,18 @@ bool hasAndroidGyroSensor() {
 #endif
 
 String defaultMobileStorageRoot() {
+#ifdef STAR_SYSTEM_SWITCH
+  // Mount romfs and bring up the socket stack before any file access, then use
+  // the deterministic SD-card root instead of SDL_GetPrefPath (which has no
+  // meaningful home directory on the Switch homebrew target).
+  switchPlatformInit();
+  return switchDefaultStorageRoot();
+#else
   String fallbackStorageRoot = SDL_GetPrefPath("OpenStarbound", "OpenStarbound");
   if (fallbackStorageRoot.empty())
     fallbackStorageRoot = "./";
   return fallbackStorageRoot;
+#endif
 }
 
 String writableMobileStorageRoot(String const& fallbackStorageRoot) {

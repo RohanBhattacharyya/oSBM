@@ -516,6 +516,26 @@ ItemPtr ItemDatabase::tryCreateItem(ItemDescriptor const& descriptor, Maybe<floa
   try {
     if (newDescriptor.name() == "perfectlygenericitem" && newDescriptor.parameters().contains("genericItemStorage"))
       newDescriptor = ItemDescriptor(descriptor.parameters().get("genericItemStorage"));
+#ifdef STAR_SYSTEM_SWITCH
+    // C++ exception unwinding is non-functional in the Switch NRO build, so the
+    // catch below cannot recover the way every other platform does. The common
+    // failure when loading a save is an item from an uninstalled mod: m_items.get
+    // would throw MapException and crash the process. Pre-check the registry and
+    // substitute the same "perfectlygenericitem" placeholder the catch path
+    // builds -- without ever throwing -- so missing-mod items degrade gracefully.
+    if (!m_items.contains(newDescriptor.name())) {
+      if (ignoreInvalid)
+        return {};
+      Logger::error("Could not instantiate item '{}' (unknown item; substituting placeholder)", descriptor);
+      result = createItem(m_items.get("perfectlygenericitem").type, itemConfig("perfectlygenericitem", JsonObject({
+        {"genericItemStorage", descriptor.toJson()},
+        {"shortdescription", descriptor.name()},
+        {"description", "Reinstall the parent mod to return this item to normal"}
+      }), {}, {}));
+      result->setCount(descriptor.count());
+      return result;
+    }
+#endif
     result = createItem(m_items.get(newDescriptor.name()).type, itemConfig(newDescriptor.name(), newDescriptor.parameters(), level, seed));
     result->setCount(descriptor.count());
   } catch (std::exception const& e) {

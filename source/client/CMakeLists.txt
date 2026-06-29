@@ -63,7 +63,7 @@ IF(STAR_SYSTEM_MACOS)
 ELSEIF(STAR_SYSTEM_IOS)
   # iOS uses Apple's linker and does not support GNU ld options such as
   # --export-dynamic. Keep link flags empty here.
-ELSEIF (UNIX)
+ELSEIF (UNIX AND NOT STAR_SYSTEM_SWITCH)
   SET_TARGET_PROPERTIES (starbound PROPERTIES LINK_FLAGS "-Wl,--export-dynamic,-rpath,'$ORIGIN'")
 ENDIF()
 
@@ -159,4 +159,11 @@ IF (STAR_SYSTEM_MACOS)
   SET_TARGET_PROPERTIES (starbound PROPERTIES XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME YES)
 ENDIF()
 
-TARGET_LINK_LIBRARIES (starbound ${STAR_EXT_LIBS} ${STAR_EXT_GUI_LIBS})
+IF (STAR_SYSTEM_SWITCH)
+  # The Switch links every dependency statically; abseil (pulled in by re2) has
+  # circular references between its archives, so wrap them in a linker group to
+  # resolve symbols across a single pass.
+  TARGET_LINK_LIBRARIES (starbound -Wl,--start-group ${STAR_EXT_LIBS} ${STAR_EXT_GUI_LIBS} -Wl,--end-group)
+ELSE ()
+  TARGET_LINK_LIBRARIES (starbound ${STAR_EXT_LIBS} ${STAR_EXT_GUI_LIBS})
+ENDIF ()

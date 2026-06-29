@@ -3,8 +3,8 @@
 #include "StarTextureAtlas.hpp"
 #include "StarRenderer.hpp"
 
-#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
-#if defined(STAR_SYSTEM_ANDROID)
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_SWITCH)
 #include <GLES3/gl3.h>
 #include <GLES3/gl32.h>
 #else
@@ -49,7 +49,7 @@
 #endif
 
 inline void glTexImage2DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations) {
-#if defined(STAR_SYSTEM_ANDROID)
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_SWITCH)
   glTexStorage2DMultisample(target, samples, internalformat, width, height, fixedsamplelocations);
 #else
   // Multisampled texture render targets are disabled on iOS in this renderer path.

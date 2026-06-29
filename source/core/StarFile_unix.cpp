@@ -31,6 +31,45 @@ namespace {
     return (void*)(intptr_t)handle;
   }
 
+#ifdef STAR_SYSTEM_SWITCH
+  // libnx's fsdev silently aborts the whole process when stat()/open() is given
+  // a path whose final component does not exist on the SD card (instead of
+  // failing cleanly with ENOENT). readdir DOES behave, so test a path's presence
+  // by listing its parent directory. This is the reliable primitive every
+  // missing-file check on Switch must go through; stat is only safe once a path
+  // is known to exist.
+  bool switchPathExists(String const& path) {
+    // Only the SD-card default device ("/...") has the missing-path abort bug.
+    // Devoptab-prefixed paths -- e.g. "romfs:/packed.pak" -- use a separate
+    // read-only device whose stat() behaves correctly; a device prefix is a
+    // "name:" that appears before the first '/'. Those must use stat (opendir on
+    // a bare "romfs:" parent would fail and wrongly report the file missing).
+    std::string s = path.utf8();
+    size_t colon = s.find(':');
+    size_t slash = s.find('/');
+    bool devoptabPrefixed = colon != std::string::npos && (slash == std::string::npos || colon < slash);
+    if (devoptabPrefixed) {
+      struct stat st;
+      return ::stat(path.utf8Ptr(), &st) == 0;
+    }
+
+    String parent = File::dirName(path);
+    String name = File::baseName(path);
+    DIR* directory = ::opendir(parent.utf8Ptr());
+    if (directory == NULL)
+      return false;
+    bool found = false;
+    for (dirent* entry = ::readdir(directory); entry != NULL; entry = ::readdir(directory)) {
+      if (name == entry->d_name) {
+        found = true;
+        break;
+      }
+    }
+    ::closedir(directory);
+    return found;
+  }
+#endif
+
   String temporaryRootDirectory() {
     if (auto tmpDir = getenv("TMPDIR")) {
       if (tmpDir[0] != '\0')
@@ -165,8 +204,17 @@ FilePtr File::ephemeralFile() {
   auto res = mkstemp(path.ptr());
   if (res < 0)
     throw IOException::format("tmpfile error: {}", strerror(errno));
+#ifdef STAR_SYSTEM_SWITCH
+  // libnx fsdev (FAT/exFAT on the SD card) cannot unlink a file that still has
+  // an open handle -- the POSIX delete-while-open trick below fails and the
+  // resulting IOException is fatal on Switch (exceptions do not unwind). This is
+  // what was crashing ship-world load (WorldStorage backs its DB on an ephemeral
+  // file). Leave the temp file on disk; switchPlatformInit() clears the temp
+  // directory at startup so these do not accumulate across launches.
+#else
   if (::unlink(path.ptr()) < 0)
     throw IOException::format("Could not remove mkstemp file when creating ephemeralFile: {}", strerror(errno));
+#endif
   file->m_file = handleFromFd(res);
   file->setMode(IOMode::ReadWrite);
   return file;
@@ -179,12 +227,22 @@ String File::temporaryDirectory() {
 }
 
 bool File::exists(String const& path) {
+#ifdef STAR_SYSTEM_SWITCH
+  // stat() aborts the process under libnx fsdev for a missing path; gate on a
+  // readdir-based existence test (see switchPathExists).
+  return switchPathExists(path);
+#else
   struct stat st_buf;
   int status = stat(path.utf8Ptr(), &st_buf);
   return status == 0;
+#endif
 }
 
 bool File::isFile(String const& path) {
+#ifdef STAR_SYSTEM_SWITCH
+  if (!switchPathExists(path))
+    return false;
+#endif
   struct stat st_buf;
   int status = stat(path.utf8Ptr(), &st_buf);
   if (status != 0)
@@ -194,6 +252,10 @@ bool File::isFile(String const& path) {
 }
 
 bool File::isDirectory(String const& path) {
+#ifdef STAR_SYSTEM_SWITCH
+  if (!switchPathExists(path))
+    return false;
+#endif
   struct stat st_buf;
   int status = stat(path.utf8Ptr(), &st_buf);
   if (status != 0)
@@ -208,6 +270,16 @@ void File::remove(String const& filename) {
 }
 
 void File::rename(String const& source, String const& target) {
+#ifdef STAR_SYSTEM_SWITCH
+  // libnx's fsdev rename() cannot overwrite an existing target (POSIX rename
+  // replaces atomically; fsdev returns an error / misbehaves). This breaks the
+  // very common overwriteFileWithRename pattern (config saves, launcher state)
+  // on every run after the first. Remove the target first; on Switch homebrew
+  // there is a single process so the non-atomicity is harmless.
+  struct stat st;
+  if (::stat(target.utf8Ptr(), &st) == 0)
+    ::remove(target.utf8Ptr());
+#endif
   if (::rename(source.utf8Ptr(), target.utf8Ptr()) < 0)
     throw IOException::format("rename error: {}", strerror(errno));
 }
@@ -230,6 +302,18 @@ void* File::fopen(char const* filename, IOMode mode) {
 
   if (mode & IOMode::Truncate)
     oflag |= O_TRUNC;
+
+#ifdef STAR_SYSTEM_SWITCH
+  // A non-creating ::open of a missing file aborts the process under libnx fsdev
+  // instead of failing with ENOENT (no C++ exception is thrown, so callers that
+  // expect to catch the failure get a silent process exit). Detect the missing
+  // file via readdir first and throw the normal IOException ourselves so libnx
+  // is never handed a missing path.
+  if (!(oflag & O_CREAT) && !switchPathExists(String(filename))) {
+    errno = ENOENT;
+    throw IOException::format("Error opening file '{}', error: {}", filename, strerror(errno));
+  }
+#endif
 
   int fd = ::open(filename, oflag, 0666);
   if (fd < 0)

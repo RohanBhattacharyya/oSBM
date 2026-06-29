@@ -7,7 +7,13 @@ namespace Star {
 
 void File::makeDirectoryRecursive(String const& fileName) {
   auto parent = dirName(fileName);
-  if (!isDirectory(parent))
+  // Stop at the filesystem root. If dirName() cannot ascend any further (it
+  // returns the same path, e.g. dirName("/") == "/", or an empty string),
+  // recursing again would loop forever and overflow the stack. On most systems
+  // isDirectory(parent) becomes true at "/" and halts the recursion first, but
+  // on libnx stat("/") fails so isDirectory("/") is false -- without this guard
+  // makeDirectoryRecursive("/tmp") self-recurses on "/" until the stack faults.
+  if (parent != fileName && !parent.empty() && !isDirectory(parent))
     makeDirectoryRecursive(parent);
   if (!isDirectory(fileName))
     makeDirectory(fileName);

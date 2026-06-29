@@ -184,6 +184,22 @@
         "STAR_ENABLE_STEAM_INTEGRATION": false,
         "STAR_ENABLE_DISCORD_INTEGRATION": false
       }
+    },
+    {
+      "name": "switch-release",
+      "displayName": "Nintendo Switch (ARM64 homebrew NRO)",
+      "description": "devkitA64 + libnx homebrew build. Requires DEVKITPRO and the cross-compiled SDL3/imgui/re2/cpr/zstd/abseil portlibs. Does not use vcpkg.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceParentDir}/build/switch-release",
+      "toolchainFile": "$env{DEVKITPRO}/cmake/Switch.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "17",
+        "BUILD_TESTING": false,
+        "STAR_BUILD_QT_TOOLS": false,
+        "STAR_ENABLE_STEAM_INTEGRATION": false,
+        "STAR_ENABLE_DISCORD_INTEGRATION": false
+      }
     }
   ],
   "buildPresets": [
@@ -232,6 +248,10 @@
     {
       "name": "ios-arm64-debug",
       "configurePreset": "ios-arm64-debug"
+    },
+    {
+      "name": "switch-release",
+      "configurePreset": "switch-release"
     }
   ],
   "testPresets": [

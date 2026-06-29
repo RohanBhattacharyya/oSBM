@@ -54,6 +54,15 @@ IF (STAR_PLATFORM_MOBILE)
         mobile/ios/StarIosFileAccessBridgeObjC.mm
       )
   ENDIF ()
+  IF (STAR_SYSTEM_SWITCH)
+    SET (star_application_HEADERS ${star_application_HEADERS}
+        mobile/switch/StarSwitchPlatform.hpp
+      )
+    SET (star_application_SOURCES ${star_application_SOURCES}
+        mobile/switch/StarSwitchPlatform.cpp
+        mobile/switch/StarSwitchCompat.c
+      )
+  ENDIF ()
 ELSE ()
   SET (star_application_HEADERS ${star_application_HEADERS}
       StarP2PNetworkingService_pc.hpp

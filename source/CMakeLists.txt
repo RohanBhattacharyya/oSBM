@@ -82,6 +82,8 @@ if(NOT DEFINED STAR_SYSTEM)
     set(STAR_SYSTEM "android")
   elseif(APPLE AND ${CMAKE_SYSTEM_NAME} STREQUAL "iOS")
     set(STAR_SYSTEM "ios")
+  elseif(${CMAKE_SYSTEM_NAME} STREQUAL "NintendoSwitch")
+    set(STAR_SYSTEM "switch")
   elseif(${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD")
     set(STAR_SYSTEM "freebsd")
   elseif(${CMAKE_SYSTEM_NAME} STREQUAL "NetBSD")
@@ -96,7 +98,7 @@ endif()
 if(NOT DEFINED STAR_SYSTEM_FAMILY)
   if(WIN32)
     set(STAR_SYSTEM_FAMILY "windows")
-  elseif(STAR_SYSTEM STREQUAL "android" OR STAR_SYSTEM STREQUAL "ios")
+  elseif(STAR_SYSTEM STREQUAL "android" OR STAR_SYSTEM STREQUAL "ios" OR STAR_SYSTEM STREQUAL "switch")
     set(STAR_SYSTEM_FAMILY "mobile")
   elseif(UNIX)
     set(STAR_SYSTEM_FAMILY "unix")
@@ -146,7 +148,7 @@ if(STAR_BUILD_GUI)
   option(STAR_ENABLE_DISCORD_INTEGRATION "Use Discord platform services" OFF)
 endif()
 
-if(STAR_SYSTEM STREQUAL "android" OR STAR_SYSTEM STREQUAL "ios")
+if(STAR_SYSTEM STREQUAL "android" OR STAR_SYSTEM STREQUAL "ios" OR STAR_SYSTEM STREQUAL "switch")
   set(STAR_ENABLE_STEAM_INTEGRATION OFF CACHE BOOL "Use Steam platform services" FORCE)
   set(STAR_ENABLE_DISCORD_INTEGRATION OFF CACHE BOOL "Use Discord platform services" FORCE)
 endif()
@@ -235,6 +237,8 @@ elseif(STAR_SYSTEM STREQUAL "android")
   set_flag(STAR_SYSTEM_ANDROID)
 elseif(STAR_SYSTEM STREQUAL "ios")
   set_flag(STAR_SYSTEM_IOS)
+elseif(STAR_SYSTEM STREQUAL "switch")
+  set_flag(STAR_SYSTEM_SWITCH)
 elseif(STAR_SYSTEM STREQUAL "freebsd")
   set_flag(STAR_SYSTEM_FREEBSD)
 elseif(STAR_SYSTEM STREQUAL "netbsd")
@@ -279,6 +283,15 @@ elseif(STAR_SYSTEM_FAMILY_UNIX)
   add_definitions(-DLUA_USE_POSIX)
 endif()
 
+if(STAR_SYSTEM_SWITCH)
+  # devkitA64's newlib does not expose LLONG_MAX/LLONG_MIN through <limits.h> in
+  # C++ mode (only via <climits>), which trips Lua's 64-bit integer check when
+  # lua.h is pulled into C++ translation units. Supply them from the always-available
+  # compiler builtin. The default (non-POSIX) Lua path is used so it relies on the
+  # standard setjmp/longjmp rather than the BSD _setjmp/_longjmp newlib lacks.
+  add_definitions("-DLLONG_MAX=__LONG_LONG_MAX__" "-DLLONG_MIN=(-__LONG_LONG_MAX__-1LL)")
+endif()
+
 if(STAR_ENABLE_STEAM_INTEGRATION)
   add_definitions(-DSTAR_ENABLE_STEAM_INTEGRATION)
 endif()
@@ -298,8 +311,27 @@ endif()
 # Set C/C++ compiler flags based on build environment...
 
 if(STAR_COMPILER_GNU)
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -rdynamic -Wall -Wextra -Wno-unused -Wno-implicit-fallthrough -no-pie")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -rdynamic -Wall -Wextra -Wno-unused -Wno-implicit-fallthrough -no-pie")
+  if(STAR_SYSTEM_SWITCH)
+    # The Switch (devkitA64) target is PIE-only and its GCC does not accept the
+    # desktop-oriented -rdynamic / -no-pie options. Use gnu++17 rather than
+    # c++17 so __STRICT_ANSI__ stays undefined and libnx's BSD socket types
+    # (u_short, sockaddr_in6, ...) remain visible.
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-unused -Wno-implicit-fallthrough")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++17 -Wall -Wextra -Wno-unused -Wno-implicit-fallthrough")
+    # CRITICAL: libnx registers the C++ exception unwinder's frame-search table
+    # from the ELF's .eh_frame_hdr (PT_GNU_EH_FRAME segment) during init. The
+    # custom CMake link (with switch.specs + --gc-sections) does NOT pass
+    # --eh-frame-hdr, so the linker emits an EMPTY .eh_frame_hdr. libnx then
+    # registers a header with zero FDEs, so the unwinder can never find a handler
+    # and EVERY thrown C++ exception aborts the process instead of being caught.
+    # That is the root cause of the load-time "freezes": the engine throws for
+    # all of its missing-content/error handling, and each throw was aborting.
+    # Force the linker to synthesize a populated .eh_frame_hdr.
+    add_link_options(-Wl,--eh-frame-hdr)
+  else()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -rdynamic -Wall -Wextra -Wno-unused -Wno-implicit-fallthrough -no-pie")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -rdynamic -Wall -Wextra -Wno-unused -Wno-implicit-fallthrough -no-pie")
+  endif()
 
   if(STAR_SYSTEM_FAMILY_WINDOWS)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mthreads")
@@ -523,6 +555,17 @@ find_package(cpr CONFIG REQUIRED)
 if(STAR_SYSTEM_ANDROID)
   pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET GLOBAL opus)
   set(STAR_OPUS_TARGET PkgConfig::OPUS)
+elseif(STAR_SYSTEM_SWITCH)
+  # devkitPro portlib .pc files carry a hardcoded /opt/devkitpro prefix, which
+  # breaks under a relocated (rootless) toolchain. Resolve opus directly so the
+  # paths come from CMAKE_FIND_ROOT_PATH instead of pkg-config.
+  find_path(SWITCH_OPUS_INCLUDE_DIR NAMES opus/opus.h REQUIRED)
+  find_library(SWITCH_OPUS_LIBRARY NAMES opus REQUIRED)
+  add_library(Opus::opus UNKNOWN IMPORTED)
+  set_target_properties(Opus::opus PROPERTIES
+    IMPORTED_LOCATION "${SWITCH_OPUS_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${SWITCH_OPUS_INCLUDE_DIR}")
+  set(STAR_OPUS_TARGET Opus::opus)
 else()
   find_package(Opus CONFIG REQUIRED)
   set(STAR_OPUS_TARGET Opus::opus)
@@ -535,6 +578,20 @@ include_directories(SYSTEM
         ${FREETYPE_INCLUDE_DIRS}
         ${OGGVORBIS_INCLUDE_DIR}
 )
+
+if(STAR_SYSTEM_SWITCH)
+  # On Switch, portlib headers (e.g. imgui.h pulled in by star_extern's
+  # imgui_lua_bindings) are only on the toolchain include path through imported
+  # targets. Make the portlibs include directory globally visible, matching how
+  # vcpkg exposes its include directory on the other platforms.
+  if(NOT DEFINED DEVKITPRO)
+    set(DEVKITPRO "$ENV{DEVKITPRO}")
+  endif()
+  include_directories(SYSTEM
+    "${DEVKITPRO}/portlibs/switch/include"
+    "${DEVKITPRO}/portlibs/switch/include/freetype2"
+  )
+endif()
 
 set(STAR_EXT_LIBS ${STAR_EXT_LIBS}
         ZLIB::ZLIB
@@ -602,6 +659,16 @@ if(STAR_BUILD_GUI)
           ${IOS_MOBILECORESERVICES_FRAMEWORK}
       )
     endif()
+  elseif(STAR_SYSTEM_SWITCH)
+    # Nintendo Switch (libnx + mesa): OpenGL ES via the nouveau winsys.
+    # These static portlibs live under $DEVKITPRO/portlibs/switch/lib, which the
+    # Switch toolchain places on the link search path.
+    set(STAR_EXT_GUI_LIBS ${STAR_EXT_GUI_LIBS}
+        GLESv2
+        EGL
+        glapi
+        drm_nouveau
+    )
   elseif(STAR_SYSTEM_FAMILY_MOBILE)
     find_package(OpenGL REQUIRED)
     set(STAR_EXT_GUI_LIBS ${STAR_EXT_GUI_LIBS}
@@ -781,6 +848,63 @@ if(STAR_BUILD_GUI)
         COMMENT "Building Android APK (${STAR_ANDROID_APK_GRADLE_TASK})"
         VERBATIM
       )
+    endif()
+  endif()
+
+  if(STAR_SYSTEM_SWITCH)
+    # Stage the launcher's bundled assets (lang files + fonts) into a romfs
+    # image so the Dear ImGui launcher can load them from romfs:/ at runtime,
+    # mirroring the bundled-asset sync the Android/iOS hosts perform.
+    set(STAR_SWITCH_ROMFS "${CMAKE_BINARY_DIR}/romfs")
+    set(STAR_SWITCH_BUNDLED "${STAR_SWITCH_ROMFS}/bundled_assets")
+    file(MAKE_DIRECTORY "${STAR_SWITCH_BUNDLED}")
+    file(COPY "${PROJECT_SOURCE_DIR}/application/mobile/android/host/app/src/main/assets/lang"
+         DESTINATION "${STAR_SWITCH_BUNDLED}")
+    file(COPY "${PROJECT_SOURCE_DIR}/../assets/opensb"
+         DESTINATION "${STAR_SWITCH_BUNDLED}")
+    # Also provide the launcher font at the preferred (top-level) path.
+    file(COPY "${PROJECT_SOURCE_DIR}/../assets/opensb/hobo.ttf"
+         DESTINATION "${STAR_SWITCH_BUNDLED}")
+
+    # Optionally embed a Starbound packed.pak directly into the NRO's romfs.
+    # When STAR_SWITCH_PACKED_PAK points at a packed.pak, the resulting .nro is
+    # fully self-contained: the launcher finds the game assets at
+    # romfs:/packed.pak and no in-launcher pak selection is required. The copy
+    # runs at build time with copy_if_different so a multi-gigabyte pak is not
+    # re-copied on every configure.
+    set(STAR_SWITCH_PACKED_PAK "" CACHE FILEPATH
+      "Optional path to a packed.pak to embed into the Switch NRO romfs (produces a self-contained .nro)")
+    if(STAR_SWITCH_PACKED_PAK)
+      if(NOT EXISTS "${STAR_SWITCH_PACKED_PAK}")
+        message(FATAL_ERROR "STAR_SWITCH_PACKED_PAK is set but the file does not exist: ${STAR_SWITCH_PACKED_PAK}")
+      endif()
+      message(STATUS "Embedding packed.pak into Switch NRO romfs: ${STAR_SWITCH_PACKED_PAK}")
+      add_custom_command(
+        OUTPUT "${STAR_SWITCH_ROMFS}/packed.pak"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${STAR_SWITCH_PACKED_PAK}" "${STAR_SWITCH_ROMFS}/packed.pak"
+        DEPENDS "${STAR_SWITCH_PACKED_PAK}"
+        COMMENT "Staging packed.pak into Switch romfs (self-contained .nro)"
+        VERBATIM)
+      add_custom_target(switch_bundle_pak DEPENDS "${STAR_SWITCH_ROMFS}/packed.pak")
+    endif()
+
+    # Generate application metadata and the final NRO via the devkitPro
+    # NintendoSwitch platform helpers (elf2nro + nacptool).
+    nx_generate_nacp("${CMAKE_BINARY_DIR}/oSBM.nacp"
+      NAME "OpenStarbound Mobile"
+      AUTHOR "OpenStarbound Mobile"
+      VERSION "1.0.3"
+    )
+    nx_create_nro(starbound
+      OUTPUT "${CMAKE_BINARY_DIR}/oSBM.nro"
+      NACP "${CMAKE_BINARY_DIR}/oSBM.nacp"
+      ROMFS "${STAR_SWITCH_ROMFS}"
+    )
+
+    # Ensure the embedded pak is staged into the romfs before elf2nro packs it.
+    if(STAR_SWITCH_PACKED_PAK)
+      add_dependencies(starbound_nro switch_bundle_pak)
     endif()
   endif()
 

@@ -684,6 +684,7 @@ void StatusController::updateAnimators(float dt) {
 void StatusController::updatePersistentUniqueEffects() {
   Set<UniqueStatusEffect> activePersistentUniqueEffects;
   for (auto & categoryPair : m_persistentEffects) {
+    List<UniqueStatusEffect> invalidUniqueEffects;
     for (auto & uniqueEffectName : categoryPair.second.uniqueEffects) {
       // It is important to note here that if a unique effect exists, it *may*
       // not come from a persistent effect, it *may* be from an ephemeral effect.
@@ -700,8 +701,14 @@ void StatusController::updatePersistentUniqueEffects() {
       else if (addUniqueEffect(uniqueEffectName, {}, {}))
         activePersistentUniqueEffects.add(uniqueEffectName);
       else
-        categoryPair.second.uniqueEffects.remove(uniqueEffectName);
+        invalidUniqueEffects.append(uniqueEffectName);
     }
+    // Erase unknown effects (e.g. from an uninstalled mod) only AFTER iterating:
+    // removing from the HashSet mid-range-loop invalidates the iterator (UB).
+    // PC's allocator happens to tolerate it, but it hangs the process on the
+    // Switch NRO build's libstdc++/allocator.
+    for (auto const& invalidUniqueEffect : invalidUniqueEffects)
+      categoryPair.second.uniqueEffects.remove(invalidUniqueEffect);
   }
   // Again, here we are using "durationless" to mean "persistent"
   for (auto const& key : m_uniqueEffects.keys()) {
@@ -712,7 +719,17 @@ void StatusController::updatePersistentUniqueEffects() {
 }
 
 float StatusController::defaultUniqueEffectDuration(UniqueStatusEffect const& effect) const {
-  return Root::singleton().statusEffectDatabase()->uniqueEffectConfig(effect).defaultDuration;
+  // uniqueEffectConfig throws StatusEffectDatabaseException for an unknown
+  // effect (e.g. from an uninstalled mod). This helper is evaluated eagerly as a
+  // default argument in addEphemeralEffects even when the effect is missing, so
+  // throwing here aborts loading the whole save. Other platforms recover via the
+  // upstream catch, but exception unwinding is non-functional in the Switch NRO
+  // build, making the throw fatal. Degrade to a 0 default instead; the caller's
+  // addUniqueEffect already warns and skips effects that do not exist.
+  auto statusEffectDatabase = Root::singleton().statusEffectDatabase();
+  if (!statusEffectDatabase->isUniqueEffect(effect))
+    return 0.0f;
+  return statusEffectDatabase->uniqueEffectConfig(effect).defaultDuration;
 }
 
 bool StatusController::addUniqueEffect(
