@@ -1142,6 +1142,7 @@ void WorldClient::update(float dt) {
 
 #ifdef STAR_SYSTEM_FAMILY_MOBILE
   static int64_t s_wcEntityUs = 0, s_wcParticleUs = 0, s_wcSectorUs = 0, s_wcOtherUs = 0;
+  static int64_t s_wcDamageUs = 0, s_wcSkyUs = 0, s_wcWeatherUs = 0, s_wcSparkUs = 0, s_wcPacketUs = 0;
   static int64_t s_wcFrames = 0;
   int64_t wcT = Time::monotonicMicroseconds();
   auto wcLap = [&wcT](int64_t& accum) { int64_t n = Time::monotonicMicroseconds(); accum += n - wcT; wcT = n; };
@@ -1223,16 +1224,28 @@ void WorldClient::update(float dt) {
   m_clientState.setPlayer(m_mainPlayer->entityId());
   m_clientState.setClientPresenceEntities(std::move(clientPresenceEntities));
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcOtherUs);
+#endif
   m_damageManager->update(dt);
   handleDamageNotifications();
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcDamageUs);
+#endif
 
   m_sky->setAltitude(m_clientState.windowCenter()[1]);
   m_sky->update(dt);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcSkyUs);
+#endif
 
   RectI particleRegion = m_clientState.window().padded(m_clientConfig.getInt("particleRegionPadding"));
 
   m_weather.setVisibleRegion(particleRegion);
   m_weather.update(dt);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcWeatherUs);
+#endif
 
   if (!m_mainPlayer->isDead()) {
     // Clear m_requestedDrops every so often in case of entity id reuse or
@@ -1262,7 +1275,7 @@ void WorldClient::update(float dt) {
   sparkDamagedBlocks();
 
 #ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcOtherUs);
+  wcLap(s_wcSparkUs);
 #endif
   m_particles->addParticles(m_weather.pullNewParticles());
   m_particles->update(dt, RectF(particleRegion), m_weather.wind());
@@ -1313,7 +1326,13 @@ void WorldClient::update(float dt) {
   for (EntityId entityId : toRemove)
     removeEntity(entityId, true);
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcOtherUs);
+#endif
   queueUpdatePackets(m_entityUpdateTimer.wrapTick(dt));
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  wcLap(s_wcPacketUs);
+#endif
 
   if ((!m_clientState.netCompatibilityRules().isLegacy() && m_currentStep % 3 == 0) || m_pingTime.isNothing()) {
     m_pingTime = Time::monotonicMilliseconds();
@@ -1351,10 +1370,12 @@ void WorldClient::update(float dt) {
 #ifdef STAR_SYSTEM_FAMILY_MOBILE
   wcLap(s_wcSectorUs);
   if (++s_wcFrames >= 120) {
-    Logger::info("[perf-wc] entities={}us particles={}us sectors={}us other={}us | entityCount={}",
-        s_wcEntityUs / s_wcFrames, s_wcParticleUs / s_wcFrames, s_wcSectorUs / s_wcFrames,
-        s_wcOtherUs / s_wcFrames, m_entityMap->size());
-    s_wcEntityUs = s_wcParticleUs = s_wcSectorUs = s_wcOtherUs = 0;
+    Logger::info("[perf-wc] entities={}us damage={}us sky={}us weather={}us spark={}us particles={}us packets={}us sectors={}us other={}us | entityCount={}",
+        s_wcEntityUs / s_wcFrames, s_wcDamageUs / s_wcFrames, s_wcSkyUs / s_wcFrames, s_wcWeatherUs / s_wcFrames,
+        s_wcSparkUs / s_wcFrames, s_wcParticleUs / s_wcFrames, s_wcPacketUs / s_wcFrames,
+        s_wcSectorUs / s_wcFrames, s_wcOtherUs / s_wcFrames, m_entityMap->size());
+    s_wcEntityUs = s_wcDamageUs = s_wcSkyUs = s_wcWeatherUs = s_wcSparkUs = 0;
+    s_wcParticleUs = s_wcPacketUs = s_wcSectorUs = s_wcOtherUs = 0;
     s_wcFrames = 0;
   }
 #endif
@@ -1836,7 +1857,17 @@ void WorldClient::initWorld(WorldStartPacket const& startPacket) {
   else
     m_interpolationTracker = InterpolationTracker(m_clientConfig.query("interpolationSettings.normal"));
 
-  m_entityUpdateTimer = GameTimer(m_interpolationTracker.entityUpdateDelta());
+  m_entityUpdateTimer = GameTimer(m_interpolationTracker.entityUpdateDelta()
+#ifdef STAR_SYSTEM_SWITCH
+    // Halve how often the client serializes + sends the (heavily-modded) local
+    // player's full net state to the in-process server. writeNetState of the
+    // player dominated the update tick (~12ms avg). At half rate the local
+    // server's view of the player is at most a few extra ticks stale, which is
+    // imperceptible in single player (world streaming uses the separate client-
+    // state window packet, not entity net state).
+    * 4.0f
+#endif
+  );
 
   m_clientId = startPacket.clientId;
   m_mainPlayer->clientContext()->setConnectionId(startPacket.clientId);

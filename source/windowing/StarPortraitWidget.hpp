@@ -39,6 +39,14 @@ private:
   bool m_iconMode;
   AssetPath m_iconImage;
   Vec2I m_iconOffset;
+
+  // Cache for the generated portrait drawables. humanoid->render()/entity->portrait()
+  // rebuilds the full character drawable set (body + armor layers + directives) and
+  // is as expensive as drawing the player in-world; doing it every frame for a small
+  // portrait dominated HUD render time. We regenerate only every few frames -- the
+  // portrait barely animates, so this is visually imperceptible.
+  List<Drawable> m_cachedPortrait;
+  int m_portraitCacheTick = 0;
 };
 
 }

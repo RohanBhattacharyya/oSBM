@@ -1416,7 +1416,14 @@ void WorldServer::init(bool firstTime) {
       return m_tileArray->tile({x, y}).getCollision();
     });
 
-  m_entityUpdateTimer = GameTimer(m_serverConfig.query("interpolationSettings.normal").getFloat("entityUpdateDelta") / 60.f);
+  m_entityUpdateTimer = GameTimer(m_serverConfig.query("interpolationSettings.normal").getFloat("entityUpdateDelta")
+#ifdef STAR_SYSTEM_SWITCH
+    // Broadcast entity net-state deltas to the (single, local) client half as often.
+    // Interpolation is enabled (normal profile, extrapolationHint=6) so motion stays
+    // smooth; this halves the per-tick cost of serializing every entity's delta.
+    * 2.0f
+#endif
+    / 60.f);
   m_tileEntityBreakCheckTimer = GameTimer(m_serverConfig.getFloat("tileEntityBreakCheckInterval"));
 
   m_liquidEngine = make_shared<LiquidCellEngine<LiquidId>>(liquidsDatabase->liquidEngineParameters(), make_shared<LiquidWorld>(this));

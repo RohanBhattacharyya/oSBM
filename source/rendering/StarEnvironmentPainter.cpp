@@ -90,7 +90,9 @@ void EnvironmentPainter::renderStars(float pixelRatio, Vec2F const& screenSize, 
     }
   }
 
-  m_renderer->flush();
+  // (flush removed) space-background layers are all normal-blend and share one
+  // ordered flush in WorldPainter::render; batching them into a single immediate
+  // flush cuts redundant per-layer buffer uploads/draws (big win on emulated GL).
 }
 
 void EnvironmentPainter::renderDebrisFields(float pixelRatio, Vec2F const& screenSize, SkyRenderData const& sky) {
@@ -146,6 +148,13 @@ void EnvironmentPainter::renderDebrisFields(float pixelRatio, Vec2F const& scree
 
       Vec2D debrisPositionOffset = viewMin + velocityOffset;
 
+      // Cull debris whose quad cannot touch the screen. The generated field is
+      // padded by screenBuffer, so a large fraction of items sit in the off-
+      // screen margin; skipping their matrix math + primitive emplace is free
+      // (stars already do the equivalent cull on draw).
+      RectF debrisScreenCull = RectF::withSize(Vec2F(), screenSize)
+          .padded((float)biggest.max() * pixelRatio * (float)Constants::sqrt2 * 0.5f + 1.0f);
+
       auto& primitives = m_renderer->immediatePrimitives();
       for (auto& debrisItem : debrisItems) {
         if (debrisItem.second.first >= debrisTextures.size())
@@ -155,11 +164,14 @@ void EnvironmentPainter::renderDebrisFields(float pixelRatio, Vec2F const& scree
           continue;
 
         Vec2F debrisPosition = rotMatrix.transformVec2(Vec2F(debrisItem.first - debrisPositionOffset));
+        Vec2F position = debrisPosition * pixelRatio;
+        if (!debrisScreenCull.contains(position))
+          continue;
+
         float debrisAngle = fmod(Constants::deg2rad * debrisItem.second.second * sky.epochTime, Constants::pi * 2) + sky.starRotation;
 
         // Inlined SpaceDebris branch of drawOrbiter() using the pre-resolved
         // texture (identical output, no per-item texture re-resolution).
-        Vec2F position = debrisPosition * pixelRatio;
         Mat3F renderMatrix = Mat3F::rotation(debrisAngle, position);
         Vec2F texSize = Vec2F(texture->size());
         RectF renderRect = RectF::withCenter(position, texSize * pixelRatio);
@@ -171,16 +183,12 @@ void EnvironmentPainter::renderDebrisFields(float pixelRatio, Vec2F const& scree
           Vec4B(255, 255, 255, 255), 0.0f);
       }
     }
-
-    m_renderer->flush();
   }
 }
 
 void EnvironmentPainter::renderBackOrbiters(float pixelRatio, Vec2F const& screenSize, SkyRenderData const& sky) {
   for (auto const& orbiter : sky.backOrbiters(screenSize / pixelRatio))
     drawOrbiter(pixelRatio, screenSize, sky, orbiter);
-
-  m_renderer->flush();
 }
 
 void EnvironmentPainter::renderPlanetHorizon(float pixelRatio, Vec2F const& screenSize, SkyRenderData const& sky) {
@@ -231,15 +239,11 @@ void EnvironmentPainter::renderPlanetHorizon(float pixelRatio, Vec2F const& scre
         rightImage[2], Vec2F(rightTextureSize[0], rightTextureSize[1]),
         rightImage[3], Vec2F(0, rightTextureSize[1]), Vec4B::filled(255), 0.0f);
   }
-
-  m_renderer->flush();
 }
 
 void EnvironmentPainter::renderFrontOrbiters(float pixelRatio, Vec2F const& screenSize, SkyRenderData const& sky) {
   for (auto const& orbiter : sky.frontOrbiters(screenSize / pixelRatio))
     drawOrbiter(pixelRatio, screenSize, sky, orbiter);
-
-  m_renderer->flush();
 }
 
 void EnvironmentPainter::renderSky(Vec2F const& screenSize, SkyRenderData const& sky) {
@@ -253,8 +257,6 @@ void EnvironmentPainter::renderSky(Vec2F const& screenSize, SkyRenderData const&
   // Flash overlay for Interstellar travel
   Vec4B flashColor = sky.flashColor.toRgba();
   primitives.emplace_back(std::in_place_type_t<RenderQuad>(), RectF(Vec2F(), screenSize), flashColor, 0.0f);
-
-  m_renderer->flush();
 }
 
 // TODO: Fix this to work with decimal zoom levels. Currently, the clouds shake rapidly when interpolating between zoom levels.
@@ -383,10 +385,17 @@ void EnvironmentPainter::drawRays(
     float pixelRatio, SkyRenderData const& sky, Vec2F start, float length, double time, float alpha) {
   // All magic constants are either 2PI or arbritrary to allow the Perlin to act
   // as a PRNG
-  float sectorWidth = 2 * Constants::pi / RayCount; // Radians
+  // Sun rays are a purely cosmetic radial burst; each ray tessellates with Perlin
+  // noise, so the count scales CPU cost directly. Halve it on Switch -- visually
+  // near-identical, but removes ~30 rays of per-frame Perlin/geometry work.
+  int rayCount = RayCount;
+#ifdef STAR_SYSTEM_SWITCH
+  rayCount = RayCount / 2;
+#endif
+  float sectorWidth = 2 * Constants::pi / rayCount; // Radians
   Vec3B color = sky.topRectColor.toRgb();
 
-  for (int i = 0; i < RayCount; i++)
+  for (int i = 0; i < rayCount; i++)
     drawRay(pixelRatio,
         sky,
         start,

@@ -135,6 +135,11 @@ void drainAndroidImGuiEditKeys() {}
 
 namespace Star {
 
+// Defined in game/StarGameTypes.cpp; declared here to avoid pulling the game
+// module's include path into the application module.
+extern float GlobalTimestep;
+extern float ServerGlobalTimestep;
+
 String getMobileStartupStatus();
 void setMobileStartupStatus(String const& status);
 
@@ -2046,6 +2051,16 @@ private:
 
   bool runLauncher(LauncherState& state) {
     static bool loggedLauncherFrame = false;
+#ifdef STAR_SYSTEM_SWITCH
+    // Test autopilot: skip the launcher entirely when the sentinel file exists.
+    // Used only for automated performance testing; absent for normal users.
+    static bool s_autoLaunched = false;
+    if (!s_autoLaunched && File::isFile("/switch/oSBM/autopilot.flag")) {
+      s_autoLaunched = true;
+      androidLogInfo("runLauncher: autopilot.flag present, auto-launching");
+      return true;
+    }
+#endif
     syncWindowMetrics(false);
     processWindowEvents();
     syncWindowMetrics(false);
@@ -2944,6 +2959,17 @@ private:
   }
 
   void runGameLoop() {
+#ifdef STAR_SYSTEM_SWITCH
+    // 30Hz simulation: the per-update tick (~31ms) far exceeds a 60Hz step, so the
+    // game can never run real-time at 60Hz on this hardware (it perpetually catches
+    // up / slow-mos). Halving the sim rate to 30Hz lets a single tick advance twice
+    // as much game time, so with a 1-tick/frame cap the sim stays much closer to
+    // real-time while the render frame cost drops (1 tick instead of 2). Physics and
+    // animation step at 30Hz (slightly coarser) but gameplay speed is preserved.
+    GlobalTimestep = 1.0f / 30.0f;
+    ServerGlobalTimestep = 1.0f / 30.0f;
+    m_updateTicker.setTargetTickRate(30.0f);
+#endif
     m_updateTicker.reset();
     m_renderTicker.reset();
 
@@ -2979,6 +3005,19 @@ private:
 
       int updatesBehind = std::max<int>(round(m_updateTicker.ticksBehind()), 1);
       updatesBehind = std::min<int>(updatesBehind, (int)m_maxFrameSkip + 1);
+#ifdef STAR_SYSTEM_SWITCH
+      // On Switch the per-tick update cost (~37ms) far exceeds the 16.6ms target,
+      // so the loop perpetually maxes out catch-up (running the heavy update tick
+      // 3+ times per rendered frame), a death spiral that tanks the frame rate
+      // without meaningfully advancing sim time. Cap catch-up to 2 ticks/frame:
+      // this still permits a full 60Hz sim once the frame budget reaches ~30 FPS
+      // (60/30 = 2 ticks), but eliminates the wasted extra ticks while struggling.
+      // With the 30Hz sim above, one tick per rendered frame keeps the game at
+      // real-time as long as we render >=30 FPS, and at lower FPS it slow-mos
+      // gracefully rather than burning a second heavy tick. This is the actual
+      // frame-rate lever: it halves the per-frame update cost vs a 2-tick cap.
+      updatesBehind = std::min<int>(updatesBehind, 1);
+#endif
       for (int i = 0; i < updatesBehind; ++i) {
         if (overlayEnabled) {
           // Keep ImGui frame state consistent when we catch up multiple updates.

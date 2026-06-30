@@ -623,8 +623,12 @@ void MainInterface::update(float dt) {
     m_paneManager.dismissRegisteredPane(MainInterfacePanes::WireInterface);
   }
 
-  // update inventory pane items, to know if item slots changed
-  m_inventoryWindow->updateItems();
+  // update inventory pane items, to know if item slots changed. Only needed while
+  // the inventory is actually open -- updateItems() rebuilds a String list of every
+  // slot name across all bags every frame for change detection, which is wasteful
+  // (and notable for large modded inventories) when the pane isn't even visible.
+  if (m_paneManager.isDisplayed(m_inventoryWindow))
+    m_inventoryWindow->updateItems();
 
   // update mouseover target
   EntityId newMouseOverTarget = NullEntityId;

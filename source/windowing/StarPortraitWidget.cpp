@@ -46,9 +46,18 @@ void PortraitWidget::renderImpl() {
           humanoid = player->humanoid();
     }
 
-    List<Drawable> portrait = humanoid ? humanoid->render(false, false) : m_entity->portrait(m_portraitMode);
-    for (auto& i : portrait) {
-      i.scale(humanoid ? m_scale * 8.0f : m_scale);
+    // Regenerate the (expensive) portrait drawable set only periodically; reuse the
+    // cached copy on intervening frames. The scale/draw below still runs every frame
+    // at the current screen position, so movement/layout stays exact -- only the
+    // character assembly is throttled. The portrait barely animates, so the lower
+    // refresh rate is visually imperceptible.
+    if (m_cachedPortrait.empty() || --m_portraitCacheTick <= 0) {
+      m_cachedPortrait = humanoid ? humanoid->render(false, false) : m_entity->portrait(m_portraitMode);
+      m_portraitCacheTick = 8;
+    }
+    float portraitScale = humanoid ? m_scale * 8.0f : m_scale;
+    for (auto i : m_cachedPortrait) {
+      i.scale(portraitScale);
       context()->drawInterfaceDrawable(i, Vec2F(screenPosition() + offset));
     }
   } else {

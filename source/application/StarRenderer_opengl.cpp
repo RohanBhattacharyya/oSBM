@@ -20,10 +20,11 @@ GLenum constexpr FrameBufferTextureFormat = GL_RGBA;
 GLenum constexpr FrameBufferTextureFormat = GL_RGB;
 #endif
 
-Vec2U framebufferTextureSize(Vec2U size, unsigned sizeDiv) {
+Vec2U framebufferTextureSize(Vec2U size, unsigned sizeDiv, float sizeMul = 1.0f) {
+  sizeMul = std::max(0.05f, sizeMul);
   return {
-    std::max(1u, size[0] / std::max(1u, sizeDiv)),
-    std::max(1u, size[1] / std::max(1u, sizeDiv))
+    std::max(1u, (unsigned)((size[0] / std::max(1u, sizeDiv)) * sizeMul)),
+    std::max(1u, (unsigned)((size[1] / std::max(1u, sizeDiv)) * sizeMul))
   };
 }
 
@@ -327,7 +328,8 @@ OpenGlRenderer::GlFrameBuffer::GlFrameBuffer(Json const& fbConfig) : config(fbCo
   glBindTexture(target, texture->glTextureId());
 
   sizeDiv = config.getUInt("sizeDiv", 1);
-  Vec2U size = framebufferTextureSize(jsonToVec2U(config.getArray("size", { 256, 256 })), sizeDiv);
+  sizeMul = config.getFloat("sizeMul", 1.0f);
+  Vec2U size = framebufferTextureSize(jsonToVec2U(config.getArray("size", { 256, 256 })), sizeDiv, sizeMul);
 
   if (multisample)
     glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, GL_RGBA8, size[0], size[1], GL_TRUE);
@@ -666,10 +668,15 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
   if (auto frameBufferId = effect.config.optString("frameBuffer")) {
     auto buf = getGlFrameBuffer(*frameBufferId);
     switchGlFrameBuffer(buf);
+    // Shader screenSize stays the LOGICAL size (vertices are authored in full screen
+    // pixels) so the world maps to the full NDC range; only the physical viewport
+    // shrinks by sizeMul, so the same view rasterizes into fewer pixels and is then
+    // upscaled on blit -- a fill-rate win with the field of view preserved.
     effectScreenSize = m_screenSize / (buf->sizeDiv);
+    Vec2U fbViewport = framebufferTextureSize(m_screenSize, buf->sizeDiv, buf->sizeMul);
     // Intermediate FBOs are canvas-sized with no screen offset; the offset
     // only applies to the final blit onto the physical screen FBO.
-    glViewport(0, 0, effectScreenSize[0], effectScreenSize[1]);
+    glViewport(0, 0, fbViewport[0], fbViewport[1]);
   } else {
     m_currentFrameBuffer.reset();
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
@@ -812,7 +819,7 @@ void OpenGlRenderer::setScreenSize(Vec2U screenSize) {
 
   for (auto& frameBuffer : m_frameBuffers) {
     unsigned sizeDiv = frameBuffer.second->sizeDiv;
-    Vec2U textureSize = framebufferTextureSize(m_screenSize, sizeDiv);
+    Vec2U textureSize = framebufferTextureSize(m_screenSize, sizeDiv, frameBuffer.second->sizeMul);
     if (unsigned multisample = frameBuffer.second->multisample) {
       glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, frameBuffer.second->texture->glTextureId());
       glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, GL_RGBA8, textureSize[0], textureSize[1], GL_TRUE);
@@ -1390,15 +1397,20 @@ void OpenGlRenderer::blitGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer)
   if (frameBuffer->blitted)
     return;
 
-  auto& size = m_screenSize;
   auto& viewport = m_screenViewportSize;
   auto& off  = m_screenOffset;
+  // Read region is the framebuffer's ACTUAL content size (which may be downscaled
+  // by sizeDiv/sizeMul), and we blit it stretched to the full screen viewport. This
+  // both fixes a latent bug (the source rect previously assumed full screen size)
+  // and implements the upscale for render-scaled framebuffers.
+  Vec2U src = framebufferTextureSize(m_screenSize, frameBuffer->sizeDiv, frameBuffer->sizeMul);
+  bool scaled = (frameBuffer->sizeDiv != 1) || (frameBuffer->sizeMul != 1.0f);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
   glBindFramebuffer(GL_READ_FRAMEBUFFER, frameBuffer->id);
   glBlitFramebuffer(
-    0, 0, size[0], size[1],
+    0, 0, src[0], src[1],
     off[0], off[1], off[0] + viewport[0], off[1] + viewport[1],
-    GL_COLOR_BUFFER_BIT, GL_NEAREST
+    GL_COLOR_BUFFER_BIT, scaled ? GL_LINEAR : GL_NEAREST
   );
 
   frameBuffer->blitted = true;

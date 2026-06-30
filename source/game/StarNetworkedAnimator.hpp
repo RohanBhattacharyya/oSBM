@@ -386,6 +386,26 @@ private:
   HashMap<String,List<Drawable>> m_partDrawables;
 
   mutable StringMap<std::pair<size_t, Drawable>> m_cachedPartDrawables;
+
+  // Appearance cache for drawablesWithZLevel(): resolving each part's image +
+  // directives (string substitution + directive parsing) is expensive and was run
+  // every frame, but the only thing that changes most frames is the per-part
+  // TRANSFORM (aim/head rotation/position). We cache the resolved, pre-transform
+  // config drawables keyed by a hash of every appearance-affecting input, and
+  // re-apply transforms each frame. Externally-supplied m_partDrawables (e.g. held
+  // items) are emitted fresh each frame and excluded from the key.
+  struct ResolvedAppearancePart {
+    String partName;
+    float zLevel = 0.0f;
+    bool hasDrawable = false;
+    Drawable drawable;
+  };
+  // Keyed by appearance hash. Multiple entries so a cycling animation (e.g. the idle
+  // loop, which at low FPS advances a new frame almost every render) hits the cache
+  // for every frame of its cycle once seen, instead of thrashing a single slot.
+  mutable HashMap<uint64_t, List<ResolvedAppearancePart>> m_appearanceCache;
+  mutable List<uint64_t> m_appearanceCacheOrder;
+  static constexpr size_t MaxAppearanceCacheEntries = 32;
 };
 
 }

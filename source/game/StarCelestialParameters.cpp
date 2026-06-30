@@ -13,6 +13,13 @@ CelestialParameters::CelestialParameters() : m_seed(0) {}
 
 CelestialParameters::CelestialParameters(CelestialCoordinate coordinate, uint64_t seed, String name, Json parameters)
   : m_coordinate(std::move(coordinate)), m_seed(seed), m_name(std::move(name)), m_parameters(std::move(parameters)) {
+  // Visitable parameters generated lazily on first access (see ensureVisitableParameters).
+}
+
+void CelestialParameters::ensureVisitableParameters() const {
+  if (m_visitableParametersGenerated)
+    return;
+  m_visitableParametersGenerated = true;
   if (auto worldType = getParameter("worldType").optString()) {
     if (worldType->equalsIgnoreCase("Terrestrial")) {
       auto worldSize = getParameter("worldSize").toString();
@@ -33,6 +40,7 @@ CelestialParameters::CelestialParameters(ByteArray netStore) {
   ds >> m_name;
   ds >> m_parameters;
   m_visitableParameters = netLoadVisitableWorldParameters(ds.read<ByteArray>());
+  m_visitableParametersGenerated = true;
 }
 
 CelestialParameters::CelestialParameters(Json const& variant) {
@@ -40,18 +48,31 @@ CelestialParameters::CelestialParameters(Json const& variant) {
   m_seed = variant.getUInt("seed");
   m_name = variant.getString("name");
   m_parameters = variant.get("parameters");
-  m_visitableParameters = diskLoadVisitableWorldParameters(variant.get("visitableParameters"));
+  // Older saves persist visitableParameters; honor them if present, otherwise leave
+  // them to be regenerated lazily (deterministic from seed -- identical result).
+  auto stored = variant.get("visitableParameters", {});
+  if (!stored.isNull()) {
+    m_visitableParameters = diskLoadVisitableWorldParameters(stored);
+    m_visitableParametersGenerated = true;
+  }
 }
 
 Json CelestialParameters::diskStore() const {
+  // Do NOT force generation just to persist: only write visitableParameters if they
+  // were already generated. When absent they are regenerated lazily on load. This is
+  // what lets chunk persistence during the starter search stay cheap.
+  Json visitable = m_visitableParametersGenerated
+      ? diskStoreVisitableWorldParameters(m_visitableParameters) : Json();
   return JsonObject{{"coordinate", m_coordinate.toJson()},
       {"seed", m_seed},
       {"name", m_name},
       {"parameters", m_parameters},
-      {"visitableParameters", diskStoreVisitableWorldParameters(m_visitableParameters)}};
+      {"visitableParameters", visitable}};
 }
 
 ByteArray CelestialParameters::netStore() const {
+  // The client genuinely needs the resolved parameters, so generate on demand here.
+  ensureVisitableParameters();
   DataStreamBuffer ds;
   ds << m_coordinate;
   ds << m_seed;
@@ -117,14 +138,17 @@ Json CelestialParameters::randomizeParameterRange(
 }
 
 bool CelestialParameters::isVisitable() const {
+  ensureVisitableParameters();
   return (bool)m_visitableParameters;
 }
 
 VisitableWorldParametersConstPtr CelestialParameters::visitableParameters() const {
+  ensureVisitableParameters();
   return m_visitableParameters;
 }
 
 void CelestialParameters::setVisitableParameters(VisitableWorldParametersPtr const& newVisitableParameters) {
+  m_visitableParametersGenerated = true;
   m_visitableParameters = newVisitableParameters;
 }
 

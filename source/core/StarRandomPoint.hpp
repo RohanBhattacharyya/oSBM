@@ -54,7 +54,14 @@ auto Random2dPointGenerator<PointData, DataType>::generate(Poly const& area, Poi
   for (int64_t x = sectorXMin; x <= sectorXMax; ++x) {
     for (int64_t y = sectorYMin; y <= sectorYMax; ++y) {
       auto sector = Rect::withSize({x * m_cellSize, y * m_cellSize}, Point::filled(m_cellSize));
-      if (!area.intersects(Poly(sector)))
+      // Fast rejection against the area's bounding box instead of a full
+      // polygon-polygon SAT test per sector. For an axis-aligned rectangular
+      // area (debris) this is exact; for a rotated rectangular area (stars)
+      // it is conservative -- a few extra corner sectors are generated, but
+      // those points are deterministic per-sector and are culled on draw, so
+      // the visible result is identical. This replaces thousands of expensive
+      // double-precision SAT tests per frame with trivial rect overlap checks.
+      if (!bound.intersects(sector))
         continue;
 
       finalResult.appendAll(m_cache.get(Point(x, y), [&](Point const&) {

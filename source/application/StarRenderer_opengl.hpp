@@ -270,6 +270,10 @@ private:
     bool blitted = false;
     unsigned multisample = 0;
     unsigned sizeDiv = 1;
+    // Fractional render-scale (e.g. 0.66 = render this framebuffer at 66% of screen
+    // resolution and upscale on blit). Used to relieve fill-rate-bound scenes; sizeDiv
+    // is integer-only so this gives finer control. Applied on top of sizeDiv.
+    float sizeMul = 1.0f;
 
     GlFrameBuffer(Json const& config);
     ~GlFrameBuffer();

@@ -39,11 +39,19 @@ public:
   void setVisitableParameters(VisitableWorldParametersPtr const& newVisitableParameters);
 
 private:
+  // Visitable world parameters (biomes/terrain/dungeons) are expensive to generate
+  // and deterministic from (m_parameters, m_seed). They are generated LAZILY on first
+  // access instead of in the constructor -- the starter-world search and chunk
+  // generation create CelestialParameters for huge numbers of planets but only ever
+  // inspect the biome/size of a handful, so eager generation was a massive waste.
+  void ensureVisitableParameters() const;
+
   CelestialCoordinate m_coordinate;
   uint64_t m_seed;
   String m_name;
   Json m_parameters;
-  VisitableWorldParametersConstPtr m_visitableParameters;
+  mutable bool m_visitableParametersGenerated = false;
+  mutable VisitableWorldParametersConstPtr m_visitableParameters;
 };
 
 }

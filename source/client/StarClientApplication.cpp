@@ -811,7 +811,12 @@ void ClientApplication::renderReload() {
   };
 
   setMobileStartupStatus("Renderer: loading framebuffer configuration...");
-  renderer->loadConfig(assets->json("/rendering/opengl.config"));
+  Json openglConfig = assets->json("/rendering/opengl.config");
+  // NOTE: a render-scale knob (framebuffers.main.sizeMul) exists and works, but
+  // testing at 0.66 and 0.4 showed the in-world render is CPU-bound (primitive
+  // building), NOT GPU fill-rate -- only the planet horizon (~6ms) scaled with
+  // resolution, so it is left at full res (no quality cost for negligible gain).
+  renderer->loadConfig(openglConfig);
   
   loadEffectConfig("world");
   
@@ -1320,6 +1325,22 @@ void ClientApplication::updateTitle(float dt) {
     p2pNetworkingService->setActivityData("Not In Game", getStateString(m_titleScreen->currentState()), 0, {});
   }
 
+#ifdef STAR_SYSTEM_SWITCH
+  // Test autopilot: when /switch/oSBM/autopilot.flag exists, auto-start single
+  // player with the first stored character (skips manual title-screen navigation).
+  // Used only for automated performance testing; absent for normal users.
+  {
+    static bool s_autopilotStarted = false;
+    if (!s_autopilotStarted && m_titleScreen->currentState() == TitleState::Main
+        && m_playerStorage && m_playerStorage->playerUuidAt(0)
+        && File::isFile("/switch/oSBM/autopilot.flag")) {
+      s_autopilotStarted = true;
+      Logger::info("[autopilot] sentinel present; auto-starting single player with first character");
+      changeState(MainAppState::SinglePlayer);
+    }
+  }
+#endif
+
   if (m_titleScreen->currentState() == TitleState::StartSinglePlayer) {
     changeState(MainAppState::SinglePlayer);
 
@@ -1364,6 +1385,21 @@ void ClientApplication::updateRunning(float dt) {
   try {
     auto& app = appController();
     auto worldClient = m_universeClient->worldClient();
+
+#ifdef STAR_SYSTEM_SWITCH
+    // Autopilot perf-testing: once the ship has arrived at the starter world and can
+    // beam down, auto-beam to the planet surface so the real gameplay scene can be
+    // measured (the ship/space hub is not where players spend their time).
+    {
+      static bool s_autoBeamedDown = false;
+      if (!s_autoBeamedDown && m_mainInterface && File::isFile("/switch/oSBM/autopilot.flag")
+          && m_universeClient->canBeamDown(false)) {
+        s_autoBeamedDown = true;
+        Logger::info("[autopilot] canBeamDown true; auto-beaming down to orbited world surface");
+        m_mainInterface->warpToOrbitedWorld(false);
+      }
+    }
+#endif
     auto p2pNetworkingService = app->p2pNetworkingService();
     bool clientIPJoinable = m_root->configuration()->get("clientIPJoinable").toBool();
     bool clientP2PJoinable = m_root->configuration()->get("clientP2PJoinable").toBool();
@@ -1580,14 +1616,25 @@ void ClientApplication::updateRunning(float dt) {
     if (checkDisconnection())
       return;
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+    static int64_t s_urUc=0, s_urPainter=0, s_urRest=0, s_urIface=0, s_urMixer=0, s_urFrames=0;
+    int64_t urT = Time::monotonicMicroseconds();
+    auto urLap = [&urT](int64_t& a){ int64_t n=Time::monotonicMicroseconds(); a+=n-urT; urT=n; };
+#endif
     m_mainInterface->preUpdate(dt);
     m_universeClient->update(dt);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+    urLap(s_urUc);
+#endif
 
     if (checkDisconnection())
       return;
 
     if (worldClient) {
       m_worldPainter->update(dt);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+      urLap(s_urPainter);
+#endif
       auto& broadcastCallback = worldClient->broadcastCallback();
       if (!broadcastCallback) {
         broadcastCallback = [&](PlayerPtr player, StringView broadcast) -> bool {
@@ -1630,9 +1677,23 @@ void ClientApplication::updateRunning(float dt) {
     updateCamera(dt);
 
     m_cinematicOverlay->update(dt);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+    urLap(s_urRest);
+#endif
     m_mainInterface->update(dt);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+    urLap(s_urIface);
+#endif
     m_mainMixer->update(dt, m_cinematicOverlay->muteSfx(), m_cinematicOverlay->muteMusic());
     m_mainMixer->setSpeed(GlobalTimescale);
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+    urLap(s_urMixer);
+    if (++s_urFrames >= 120) {
+      Logger::info("[perf-ur] universeClient={}us worldPainter={}us camera+cine={}us mainInterface={}us mixer={}us (avg/tick)",
+          s_urUc/s_urFrames, s_urPainter/s_urFrames, s_urRest/s_urFrames, s_urIface/s_urFrames, s_urMixer/s_urFrames);
+      s_urUc=s_urPainter=s_urRest=s_urIface=s_urMixer=0; s_urFrames=0;
+    }
+#endif
 
     bool inputActive = m_mainInterface->textInputActive();
     if (m_input)

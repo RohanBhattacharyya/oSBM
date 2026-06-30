@@ -782,117 +782,139 @@ List<pair<Drawable, float>> NetworkedAnimator::drawablesWithZLevel(Vec2F const& 
   if (!partCount)
     return {};
 
-  List<Directives> baseProcessingDirectives = { m_processingDirectives.get() };
-  for (auto& pair : m_effects) {
-    auto const& effectState = pair.second;
-
-    if (effectState.enabled.get()) {
-      auto const& effect = m_effects.get(pair.first);
-      if (effect.type == "flash") {
-        if (effectState.timer > effect.time / 2) {
-          baseProcessingDirectives.append(effect.directives);
+  // Hash everything that affects the RESOLVED part image/directives (i.e. everything
+  // except per-frame transforms and externally-supplied m_partDrawables). When this
+  // is unchanged we reuse the previously resolved, pre-transform drawables and only
+  // re-apply transforms below -- this is the common case (e.g. while only the aim /
+  // head rotation changes) and skips the expensive tag substitution + directive work.
+  uint64_t appearanceKey;
+  {
+    XXHash64 h;
+    auto pushStr = [&](String const& s) { h.push(s.utf8Ptr(), s.utf8Size()); };
+    auto pushPod = [&](auto const& v) { h.push(reinterpret_cast<char const*>(&v), sizeof(v)); };
+    bool flipped = m_flipped.get();
+    pushPod(flipped);
+    pushStr(m_processingDirectives.get().string());
+    for (auto& pair : m_effects) {
+      auto const& effectState = pair.second;
+      bool enabled = effectState.enabled.get();
+      pushPod(enabled);
+      if (enabled) {
+        auto const& effect = m_effects.get(pair.first);
+        pushStr(effect.type);
+        if (effect.type == "flash") {
+          bool on = effectState.timer > effect.time / 2;
+          pushPod(on);
         }
-      } else if (effect.type == "directive") {
-        baseProcessingDirectives.append(effect.directives);
-      } else {
-        throw NetworkedAnimatorException(strf("No such NetworkedAnimator effect type '{}'", effect.type));
       }
     }
-  }
-  HashMap<String, String> animationTags = m_localTags;
-  if (version() > 0) {
-    animationTags.set("relativePath", m_relativePath);
+    for (auto& t : m_localTags) { pushStr(t.first); pushStr(t.second); }
+    for (auto& t : m_globalTags) { pushStr(t.first); pushStr(t.second); }
+    for (auto& pt : m_partTags) {
+      pushStr(pt.first);
+      for (auto& t : pt.second) { pushStr(t.first); pushStr(t.second); }
+    }
+    pushStr(m_relativePath);
     for (auto& stateTypeName : m_animatedParts.stateTypes()) {
       auto& activeState = m_animatedParts.activeState(stateTypeName);
-      unsigned stateFrame = activeState.frame;
-      Maybe<unsigned> frame;
-      String frameStr;
-      String frameIndexStr;
-
-      frame = stateFrame;
-      frameStr = static_cast<String>(toString(stateFrame + 1));
-      frameIndexStr = static_cast<String>(toString(stateFrame));
-      if (frame) {
-        animationTags.set(stateTypeName + "_frame", frameStr);
-        animationTags.set(stateTypeName + "_frameIndex", frameIndexStr);
-      }
-      animationTags.set(stateTypeName + "_state", activeState.stateName);
-
-      if (auto p = activeState.properties.ptr("animationTags")) {
-        for (auto tag : p->iterateObject())
-          if (!animationTags.contains(tag.first))
-            animationTags.set(tag.first, tag.second.toString());
-      }
+      pushStr(activeState.stateName);
+      pushPod(activeState.frame);
     }
+    appearanceKey = h.digest();
   }
 
-  List<tuple<AnimatedPartSet::ActivePartInformation const*, String const*, float>> parts;
-  parts.reserve(partCount);
-  int drawableCount = 0;
-  m_animatedParts.forEachActivePart([&](String const& partName, AnimatedPartSet::ActivePartInformation const& activePart) {
-    Maybe<float> maybeZLevel;
-    if (m_flipped.get()) {
-      if (auto maybeFlipped = activePart.properties.value("flippedZLevel").optFloat())
-        maybeZLevel = *maybeFlipped;
-    }
-    if (!maybeZLevel)
-      maybeZLevel = activePart.properties.value("zLevel").optFloat();
+  auto cacheIt = m_appearanceCache.find(appearanceKey);
+  if (cacheIt == m_appearanceCache.end()) {
+    // Cache miss: resolve every active part's pre-transform drawable from scratch.
+    List<Directives> baseProcessingDirectives = { m_processingDirectives.get() };
+    for (auto& pair : m_effects) {
+      auto const& effectState = pair.second;
 
-    if (auto drawables = m_partDrawables.contains(partName))
-      drawableCount += m_partDrawables.get(partName).size();
-    parts.append(make_tuple(&activePart, &partName, maybeZLevel.value(0.0f)));
-  });
-
-  sort(parts, [](auto const& a, auto const& b) { return get<2>(a) < get<2>(b); });
-
-  List<pair<Drawable, float>> drawables;
-  drawables.reserve(partCount + drawableCount);
-  for (auto& entry : parts) {
-    auto& activePart = *get<0>(entry);
-    auto& partName = *get<1>(entry);
-    // Make sure we don't copy the original image
-    String fallback = "";
-    Json jImage = activePart.properties.value("image", {});
-    if (version() > 0 && m_flipped.get()) {
-      if (auto maybeFlipped = activePart.properties.value("flippedImage").optString())
-        jImage = *maybeFlipped;
-    }
-
-    String const& image = jImage.isType(Json::Type::String) ? *jImage.stringPtr() : fallback;
-
-    bool centered = activePart.properties.value("centered").optBool().value(true);
-    bool fullbright = activePart.properties.value("fullbright").optBool().value(false);
-
-    size_t originalDirectivesSize = baseProcessingDirectives.size();
-
-    auto const& partTags = m_partTags.get(partName);
-
-    if (auto directives = activePart.properties.value("processingDirectives").optString()) {
-      if (version() > 0){
-        directives = directives->maybeLookupTagsView([&](StringView tag) -> StringView {
-          if (auto p = animationTags.ptr(tag)) {
-            return StringView(*p);
-          } else if (auto p = partTags.ptr(tag)) {
-            return StringView(*p);
-          } else if (auto p = m_globalTags.ptr(tag)) {
-            return StringView(*p);
+      if (effectState.enabled.get()) {
+        auto const& effect = m_effects.get(pair.first);
+        if (effect.type == "flash") {
+          if (effectState.timer > effect.time / 2) {
+            baseProcessingDirectives.append(effect.directives);
           }
-          return StringView("default");
-        });
+        } else if (effect.type == "directive") {
+          baseProcessingDirectives.append(effect.directives);
+        } else {
+          throw NetworkedAnimatorException(strf("No such NetworkedAnimator effect type '{}'", effect.type));
+        }
       }
-      baseProcessingDirectives.append(*directives);
+    }
+    HashMap<String, String> animationTags = m_localTags;
+    if (version() > 0) {
+      animationTags.set("relativePath", m_relativePath);
+      for (auto& stateTypeName : m_animatedParts.stateTypes()) {
+        auto& activeState = m_animatedParts.activeState(stateTypeName);
+        unsigned stateFrame = activeState.frame;
+        Maybe<unsigned> frame;
+        String frameStr;
+        String frameIndexStr;
+
+        frame = stateFrame;
+        frameStr = static_cast<String>(toString(stateFrame + 1));
+        frameIndexStr = static_cast<String>(toString(stateFrame));
+        if (frame) {
+          animationTags.set(stateTypeName + "_frame", frameStr);
+          animationTags.set(stateTypeName + "_frameIndex", frameIndexStr);
+        }
+        animationTags.set(stateTypeName + "_state", activeState.stateName);
+
+        if (auto p = activeState.properties.ptr("animationTags")) {
+          for (auto tag : p->iterateObject())
+            if (!animationTags.contains(tag.first))
+              animationTags.set(tag.first, tag.second.toString());
+        }
+      }
     }
 
-    Maybe<unsigned> frame;
-    String frameStr;
-    String frameIndexStr;
-    if (activePart.activeState) {
-      unsigned stateFrame = activePart.activeState->frame;
-      frame = stateFrame;
-      frameStr = static_cast<String>(toString(stateFrame + 1));
-      frameIndexStr = static_cast<String>(toString(stateFrame));
+    List<tuple<AnimatedPartSet::ActivePartInformation const*, String const*, float>> parts;
+    parts.reserve(partCount);
+    m_animatedParts.forEachActivePart([&](String const& partName, AnimatedPartSet::ActivePartInformation const& activePart) {
+      Maybe<float> maybeZLevel;
+      if (m_flipped.get()) {
+        if (auto maybeFlipped = activePart.properties.value("flippedZLevel").optFloat())
+          maybeZLevel = *maybeFlipped;
+      }
+      if (!maybeZLevel)
+        maybeZLevel = activePart.properties.value("zLevel").optFloat();
 
-      if (auto directives = activePart.activeState->properties.value("processingDirectives").optString()) {
+      parts.append(make_tuple(&activePart, &partName, maybeZLevel.value(0.0f)));
+    });
+
+    sort(parts, [](auto const& a, auto const& b) { return get<2>(a) < get<2>(b); });
+
+    List<ResolvedAppearancePart> resolvedParts;
+    resolvedParts.reserve(parts.size());
+    for (auto& entry : parts) {
+      auto& activePart = *get<0>(entry);
+      auto& partName = *get<1>(entry);
+
+      ResolvedAppearancePart resolved;
+      resolved.partName = partName;
+      resolved.zLevel = get<2>(entry);
+      resolved.hasDrawable = false;
+
+      // Make sure we don't copy the original image
+      String fallback = "";
+      Json jImage = activePart.properties.value("image", {});
+      if (version() > 0 && m_flipped.get()) {
+        if (auto maybeFlipped = activePart.properties.value("flippedImage").optString())
+          jImage = *maybeFlipped;
+      }
+
+      String const& image = jImage.isType(Json::Type::String) ? *jImage.stringPtr() : fallback;
+
+      bool centered = activePart.properties.value("centered").optBool().value(true);
+      bool fullbright = activePart.properties.value("fullbright").optBool().value(false);
+
+      size_t originalDirectivesSize = baseProcessingDirectives.size();
+
+      auto const& partTags = m_partTags.get(partName);
+
+      if (auto directives = activePart.properties.value("processingDirectives").optString()) {
         if (version() > 0){
           directives = directives->maybeLookupTagsView([&](StringView tag) -> StringView {
             if (auto p = animationTags.ptr(tag)) {
@@ -907,65 +929,114 @@ List<pair<Drawable, float>> NetworkedAnimator::drawablesWithZLevel(Vec2F const& 
         }
         baseProcessingDirectives.append(*directives);
       }
-    }
 
-    Maybe<String> processedImage = image.maybeLookupTagsView([&](StringView tag) -> StringView {
-      if (tag == "frame") {
-        if (frame)
-          return frameStr;
-      } else if (tag == "frameIndex") {
-        if (frame)
-          return frameIndexStr;
-      } else if (auto p = animationTags.ptr(tag)) {
-        return StringView(*p);
-      } else if (auto p = partTags.ptr(tag)) {
-        return StringView(*p);
-      } else if (auto p = m_globalTags.ptr(tag)) {
-        return StringView(*p);
-      }
+      Maybe<unsigned> frame;
+      String frameStr;
+      String frameIndexStr;
+      if (activePart.activeState) {
+        unsigned stateFrame = activePart.activeState->frame;
+        frame = stateFrame;
+        frameStr = static_cast<String>(toString(stateFrame + 1));
+        frameIndexStr = static_cast<String>(toString(stateFrame));
 
-      return StringView("default");
-    });
-    String const& usedImage = processedImage ? processedImage.get() : image;
-
-    auto transformation = globalTransformation() * partTransformation(partName);
-    transformation.translate(position);
-
-    if (!usedImage.empty() && usedImage[0] != ':' && usedImage[0] != '?') {
-      size_t hash = hashOf(usedImage);
-      auto find = m_cachedPartDrawables.find(partName);
-      if (find == m_cachedPartDrawables.end() || find->second.first != hash) {
-        String relativeImage;
-        if (usedImage[0] != '/')
-          relativeImage = AssetPath::relativeTo(m_relativePath, usedImage);
-
-        Drawable drawable = Drawable::makeImage(!relativeImage.empty() ? relativeImage : usedImage, 1.0f / TilePixels, centered, Vec2F());
-        if (find == m_cachedPartDrawables.end())
-          find = m_cachedPartDrawables.emplace(partName, std::pair{ hash, std::move(drawable) }).first;
-        else {
-          find->second.first = hash;
-          find->second.second = std::move(drawable);
+        if (auto directives = activePart.activeState->properties.value("processingDirectives").optString()) {
+          if (version() > 0){
+            directives = directives->maybeLookupTagsView([&](StringView tag) -> StringView {
+              if (auto p = animationTags.ptr(tag)) {
+                return StringView(*p);
+              } else if (auto p = partTags.ptr(tag)) {
+                return StringView(*p);
+              } else if (auto p = m_globalTags.ptr(tag)) {
+                return StringView(*p);
+              }
+              return StringView("default");
+            });
+          }
+          baseProcessingDirectives.append(*directives);
         }
       }
 
-      Drawable drawable = find->second.second;
-      auto& imagePart = drawable.imagePart();
-      for (Directives const& directives : baseProcessingDirectives)
-        imagePart.addDirectives(directives, centered);
-      drawable.fullbright = fullbright;
-      drawable.transform(transformation);
-      drawables.append({std::move(drawable), get<2>(entry)});
-    }
+      Maybe<String> processedImage = image.maybeLookupTagsView([&](StringView tag) -> StringView {
+        if (tag == "frame") {
+          if (frame)
+            return frameStr;
+        } else if (tag == "frameIndex") {
+          if (frame)
+            return frameIndexStr;
+        } else if (auto p = animationTags.ptr(tag)) {
+          return StringView(*p);
+        } else if (auto p = partTags.ptr(tag)) {
+          return StringView(*p);
+        } else if (auto p = m_globalTags.ptr(tag)) {
+          return StringView(*p);
+        }
 
-    if (m_partDrawables.contains(partName)) {
-      auto partDrawables = m_partDrawables.get(partName);
-      Drawable::transformAll(partDrawables, transformation);
-      for (auto drawable : partDrawables) {
-      drawables.append({drawable, get<2>(entry)});
+        return StringView("default");
+      });
+      String const& usedImage = processedImage ? processedImage.get() : image;
+
+      if (!usedImage.empty() && usedImage[0] != ':' && usedImage[0] != '?') {
+        size_t hash = hashOf(usedImage);
+        auto find = m_cachedPartDrawables.find(partName);
+        if (find == m_cachedPartDrawables.end() || find->second.first != hash) {
+          String relativeImage;
+          if (usedImage[0] != '/')
+            relativeImage = AssetPath::relativeTo(m_relativePath, usedImage);
+
+          Drawable drawable = Drawable::makeImage(!relativeImage.empty() ? relativeImage : usedImage, 1.0f / TilePixels, centered, Vec2F());
+          if (find == m_cachedPartDrawables.end())
+            find = m_cachedPartDrawables.emplace(partName, std::pair{ hash, std::move(drawable) }).first;
+          else {
+            find->second.first = hash;
+            find->second.second = std::move(drawable);
+          }
+        }
+
+        Drawable drawable = find->second.second;
+        auto& imagePart = drawable.imagePart();
+        for (Directives const& directives : baseProcessingDirectives)
+          imagePart.addDirectives(directives, centered);
+        drawable.fullbright = fullbright;
+        resolved.hasDrawable = true;
+        resolved.drawable = std::move(drawable);
       }
+
+      baseProcessingDirectives.resize(originalDirectivesSize);
+      resolvedParts.append(std::move(resolved));
     }
 
-    baseProcessingDirectives.resize(originalDirectivesSize);
+    // Insert into the bounded cache (evict oldest if over capacity).
+    if (m_appearanceCache.size() >= MaxAppearanceCacheEntries && !m_appearanceCacheOrder.empty()) {
+      uint64_t oldest = m_appearanceCacheOrder.first();
+      m_appearanceCacheOrder.eraseAt(0);
+      m_appearanceCache.remove(oldest);
+    }
+    cacheIt = m_appearanceCache.insert(appearanceKey, std::move(resolvedParts)).first;
+    m_appearanceCacheOrder.append(appearanceKey);
+  }
+
+  // Emit: apply the per-frame transform to each cached (pre-transform) part drawable,
+  // and append externally-supplied part drawables (held items, etc.) fresh each frame.
+  List<ResolvedAppearancePart> const& cachedParts = cacheIt->second;
+  List<pair<Drawable, float>> drawables;
+  drawables.reserve(cachedParts.size() * 2);
+  Mat3F global = globalTransformation();
+  for (auto& resolved : cachedParts) {
+    auto transformation = global * partTransformation(resolved.partName);
+    transformation.translate(position);
+
+    if (resolved.hasDrawable) {
+      Drawable drawable = resolved.drawable;
+      drawable.transform(transformation);
+      drawables.append({std::move(drawable), resolved.zLevel});
+    }
+
+    if (m_partDrawables.contains(resolved.partName)) {
+      auto partDrawables = m_partDrawables.get(resolved.partName);
+      Drawable::transformAll(partDrawables, transformation);
+      for (auto drawable : partDrawables)
+        drawables.append({drawable, resolved.zLevel});
+    }
   }
 
   return drawables;

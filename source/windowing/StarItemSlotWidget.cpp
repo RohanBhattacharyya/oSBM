@@ -212,7 +212,7 @@ void ItemSlotWidget::renderImpl() {
       context()->drawInterfaceQuad(String("/interface/inventory/itemlinkindicator.png"), Vec2F(screenPosition() - Vec2I(1, 1)));
     }
 
-    for (auto i : iconDrawables)
+    for (auto const& i : iconDrawables)
       context()->drawInterfaceDrawable(i, Vec2F(screenPosition() + size() / 2));
 
     if (!m_newItemIndicator.isComplete())
