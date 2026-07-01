@@ -1387,16 +1387,21 @@ void ClientApplication::updateRunning(float dt) {
     auto worldClient = m_universeClient->worldClient();
 
 #ifdef STAR_SYSTEM_SWITCH
-    // Autopilot perf-testing: once the ship has arrived at the starter world and can
-    // beam down, auto-beam to the planet surface so the real gameplay scene can be
-    // measured (the ship/space hub is not where players spend their time).
+    // Autopilot perf-testing: once the ship has arrived at the starter world, auto-warp
+    // to the planet surface so the real gameplay scene can be measured (the ship/space
+    // hub is not where players spend their time). This bypasses canBeamDown()'s UI-only
+    // gates (WarpMode::DeployOnly needing a mech via canDeploy(), teleport-capability
+    // checks, etc.) and warps directly via the same WarpAlias::OrbitedWorld the UI
+    // buttons use -- a fresh tutorial character has no mech and no teleport capability
+    // yet, so canBeamDown() never returns true for them, but the server resolves
+    // OrbitedWorld from orbitWarpAction() regardless of those UI-only checks.
     {
       static bool s_autoBeamedDown = false;
       if (!s_autoBeamedDown && m_mainInterface && File::isFile("/switch/oSBM/autopilot.flag")
-          && m_universeClient->canBeamDown(false)) {
+          && !m_universeClient->flying() && m_universeClient->clientContext()->orbitWarpAction()) {
         s_autoBeamedDown = true;
-        Logger::info("[autopilot] canBeamDown true; auto-beaming down to orbited world surface");
-        m_mainInterface->warpToOrbitedWorld(false);
+        Logger::info("[autopilot] orbitWarpAction present and not flying; auto-warping to orbited world surface");
+        m_universeClient->warpPlayer(WarpAlias::OrbitedWorld, true, "beam");
       }
     }
 #endif

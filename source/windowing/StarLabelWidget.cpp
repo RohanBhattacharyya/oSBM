@@ -30,8 +30,15 @@ Maybe<unsigned> LabelWidget::getTextCharLimit() const {
 }
 
 void LabelWidget::setText(String newText) {
+  // Callers (quest tracker, action bar counts, etc.) commonly re-set the same
+  // text every frame just to be safe. updateTextRegion() below does real font
+  // layout/measurement work, so skip it when the text hasn't actually changed
+  // -- identical rendered result, just without redoing the same measurement.
+  if (m_textRegionValid && newText == m_text)
+    return;
   m_text = std::move(newText);
   updateTextRegion();
+  m_textRegionValid = true;
 }
 
 void LabelWidget::setFontSize(int fontSize) {

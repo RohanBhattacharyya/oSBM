@@ -1,5 +1,6 @@
 #include "StarWorldServer.hpp"
 #include "StarLogging.hpp"
+#include "StarTime.hpp"
 #include "StarIterator.hpp"
 #include "StarDataStreamExtra.hpp"
 #include "StarBiome.hpp"
@@ -1448,12 +1449,31 @@ void WorldServer::init(bool firstTime) {
       for (auto const& dungeon : m_worldTemplate->dungeons()) {
         Logger::info("Placing dungeon {}", dungeon.dungeon);
         int retryCounter = m_serverConfig.getInt("spawnDungeonRetries");
+#ifdef STAR_SYSTEM_SWITCH
+        int64_t perfDungeonStart = Time::monotonicMilliseconds();
+        int perfAttempt = 0;
+#endif
         while (retryCounter > 0) {
           --retryCounter;
+#ifdef STAR_SYSTEM_SWITCH
+          int64_t perfAttemptStart = Time::monotonicMilliseconds();
+          ++perfAttempt;
+#endif
           auto dungeonFacade = make_shared<DungeonGeneratorWorld>(this, true);
           Vec2I position = Vec2I((dungeon.baseX + rnd.randInt(0, dungeon.xVariance)) % m_geometry.width(), dungeon.baseHeight);
+#ifdef STAR_SYSTEM_SWITCH
+          int64_t perfDefStart = Time::monotonicMilliseconds();
+#endif
           DungeonGenerator dungeonGenerator(dungeon.dungeon, m_worldTemplate->worldSeed(), m_worldTemplate->threatLevel(), currentDungeonId);
-          if (auto generateResult = dungeonGenerator.generate(dungeonFacade, position, dungeon.blendWithTerrain, dungeon.force)) {
+#ifdef STAR_SYSTEM_SWITCH
+          Logger::info("[perf-dg] {} definition ctor (parts+images): {}ms", dungeon.dungeon, Time::monotonicMilliseconds() - perfDefStart);
+#endif
+          auto generateResult = dungeonGenerator.generate(dungeonFacade, position, dungeon.blendWithTerrain, dungeon.force);
+#ifdef STAR_SYSTEM_SWITCH
+          Logger::info("[perf-dg] {} attempt {} took {}ms ({})", dungeon.dungeon, perfAttempt,
+              Time::monotonicMilliseconds() - perfAttemptStart, generateResult ? "placed" : "failed");
+#endif
+          if (generateResult) {
             if (dungeonGenerator.definition()->isProtected())
               setTileProtection(currentDungeonId, true);
 
@@ -1475,6 +1495,10 @@ void WorldServer::init(bool firstTime) {
             break;
           }
         }
+#ifdef STAR_SYSTEM_SWITCH
+        Logger::info("[perf-dg] {} total: {} attempts, {}ms", dungeon.dungeon, perfAttempt,
+            Time::monotonicMilliseconds() - perfDungeonStart);
+#endif
       }
 
       m_dungeonIdGravity[ZeroGDungeonId] = 0.0;
@@ -1483,10 +1507,21 @@ void WorldServer::init(bool firstTime) {
       m_generatingDungeon = false;
     }
 
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t perfPlayerStartTime = Time::monotonicMilliseconds();
+#endif
     if (m_adjustPlayerStart)
       m_playerStart = findPlayerStart(firstTime ? Maybe<Vec2F>() : m_playerStart);
+#ifdef STAR_SYSTEM_SWITCH
+    Logger::info("[perf-dg] findPlayerStart: {}ms", Time::monotonicMilliseconds() - perfPlayerStartTime);
+    perfPlayerStartTime = Time::monotonicMilliseconds();
+#endif
 
     generateRegion(RectI::integral(RectF(m_playerStart, m_playerStart)).padded(m_serverConfig.getInt("playerStartInitialGenRadius")));
+#ifdef STAR_SYSTEM_SWITCH
+    Logger::info("[perf-dg] initial generateRegion (radius {}): {}ms", m_serverConfig.getInt("playerStartInitialGenRadius"),
+        Time::monotonicMilliseconds() - perfPlayerStartTime);
+#endif
 
     m_weather.setup(m_worldTemplate->weathers(), m_worldTemplate->undergroundLevel(), m_geometry, [this](Vec2I const& pos) {
         auto const& tile = m_tileArray->tile(pos);
@@ -1795,13 +1830,14 @@ ServerTile const& WorldServer::getServerTile(Vec2I const& position, bool withSig
   return m_tileArray->tile(position);
 }
 
-ServerTile* WorldServer::modifyServerTile(Vec2I const& position, bool withSignal) {
+ServerTile* WorldServer::modifyServerTile(Vec2I const& position, bool withSignal, bool dirtyCollisionFlag) {
   if (withSignal)
     signalRegion(RectI::withSize(position, {1, 1}));
 
   auto tile = m_tileArray->modifyTile(position);
   if (tile) {
-    dirtyCollision(RectI::withSize(position, {1, 1}));
+    if (dirtyCollisionFlag)
+      dirtyCollision(RectI::withSize(position, {1, 1}));
     m_liquidEngine->visitLocation(position);
     queueTileUpdates(position);
   }
@@ -2420,14 +2456,34 @@ Vec2F WorldServer::findPlayerStart(Maybe<Vec2F> firstTry) {
   else
     pos = Vec2F(m_worldTemplate->findSensiblePlayerStart().value(Vec2I(0, m_worldTemplate->surfaceLevel())));
 
+#ifdef STAR_SYSTEM_SWITCH
+  Logger::info("[perf-dg] findPlayerStart config: maximumVerticalSearch={} maximumTries={} spawnRectSize={},{}",
+      maximumVerticalSearch, maximumTries, spawnRectSize[0], spawnRectSize[1]);
+  int64_t perfGenRegionTimeMs = 0, perfCollisionTimeMs = 0;
+  int perfGenRegionCalls = 0, perfDownIters = 0, perfUpIters = 0, perfTries = 0;
+#endif
   CollisionSet collideWithAnything{CollisionKind::Null, CollisionKind::Block, CollisionKind::Dynamic, CollisionKind::Platform, CollisionKind::Slippery};
   for (int t = 0; t < maximumTries; ++t) {
+#ifdef STAR_SYSTEM_SWITCH
+    ++perfTries;
+#endif
     bool foundGround = false;
     // First go downward until we collide with terrain
     for (int i = 0; i < maximumVerticalSearch; ++i) {
+#ifdef STAR_SYSTEM_SWITCH
+      ++perfDownIters;
+      int64_t perfLap = Time::monotonicMilliseconds();
+#endif
       RectF spawnRect = RectF(pos[0] - spawnRectSize[0] / 2, pos[1], pos[0] + spawnRectSize[0] / 2, pos[1] + spawnRectSize[1]);
       generateRegion(RectI::integral(spawnRect));
-      if (rectTileCollision(RectI::integral(spawnRect), collideWithAnything)) {
+#ifdef STAR_SYSTEM_SWITCH
+      { int64_t n = Time::monotonicMilliseconds(); perfGenRegionTimeMs += n - perfLap; ++perfGenRegionCalls; perfLap = n; }
+#endif
+      bool collided = rectTileCollision(RectI::integral(spawnRect), collideWithAnything);
+#ifdef STAR_SYSTEM_SWITCH
+      perfCollisionTimeMs += Time::monotonicMilliseconds() - perfLap;
+#endif
+      if (collided) {
         foundGround = true;
         break;
       }
@@ -2441,18 +2497,30 @@ Vec2F WorldServer::findPlayerStart(Maybe<Vec2F> firstTry) {
       for (int i = 0; i < maximumVerticalSearch; ++i) {
         if (m_tileArray->tile(Vec2I::floor(pos)).liquid.liquid != EmptyLiquidId)
           break;
+#ifdef STAR_SYSTEM_SWITCH
+        ++perfUpIters;
+        int64_t perfLap = Time::monotonicMilliseconds();
+#endif
 
         RectF spawnRect = RectF(pos[0] - spawnRectSize[0] / 2, pos[1], pos[0] + spawnRectSize[0] / 2, pos[1] + spawnRectSize[1]);
 
         generateRegion(RectI::integral(spawnRect));
+#ifdef STAR_SYSTEM_SWITCH
+        { int64_t n = Time::monotonicMilliseconds(); perfGenRegionTimeMs += n - perfLap; ++perfGenRegionCalls; perfLap = n; }
+#endif
 
         auto tileDungeonId = getServerTile(Vec2I::floor(pos)).dungeonId;
 
         if (!allowedSpawnDungeonIds.contains(tileDungeonId))
           break;
 
-        if (!rectTileCollision(RectI::integral(spawnRect), collideWithAnything) && spawnRect.yMax() < m_geometry.height())
+        if (!rectTileCollision(RectI::integral(spawnRect), collideWithAnything) && spawnRect.yMax() < m_geometry.height()) {
+#ifdef STAR_SYSTEM_SWITCH
+          Logger::info("[perf-dg] findPlayerStart done: tries={} downIters={} upIters={} genRegionCalls={} genRegionTime={}ms collisionTime={}ms",
+              perfTries, perfDownIters, perfUpIters, perfGenRegionCalls, perfGenRegionTimeMs, perfCollisionTimeMs);
+#endif
           return pos;
+        }
 
         ++pos[1];
       }
@@ -2461,6 +2529,10 @@ Vec2F WorldServer::findPlayerStart(Maybe<Vec2F> firstTry) {
     pos = Vec2F(m_worldTemplate->findSensiblePlayerStart().value(Vec2I(0, m_worldTemplate->surfaceLevel())));
   }
 
+#ifdef STAR_SYSTEM_SWITCH
+  Logger::info("[perf-dg] findPlayerStart EXHAUSTED tries: tries={} downIters={} upIters={} genRegionCalls={} genRegionTime={}ms collisionTime={}ms",
+      perfTries, perfDownIters, perfUpIters, perfGenRegionCalls, perfGenRegionTimeMs, perfCollisionTimeMs);
+#endif
   return pos;
 }
 

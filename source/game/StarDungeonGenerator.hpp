@@ -586,13 +586,10 @@ namespace Dungeon {
     void forEachTile(TileCallback const& callback) const;
 
   private:
-    void placePhase(Vec2I pos, Phase phase, Set<Vec2I> const& places, DungeonGeneratorWriter* writer) const;
-
     bool tileUsesPlaces(Vec2I pos) const;
     Direction pickByEdge(Vec2I position, Vec2U size) const;
     Direction pickByNeighbours(Vec2I pos) const;
     void scanConnectors();
-    void scanAnchor();
 
     PartReaderConstPtr m_reader;
 

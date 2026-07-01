@@ -214,7 +214,9 @@ public:
   ServerTile const& getServerTile(Vec2I const& position, bool withSignal = false);
   // Gets mutable pointer to server tile and marks it as needing updates to all
   // clients.
-  ServerTile* modifyServerTile(Vec2I const& position, bool withSignal = false);
+  ServerTile* modifyServerTile(Vec2I const& position, bool withSignal = false, bool dirtyCollisionFlag = true);
+
+  void dirtyCollision(RectI const& region);
 
   EntityId loadUniqueEntity(String const& uniqueId);
 
@@ -346,7 +348,6 @@ private:
   void queueTileDamageUpdates(Vec2I const& pos, TileLayer layer);
   void writeNetTile(Vec2I const& pos, NetTile& netTile) const;
 
-  void dirtyCollision(RectI const& region);
   void freshenCollision(RectI const& region);
 
   Vec2F findPlayerStart(Maybe<Vec2F> firstTry = {});

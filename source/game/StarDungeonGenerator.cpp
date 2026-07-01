@@ -1,4 +1,6 @@
 #include "StarDungeonGenerator.hpp"
+#include "StarTime.hpp"
+#include "StarThread.hpp"
 #include "StarCasting.hpp"
 #include "StarRandom.hpp"
 #include "StarLogging.hpp"
@@ -13,7 +15,13 @@
 
 namespace Star {
 
-size_t const DefinitionsCacheSize = 20;
+// Micro-dungeon generation (WorldGenerator::generateMicroDungeons, one call
+// per placement candidate per sector) can cycle through many distinct
+// dungeon names within a small area faster than a size-20 cache can hold
+// them, causing repeated cold reloads (each a JSON + per-part image decode)
+// for names that were already loaded moments earlier. A larger cache trades
+// a modest amount of memory to avoid that thrashing.
+size_t const DefinitionsCacheSize = 64;
 
 namespace Dungeon {
 
@@ -599,7 +607,6 @@ namespace Dungeon {
     }
     m_size = m_reader->size();
     scanConnectors();
-    scanAnchor();
   }
 
   String const& Part::name() const {
@@ -734,35 +741,39 @@ namespace Dungeon {
   }
 
   void Part::place(Vec2I pos, Set<Vec2I> const& places, DungeonGeneratorWriter* writer) const {
-    placePhase(pos, Phase::ClearPhase, places, writer);
-    placePhase(pos, Phase::WallPhase, places, writer);
-    placePhase(pos, Phase::ModsPhase, places, writer);
-    placePhase(pos, Phase::ObjectPhase, places, writer);
-    placePhase(pos, Phase::BiomeTreesPhase, places, writer);
-    placePhase(pos, Phase::BiomeItemsPhase, places, writer);
-    placePhase(pos, Phase::WirePhase, places, writer);
-    placePhase(pos, Phase::ItemPhase, places, writer);
-    placePhase(pos, Phase::NpcPhase, places, writer);
-    placePhase(pos, Phase::DungeonIdPhase, places, writer);
+    // The original code ran a full forEachTile pass per phase (10x), redoing
+    // the position math and the places.contains() lookup identically every
+    // time -- neither depends on phase, so both are phase-invariant for a
+    // given tile within this single place() call (places is fixed for the
+    // whole call). Collect the placeable tiles once and replay the phase
+    // loop over that flat list instead; the global ordering (all tiles'
+    // ClearPhase, then all WallPhase, ...) and per-phase tile order are both
+    // unchanged, since the list is built via the same forEachTile traversal.
+    List<pair<Vec2I, Tile const*>> placeable;
+    m_reader->forEachTile([&](Vec2I tilePos, Tile const& tile) -> bool {
+      Vec2I position = pos + tilePos;
+      if (tile.collidesWithPlaces() || !places.contains(position))
+        placeable.append({tilePos, &tile});
+      return false;
+    });
+
+    static Phase const AllPhases[] = {Phase::ClearPhase, Phase::WallPhase, Phase::ModsPhase,
+        Phase::ObjectPhase, Phase::BiomeTreesPhase, Phase::BiomeItemsPhase, Phase::WirePhase,
+        Phase::ItemPhase, Phase::NpcPhase, Phase::DungeonIdPhase};
+    for (Phase phase : AllPhases) {
+      for (auto const& entry : placeable) {
+        try {
+          entry.second->place(pos + entry.first, phase, writer);
+        } catch (std::exception const&) {
+          Logger::error("Error at map position {}:", entry.first);
+          throw;
+        }
+      }
+    }
   }
 
   void Part::forEachTile(TileCallback const& callback) const {
     m_reader->forEachTile(callback);
-  }
-
-  void Part::placePhase(Vec2I pos, Phase phase, Set<Vec2I> const& places, DungeonGeneratorWriter* writer) const {
-    m_reader->forEachTile([&places, pos, phase, writer](Vec2I tilePos, Tile const& tile) -> bool {
-      Vec2I position = pos + tilePos;
-      if (tile.collidesWithPlaces() || !places.contains(position)) {
-        try {
-          tile.place(position, phase, writer);
-        } catch (std::exception const&) {
-          Logger::error("Error at map position {}:", tilePos);
-          throw;
-        }
-      }
-      return false;
-    });
   }
 
   bool Part::tileUsesPlaces(Vec2I pos) const {
@@ -829,8 +840,17 @@ namespace Dungeon {
   }
 
   void Part::scanConnectors() {
+    // Merged with the former scanAnchor(): both did their own independent
+    // full forEachTile pass over the same (potentially large) part image,
+    // doubling per-pixel scan cost for no reason since neither depends on
+    // the other's results. One pass now computes both.
+    int cx, cy, cc;
+    cx = cy = cc = 0;
+    int lowestAir = m_size[1];
+    int highestGound = -1;
+    int highestLiquid = -1;
     try {
-      m_reader->forEachTile([this](Vec2I position, Tile const& tile) -> bool {
+      m_reader->forEachTile([&](Vec2I position, Tile const& tile) -> bool {
         if (tile.connector.isValid()) {
           auto d = tile.connector->direction;
           if (d == Direction::Unknown)
@@ -841,22 +861,7 @@ namespace Dungeon {
           m_connections.append(make_shared<Connector>(this, tile.connector->value, tile.connector->forwardOnly, d, position));
         }
 
-        return false;
-      });
-    } catch (std::exception& e) {
-      throw DungeonException(strf("Exception {} in connector {}", outputException(e, true), m_name));
-    }
-  }
-
-  void Part::scanAnchor() {
-    int cx, cy, cc;
-    cx = cy = cc = 0;
-    int lowestAir = m_size[1];
-    int highestGound = -1;
-    int highestLiquid = -1;
-    try {
-      m_reader->forEachTile([&](Vec2I pos, Tile const& tile) -> bool {
-        int x = pos.x(), y = pos.y();
+        int x = position.x(), y = position.y();
         if (tile.collidesWithPlaces()) {
           cx += x;
           cy += y;
@@ -874,10 +879,11 @@ namespace Dungeon {
           if ((int)y > highestLiquid)
             highestLiquid = y;
         }
+
         return false;
       });
     } catch (std::exception& e) {
-      throw DungeonException(strf("Exception {} in part {}", outputException(e, true), m_name));
+      throw DungeonException(strf("Exception {} in connector {}", outputException(e, true), m_name));
     }
 
     highestGound = max(highestGound, highestLiquid);
@@ -1211,6 +1217,9 @@ namespace Dungeon {
     if (!spaceBlendingVertexes.empty())
       m_facade->markSpace(PolyF::convexHull(spaceBlendingVertexes));
 
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t perfT0 = Time::monotonicMilliseconds();
+#endif
     for (auto iter = m_backgroundMaterial.begin(); iter != m_backgroundMaterial.end(); iter++)
       m_facade->setBackgroundMaterial(displace(iter->first), iter->second.material, iter->second.hueshift, iter->second.colorVariant);
     for (auto iter = m_foregroundMaterial.begin(); iter != m_foregroundMaterial.end(); iter++)
@@ -1219,6 +1228,11 @@ namespace Dungeon {
       m_facade->setForegroundMod(displace(iter->first), iter->second.mod, iter->second.hueshift);
     for (auto iter = m_backgroundMod.begin(); iter != m_backgroundMod.end(); iter++)
       m_facade->setBackgroundMod(displace(iter->first), iter->second.mod, iter->second.hueshift);
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t perfT1 = Time::monotonicMilliseconds();
+    Logger::info("[perf-dg]   tiles: {}ms ({} bg, {} fg, {} fgMod, {} bgMod)", perfT1 - perfT0,
+        m_backgroundMaterial.size(), m_foregroundMaterial.size(), m_foregroundMod.size(), m_backgroundMod.size());
+#endif
 
     List<Vec2I> sortedPositions = m_objects.keys();
     sortByComputedValue(sortedPositions, [](Vec2I pos) { return pos[1] + pos[0] / 1000.0f; });
@@ -1226,6 +1240,10 @@ namespace Dungeon {
       auto& object = m_objects[pos];
       m_facade->placeObject(displace(pos), object.objectName, object.direction, object.parameters);
     }
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t perfT2 = Time::monotonicMilliseconds();
+    Logger::info("[perf-dg]   objects: {}ms ({} objects)", perfT2 - perfT1, sortedPositions.size());
+#endif
 
     for (auto entry : m_vehicles) {
       String vehicleName;
@@ -1239,16 +1257,28 @@ namespace Dungeon {
     for (auto pos : sortedPositions) {
       m_facade->placeBiomeTree(pos);
     }
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t perfT3 = Time::monotonicMilliseconds();
+    Logger::info("[perf-dg]   vehicles+biomeTrees: {}ms ({} trees)", perfT3 - perfT2, sortedPositions.size());
+#endif
 
     sortedPositions = List<Vec2I>::from(m_biomeItems);
     sortByComputedValue(sortedPositions, [](Vec2I pos) { return pos[1] + pos[0] / 1000.0f; });
     for (auto pos : sortedPositions) {
       m_facade->placeSurfaceBiomeItems(pos);
     }
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t perfT4 = Time::monotonicMilliseconds();
+    Logger::info("[perf-dg]   biomeItems: {}ms ({} positions)", perfT4 - perfT3, sortedPositions.size());
+#endif
 
     for (auto& npc : m_npcs) {
       m_facade->spawnNpc(displaceF(npc.first), npc.second);
     }
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t perfT5 = Time::monotonicMilliseconds();
+    Logger::info("[perf-dg]   npcs: {}ms ({} npcs)", perfT5 - perfT4, m_npcs.size());
+#endif
 
     for (auto& stagehand : m_stagehands) {
       m_facade->spawnStagehand(displaceF(stagehand.first), stagehand.second);
@@ -1266,6 +1296,10 @@ namespace Dungeon {
         wireGroup.append(displace(pos));
       m_facade->connectWireGroup(wireGroup);
     }
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t perfT6 = Time::monotonicMilliseconds();
+    Logger::info("[perf-dg]   stagehands+wires: {}ms", perfT6 - perfT5);
+#endif
 
     for (auto iter = m_drops.begin(); iter != m_drops.end(); iter++)
       m_facade->addDrop(displaceF(iter->first), iter->second);
@@ -1275,6 +1309,9 @@ namespace Dungeon {
 
     for (auto const& dungeonId : m_dungeonIds)
       m_facade->setDungeonIdAt(dungeonId.first, dungeonId.second);
+#ifdef STAR_SYSTEM_SWITCH
+    Logger::info("[perf-dg]   drops+liquids+dungeonIds: {}ms", Time::monotonicMilliseconds() - perfT6);
+#endif
   }
 
   List<RectI> DungeonGeneratorWriter::boundingBoxes() const {
@@ -1315,12 +1352,29 @@ DungeonDefinitions::DungeonDefinitions() : m_paths(), m_cacheMutex(), m_definiti
 
 DungeonDefinitionConstPtr DungeonDefinitions::get(String const& name) const {
   MutexLocker locker(m_cacheMutex);
-  return m_definitionCache.get(name,
-      [this](String const& name) -> DungeonDefinitionPtr {
+#ifdef STAR_SYSTEM_SWITCH
+  bool perfMiss = false;
+  int64_t perfStart = Time::monotonicMilliseconds();
+#endif
+  auto result = m_definitionCache.get(name,
+      [this
+#ifdef STAR_SYSTEM_SWITCH
+       , &perfMiss
+#endif
+      ](String const& name) -> DungeonDefinitionPtr {
+#ifdef STAR_SYSTEM_SWITCH
+        perfMiss = true;
+#endif
         if (auto path = m_paths.maybe(name))
           return readDefinition(*path);
         throw DungeonException::format("Unknown dungeon: '{}'", name);
       });
+#ifdef STAR_SYSTEM_SWITCH
+  if (perfMiss)
+    Logger::info("[perf-dg] DungeonDefinitions cache MISS '{}' took {}ms, cache now {}/{}", name,
+        Time::monotonicMilliseconds() - perfStart, m_definitionCache.currentSize(), DefinitionsCacheSize);
+#endif
+  return result;
 }
 
 JsonObject DungeonDefinitions::getMetadata(String const& name) const {
@@ -1357,11 +1411,58 @@ DungeonDefinition::DungeonDefinition(JsonObject const& definition, String const&
       return make_shared<const Dungeon::ImageTileset>(tileset);
     });
 
-  for (auto const& partsDefMap : definition.get("parts").iterateArray()) {
-    Dungeon::PartConstPtr part = parsePart(this, partsDefMap, tileset);
-    if (m_parts.contains(part->name()))
-      throw DungeonException::format("Duplicate dungeon part name: {}", part->name());
-    m_parts.insert(part->name(), part);
+  JsonArray partsDefArray = definition.get("parts").toArray();
+  size_t partCount = partsDefArray.size();
+
+  // Each part's construction (PNG decode + connector/anchor scan) is
+  // independent of every other part, so for dungeons with enough parts to be
+  // worth the thread overhead, farm them out across threads and only touch
+  // the shared m_parts map (and do the duplicate-name check) back on this
+  // thread once every worker has finished.
+  unsigned threadCount = min<unsigned>(Thread::numberOfProcessors(), (unsigned)partCount / 4);
+  if (threadCount <= 1) {
+    for (auto const& partsDefMap : partsDefArray) {
+      Dungeon::PartConstPtr part = parsePart(this, partsDefMap, tileset);
+      if (m_parts.contains(part->name()))
+        throw DungeonException::format("Duplicate dungeon part name: {}", part->name());
+      m_parts.insert(part->name(), part);
+    }
+  } else {
+    size_t chunkSize = (partCount + threadCount - 1) / threadCount;
+    List<ThreadFunction<List<Dungeon::PartConstPtr>>> workers;
+    for (unsigned t = 0; t < threadCount; ++t) {
+      size_t begin = t * chunkSize;
+      size_t end = std::min(begin + chunkSize, partCount);
+      if (begin >= end)
+        break;
+      workers.append(Thread::invoke("DungeonDefinition::parsePart", [this, &partsDefArray, tileset, begin, end]() -> List<Dungeon::PartConstPtr> {
+        List<Dungeon::PartConstPtr> result;
+        for (size_t i = begin; i < end; ++i)
+          result.append(parsePart(this, partsDefArray[i], tileset));
+        return result;
+      }));
+    }
+
+    List<List<Dungeon::PartConstPtr>> chunkResults;
+    std::exception_ptr firstException;
+    for (auto& worker : workers) {
+      try {
+        chunkResults.append(worker.finish());
+      } catch (...) {
+        if (!firstException)
+          firstException = std::current_exception();
+      }
+    }
+    if (firstException)
+      std::rethrow_exception(firstException);
+
+    for (auto const& chunk : chunkResults) {
+      for (auto const& part : chunk) {
+        if (m_parts.contains(part->name()))
+          throw DungeonException::format("Duplicate dungeon part name: {}", part->name());
+        m_parts.insert(part->name(), part);
+      }
+    }
   }
 
   if (m_metadata.contains("gravity"))
@@ -1442,7 +1543,14 @@ Maybe<pair<List<RectI>, Set<Vec2I>>> DungeonGenerator::generate(DungeonGenerator
     }
 
     auto pos = position + Vec2I(0, -anchor->placementLevelConstraint());
-    if (forcePlacement || anchor->canPlace(pos, &writer)) {
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t perfAnchorCanPlaceStart = Time::monotonicMilliseconds();
+#endif
+    bool anchorCanPlace = forcePlacement || anchor->canPlace(pos, &writer);
+#ifdef STAR_SYSTEM_SWITCH
+    Logger::info("[perf-dg] {} anchor canPlace: {}ms ({})", name, Time::monotonicMilliseconds() - perfAnchorCanPlaceStart, anchorCanPlace ? "passed" : "failed");
+#endif
+    if (anchorCanPlace) {
       Logger::info("Placing dungeon {} at {}", name, position);
       return buildDungeon(anchor, pos, &writer, forcePlacement);
     } else {
@@ -1465,15 +1573,47 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
 
   Logger::debug("Placing dungeon entrance at {}", basePos);
 
+#ifdef STAR_SYSTEM_SWITCH
+  int64_t perfPlacePartTimeMs = 0;
+  int perfPlacePartCalls = 0;
+  int64_t perfScanTimeMs = 0, perfClearTimeMs = 0, perfPlaceTimeMs = 0;
+#endif
   auto placePart = [&](Dungeon::Part const* part, Vec2I const& placePos) {
+#ifdef STAR_SYSTEM_SWITCH
+      int64_t perfPlacePartStart = Time::monotonicMilliseconds();
+      int64_t perfLap = perfPlacePartStart;
+      ++perfPlacePartCalls;
+#endif
+      // usesPlaces()/modifiesPlaces() depend only on each tile's own static
+      // brush/rule config (fixed at part-parse time), so both the
+      // clear-entities scan and the preserve/modified-tracking scan can be
+      // computed in a single forEachTile pass. What can't change is WHEN the
+      // results reach the shared preserveTiles/modifiedTiles sets: part->place()
+      // below reads preserveTiles to decide whether earlier parts already claim
+      // a tile, so this part's own tiles must only land in preserveTiles AFTER
+      // it places -- otherwise a part would see its own tiles as "already
+      // preserved" and skip placing them. Stash this part's contributions
+      // locally and union them in after place() to keep that ordering exact.
       Set<Vec2I> clearTileEntityPositions;
+      Set<Vec2I> partPreserveTiles;
+      Set<Vec2I> partModifiedTiles;
       part->forEachTile([&](Vec2I tilePos, Dungeon::Tile const& tile) -> bool {
-          if (tile.modifiesPlaces())
+          if (tile.modifiesPlaces()) {
             clearTileEntityPositions.insert(writer->wrapPosition(placePos + tilePos));
+            partModifiedTiles.insert(placePos + tilePos);
+          }
+          if (tile.usesPlaces())
+            partPreserveTiles.insert(placePos + tilePos);
           return false;
         });
       auto partBounds = RectI::withSize(placePos, Vec2I(part->size()));
+#ifdef STAR_SYSTEM_SWITCH
+      { int64_t n = Time::monotonicMilliseconds(); perfScanTimeMs += n - perfLap; perfLap = n; }
+#endif
       writer->clearTileEntities(partBounds, clearTileEntityPositions, part->clearAnchoredObjects());
+#ifdef STAR_SYSTEM_SWITCH
+      { int64_t n = Time::monotonicMilliseconds(); perfClearTimeMs += n - perfLap; perfLap = n; }
+#endif
 
       if (part->markDungeonId())
         writer->setMarkDungeonId(m_dungeonId);
@@ -1481,15 +1621,16 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
         writer->setMarkDungeonId();
 
       part->place(placePos, preserveTiles, writer);
+#ifdef STAR_SYSTEM_SWITCH
+      { int64_t n = Time::monotonicMilliseconds(); perfPlaceTimeMs += n - perfLap; perfLap = n; }
+#endif
       writer->finishPart();
 
-      part->forEachTile([&](Vec2I tilePos, Dungeon::Tile const& tile) -> bool {
-          if (tile.usesPlaces())
-            preserveTiles.insert(placePos + tilePos);
-          if (tile.modifiesPlaces())
-            modifiedTiles.insert(placePos + tilePos);
-          return false;
-        });
+      preserveTiles.addAll(partPreserveTiles);
+      modifiedTiles.addAll(partModifiedTiles);
+#ifdef STAR_SYSTEM_SWITCH
+      { int64_t n = Time::monotonicMilliseconds(); perfScanTimeMs += n - perfLap; perfLap = n; }
+#endif
 
       openSet.append({part, placePos});
 
@@ -1497,13 +1638,25 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
       piecesPlaced++;
 
       Logger::debug("placed {}", part->name());
+#ifdef STAR_SYSTEM_SWITCH
+      perfPlacePartTimeMs += Time::monotonicMilliseconds() - perfPlacePartStart;
+#endif
     };
 
   placePart(anchor.get(), basePos);
+#ifdef STAR_SYSTEM_SWITCH
+  Logger::info("[perf-dg] anchor placePart: {}ms ({} tiles) [scan {}ms clear {}ms place {}ms]", perfPlacePartTimeMs,
+      anchor->size()[0] * anchor->size()[1], perfScanTimeMs, perfClearTimeMs, perfPlaceTimeMs);
+#endif
 
   Vec2I origin = basePos + Vec2I(anchor->size()) / 2;
 
   Set<Vec2I> closedConnectors;
+#ifdef STAR_SYSTEM_SWITCH
+  int64_t perfBfsStart = Time::monotonicMilliseconds();
+  int64_t perfCanPlaceCalls = 0;
+  int64_t perfCanPlaceTimeMs = 0;
+#endif
   while (openSet.size()) {
     Dungeon::Part const* parentPart = openSet.first().first;
     Vec2I parentPos = openSet.first().second;
@@ -1549,7 +1702,15 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
           Logger::debug("part failed in maximumThreatLevel");
           continue;
         }
-        if (forcePlacement || option->part()->canPlace(partPos, writer)) {
+#ifdef STAR_SYSTEM_SWITCH
+        int64_t perfCanPlaceStart = Time::monotonicMilliseconds();
+#endif
+        bool perfCanPlaceResult = forcePlacement || option->part()->canPlace(partPos, writer);
+#ifdef STAR_SYSTEM_SWITCH
+        ++perfCanPlaceCalls;
+        perfCanPlaceTimeMs += Time::monotonicMilliseconds() - perfCanPlaceStart;
+#endif
+        if (perfCanPlaceResult) {
           placePart(option->part(), partPos);
           closedConnectors.add(connectorPos);
           closedConnectors.add(optionPos);
@@ -1560,10 +1721,23 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
       }
     }
   }
+#ifdef STAR_SYSTEM_SWITCH
+  Logger::info("[perf-dg] BFS: {}ms, {} pieces, {} canPlace calls ({}ms), placePart total {}ms ({} calls, incl. anchor)",
+      Time::monotonicMilliseconds() - perfBfsStart, piecesPlaced, perfCanPlaceCalls, perfCanPlaceTimeMs,
+      perfPlacePartTimeMs, perfPlacePartCalls);
+  int64_t perfLiquidStart = Time::monotonicMilliseconds();
+#endif
   Logger::debug("Settling dungeon water.");
   writer->flushLiquid();
+#ifdef STAR_SYSTEM_SWITCH
+  Logger::info("[perf-dg] flushLiquid: {}ms", Time::monotonicMilliseconds() - perfLiquidStart);
+  int64_t perfFlushStart = Time::monotonicMilliseconds();
+#endif
   Logger::debug("Flushing dungeon into the worldgen.");
   writer->flush();
+#ifdef STAR_SYSTEM_SWITCH
+  Logger::info("[perf-dg] flush: {}ms", Time::monotonicMilliseconds() - perfFlushStart);
+#endif
 
   return {writer->boundingBoxes(), modifiedTiles};
 }

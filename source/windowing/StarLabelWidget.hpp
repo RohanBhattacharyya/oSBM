@@ -44,6 +44,7 @@ private:
   Maybe<float> m_lineSpacing;
   Maybe<unsigned> m_textCharLimit;
   RectI m_textRegion;
+  bool m_textRegionValid = false;
 };
 
 }

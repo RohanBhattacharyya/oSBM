@@ -1,5 +1,6 @@
 #include "StarWorldGeneration.hpp"
 #include "StarWorldServer.hpp"
+#include "StarTime.hpp"
 #include "StarMaterialItem.hpp"
 #include "StarMaterialDatabase.hpp"
 #include "StarNpcDatabase.hpp"
@@ -200,6 +201,12 @@ void DungeonGeneratorWorld::markRegion(RectI const& region) {
 
   m_worldServer->signalRegion(region);
   m_worldServer->activateLiquidRegion(region);
+  // Tile writes below (setForegroundMaterial etc.) skip their individual
+  // per-tile collision dirtying (each of which would otherwise re-touch a
+  // padded BlockInfluenceRadius area, badly duplicating work across a dense
+  // region of writes) and rely on this single dirty pass covering the whole
+  // part's bounding box instead.
+  m_worldServer->dirtyCollision(region);
 }
 
 void DungeonGeneratorWorld::markTerrain(PolyF const& region) {
@@ -219,7 +226,10 @@ void DungeonGeneratorWorld::markSpace(PolyF const& region) {
 }
 
 void DungeonGeneratorWorld::setForegroundMaterial(Vec2I const& position, MaterialId material, MaterialHue hueshift, MaterialColorVariant colorVariant) {
-  if (ServerTile* tile = m_worldServer->modifyServerTile(position)) {
+  // Collision dirtying for the whole part is done once in markRegion instead
+  // of per-tile here (markRegion's region exactly covers every tile written
+  // for this part, so nothing is missed).
+  if (ServerTile* tile = m_worldServer->modifyServerTile(position, false, false)) {
     m_worldServer->modifyLiquid(position, EmptyLiquidId, 0);
     tile->foreground = material;
     tile->foregroundHueShift = hueshift;
@@ -232,7 +242,7 @@ void DungeonGeneratorWorld::setForegroundMaterial(Vec2I const& position, Materia
 }
 
 void DungeonGeneratorWorld::setBackgroundMaterial(Vec2I const& position, MaterialId material, MaterialHue hueshift, MaterialColorVariant colorVariant) {
-  if (ServerTile* tile = m_worldServer->modifyServerTile(position)) {
+  if (ServerTile* tile = m_worldServer->modifyServerTile(position, false, false)) {
     m_worldServer->modifyLiquid(position, EmptyLiquidId, 0);
     tile->background = material;
     tile->backgroundHueShift = hueshift;
@@ -483,7 +493,7 @@ void DungeonGeneratorWorld::connectWireGroup(List<Vec2I> const& wireGroup) {
 }
 
 void DungeonGeneratorWorld::setForegroundMod(Vec2I const& position, ModId mod, MaterialHue hueshift) {
-  ServerTile* tile = m_worldServer->modifyServerTile(position);
+  ServerTile* tile = m_worldServer->modifyServerTile(position, false, false);
   if (tile) {
     tile->foregroundMod = mod;
     tile->foregroundModHueShift = hueshift;
@@ -491,7 +501,7 @@ void DungeonGeneratorWorld::setForegroundMod(Vec2I const& position, ModId mod, M
 }
 
 void DungeonGeneratorWorld::setBackgroundMod(Vec2I const& position, ModId mod, MaterialHue hueshift) {
-  ServerTile* tile = m_worldServer->modifyServerTile(position);
+  ServerTile* tile = m_worldServer->modifyServerTile(position, false, false);
   if (tile) {
     tile->backgroundMod = mod;
     tile->foregroundModHueShift = hueshift;
@@ -648,6 +658,9 @@ WorldGenerator::WorldGenerator(WorldServer* server) : m_worldServer(server) {
 }
 
 void WorldGenerator::generateSectorLevel(WorldStorage* worldStorage, Sector const& sector, SectorGenerationLevel generationLevel) {
+#ifdef STAR_SYSTEM_SWITCH
+  int64_t perfGslStart = Time::monotonicMilliseconds();
+#endif
   if (generationLevel == SectorGenerationLevel::BaseTiles) {
     prepareTiles(worldStorage, sector);
   } else if (generationLevel == SectorGenerationLevel::MicroDungeons) {
@@ -663,6 +676,11 @@ void WorldGenerator::generateSectorLevel(WorldStorage* worldStorage, Sector cons
       prepareSectorBiomeBlocks(worldStorage, sector);
     m_worldServer->activateLiquidRegion(worldStorage->tileArray()->sectorRegion(sector));
   }
+#ifdef STAR_SYSTEM_SWITCH
+  int64_t perfGslElapsed = Time::monotonicMilliseconds() - perfGslStart;
+  if (perfGslElapsed > 20)
+    Logger::info("[perf-dg] generateSectorLevel sector={} level={} took {}ms", sector, (int)generationLevel, perfGslElapsed);
+#endif
 }
 
 void WorldGenerator::sectorLoadLevelChanged(WorldStorage* worldStorage, Sector const& sector, SectorLoadLevel loadLevel) {

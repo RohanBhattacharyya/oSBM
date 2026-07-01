@@ -48,3 +48,15 @@ _deps
 
 # Built Visual Studio Code Extensions
 *.vsix
+node_modules
+
+# AI stuff
+.claude/
+.claude-flow/
+.github/
+.swarm/
+CLAUDE.md
+.mcp.json
+package-lock.json
+package.json
+ruvector.db

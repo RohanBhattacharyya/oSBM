@@ -116,7 +116,10 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
       adjustLighting(renderData);
       m_renderer->setEffectTexture("lightMap", renderData.lightMap);
     }
-    m_renderer->setEffectParameter("lightMapMultiplier", m_assets->json("/rendering.config:lightMapMultiplier").toFloat());
+    // Fixed content-config value, re-read from Assets (mutex + path-parse) every
+    // frame previously despite never changing during a session.
+    static float const lightMapMultiplier = m_assets->json("/rendering.config:lightMapMultiplier").toFloat();
+    m_renderer->setEffectParameter("lightMapMultiplier", lightMapMultiplier);
     m_renderer->setEffectParameter("lightMapScale", Vec2F::filled(TilePixels * m_camera.pixelRatio()));
     m_renderer->setEffectParameter("lightMapOffset", m_camera.worldToScreen(Vec2F(renderData.lightMinPosition)));
   }
@@ -194,7 +197,7 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   wpLap(g_wpDrawUs);
 #endif
 
-  int64_t textureTimeout = m_assets->json("/rendering.config:textureTimeout").toInt();
+  static int64_t const textureTimeout = m_assets->json("/rendering.config:textureTimeout").toInt();
   m_textPainter->cleanup(textureTimeout);
   m_drawablePainter->cleanup(textureTimeout);
   m_environmentPainter->cleanup(textureTimeout);
@@ -217,8 +220,9 @@ void WorldPainter::adjustLighting(WorldRenderData& renderData) {
 }
 
 void WorldPainter::renderParticles(WorldRenderData& renderData, Particle::Layer layer) {
-  const int textParticleFontSize = m_assets->json("/rendering.config:textParticleFontSize").toInt();
-  const RectF particleRenderWindow = RectF::withSize(Vec2F(), Vec2F(m_camera.screenSize())).padded(m_assets->json("/rendering.config:particleRenderWindowPadding").toInt());
+  static int const textParticleFontSize = m_assets->json("/rendering.config:textParticleFontSize").toInt();
+  static int const particleRenderWindowPadding = m_assets->json("/rendering.config:particleRenderWindowPadding").toInt();
+  const RectF particleRenderWindow = RectF::withSize(Vec2F(), Vec2F(m_camera.screenSize())).padded(particleRenderWindowPadding);
 
   if (!renderData.particles)
     return;

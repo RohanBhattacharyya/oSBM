@@ -490,8 +490,21 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
 
   renderData.geometry = m_geometry;
 
+  RectI window = m_clientState.window();
+  RectI tileRange = window.padded(bufferTiles);
+  renderData.tileMinPosition = tileRange.min();
+
+  // Entities well outside the visible (padded) tile range can't contribute
+  // drawables/light/audio a player could perceive this frame, so querying only
+  // the entities near what's actually on screen (via the same spatial index
+  // used elsewhere for range queries) skips real per-entity render() cost --
+  // sprite composition, particles, tools -- for entities that were previously
+  // rendered unconditionally regardless of position. Light range extends a
+  // bit further than the tile range since a light source just off-screen can
+  // still spill onto the visible edge.
+  RectF lightQueryRange = RectF(window.padded(bufferTiles + 32));
   ClientRenderCallback lightingRenderCallback;
-  m_entityMap->forAllEntities([&](EntityPtr const& entity) {
+  m_entityMap->forEachEntity(lightQueryRange, [&](EntityPtr const& entity) {
     if (m_startupHiddenEntities.contains(entity->entityId()))
       return;
 
@@ -499,10 +512,6 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
   });
 
   renderLightSources = std::move(lightingRenderCallback.lightSources);
-
-  RectI window = m_clientState.window();
-  RectI tileRange = window.padded(bufferTiles);
-  renderData.tileMinPosition = tileRange.min();
 
   if (!m_fullBright) {
     {
@@ -538,9 +547,16 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
       if (auto& globalDirectives = parameters->globalDirectives)
         directives = &globalDirectives.get();
   }
-  m_entityMap->forAllEntities([&](EntityPtr const& entity) {
+  List<EntityPtr> visibleEntities;
+  m_entityMap->forEachEntity(RectF(tileRange), [&](EntityPtr const& entity) {
+      visibleEntities.append(entity);
+    });
+  sort(visibleEntities, [](EntityPtr const& a, EntityPtr const& b) {
+      return a->entityId() < b->entityId();
+    });
+  for (auto const& entity : visibleEntities) {
       if (m_startupHiddenEntities.contains(entity->entityId()))
-        return;
+        continue;
 
       ClientRenderCallback renderCallback;
 
@@ -604,10 +620,7 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
       m_samples.appendAll(std::move(renderCallback.audios));
       m_previewTiles.appendAll(std::move(renderCallback.previewTiles));
       renderData.overheadBars.appendAll(std::move(renderCallback.overheadBars));
-
-    }, [](EntityPtr const& a, EntityPtr const& b) {
-      return a->entityId() < b->entityId();
-    });
+  }
 
   m_tileArray->tileEachTo(renderData.tiles, tileRange, [&](RenderTile& renderTile, Vec2I const&, ClientTile const& clientTile) {
       renderTile.foreground = clientTile.foreground;
@@ -2227,8 +2240,8 @@ bool WorldClient::exposedToWeather(Vec2F const& pos) const {
 
   if (!isUnderground(pos) && liquidLevel(Vec2I::floor(pos)).liquid == EmptyLiquidId) {
     auto assets = Root::singleton().assets();
-    float weatherRayCheckDistance = assets->json("/weather.config:weatherRayCheckDistance").toFloat();
-    float weatherRayCheckWindInfluence = assets->json("/weather.config:weatherRayCheckWindInfluence").toFloat();
+    static float const weatherRayCheckDistance = assets->json("/weather.config:weatherRayCheckDistance").toFloat();
+    static float const weatherRayCheckWindInfluence = assets->json("/weather.config:weatherRayCheckWindInfluence").toFloat();
 
     auto offset = Vec2F(-m_weather.wind() * weatherRayCheckWindInfluence, weatherRayCheckDistance).normalized() * weatherRayCheckDistance;
 

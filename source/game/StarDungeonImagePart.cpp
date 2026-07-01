@@ -11,7 +11,21 @@ namespace Dungeon {
 
   void ImagePartReader::readAsset(String const& asset) {
     auto assets = Root::singleton().assets();
-    m_images.push_back(make_pair(asset, assets->image(asset)));
+    ImageConstPtr image = assets->image(asset);
+
+    for (size_t y = 0; y < image->height(); y++) {
+      for (size_t x = 0; x < image->width(); x++) {
+        Vec2I position(x, y);
+        Vec4B tileColor = image->get(x, y);
+        if (auto const& tile = m_tileset->getTile(tileColor))
+          m_resolvedTiles.append({position, tile});
+        else
+          throw StarException::format("Dungeon image {} uses unknown tile color: #{:02x}{:02x}{:02x}{:02x}",
+              asset, tileColor[0], tileColor[1], tileColor[2], tileColor[3]);
+      }
+    }
+
+    m_images.push_back(make_pair(asset, std::move(image)));
   }
 
   Vec2U ImagePartReader::size() const {
@@ -21,29 +35,9 @@ namespace Dungeon {
   }
 
   void ImagePartReader::forEachTile(TileCallback const& callback) const {
-    for (auto const& entry : m_images) {
-      String const& file = entry.first;
-      ImageConstPtr const& image = entry.second;
-      for (size_t y = 0; y < image->height(); y++) {
-        for (size_t x = 0; x < image->width(); x++) {
-
-          Vec2I position(x, y);
-          Vec4B tileColor = image->get(x, y);
-
-          if (auto const& tile = m_tileset->getTile(tileColor)) {
-            bool exitEarly = callback(position, *tile);
-            if (exitEarly)
-              return;
-          } else {
-            throw StarException::format("Dungeon image {} uses unknown tile color: #{:02x}{:02x}{:02x}{:02x}",
-                file,
-                tileColor[0],
-                tileColor[1],
-                tileColor[2],
-                tileColor[3]);
-          }
-        }
-      }
+    for (auto const& entry : m_resolvedTiles) {
+      if (callback(entry.first, *entry.second))
+        return;
     }
   }
 

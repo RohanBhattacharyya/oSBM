@@ -5,6 +5,7 @@
 #include "StarJsonExtra.hpp"
 #include "StarSystemWorldServer.hpp"
 #include "StarNameGenerator.hpp"
+#include "StarFile.hpp"
 
 namespace Star {
 
@@ -597,7 +598,18 @@ void SystemClientShip::serverUpdate(SystemWorld* system, float dt) {
     }
 
     auto toTarget = destination - pos;
+#ifdef STAR_SYSTEM_SWITCH
+    // Autopilot perf-testing: a fresh character's un-upgraded ship speed makes this
+    // system-space transit take many real minutes, which is pure loading-screen time
+    // from a testing point of view (nobody plays sitting on this screen) -- skip
+    // straight to the destination instead of accumulating speed*dt every tick.
+    if (File::isFile("/switch/oSBM/autopilot.flag"))
+      pos = destination;
+    else
+      pos += toTarget.normalized() * (m_speed * dt);
+#else
     pos += toTarget.normalized() * (m_speed * dt);
+#endif
 
     if (destination == pos || (destination - pos).normalized() * toTarget.normalized() < 0) {
       m_systemLocation.set(m_destination.get());

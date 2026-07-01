@@ -113,11 +113,16 @@ void TeamBar::updatePlayerResources() {
 
   if (player->modeConfig().hunger) {
     m_foodBar->setCurrentProgressLevel(player->foodPercentage());
+    // These are fixed config values re-read every frame regardless of whether
+    // food is even low; resolve once instead of hitting the assets cache/mutex
+    // on every call (see the identical pattern in buildTeamBar() above).
     auto assets = Root::singleton().assets();
-    if (player->foodPercentage() <= assets->json("/player.config:foodLowThreshold").toFloat()) {
-      float flashTime = assets->json("/interface/windowconfig/teambar.config:foodBarFlashTime").toFloat();
+    static float const foodLowThreshold = assets->json("/player.config:foodLowThreshold").toFloat();
+    if (player->foodPercentage() <= foodLowThreshold) {
+      static float const flashTime = assets->json("/interface/windowconfig/teambar.config:foodBarFlashTime").toFloat();
+      static String const flashOverlay = assets->json("/interface/windowconfig/teambar.config:foodBarFlashOverlay").toString();
       if (fmod(Time::monotonicTime(), flashTime * 2) < flashTime)
-        m_foodBar->setOverlay(assets->json("/interface/windowconfig/teambar.config:foodBarFlashOverlay").toString());
+        m_foodBar->setOverlay(flashOverlay);
       else
         m_foodBar->setOverlay("");
     } else {
@@ -152,9 +157,13 @@ void TeamBar::buildTeamBar() {
   Vec2I offset;
   size_t controlIndex = 0;
 
-  float portraitScale = assets->json("/interface/windowconfig/teambar.config:memberPortraitScale").toFloat();
-  int memberSize = assets->json("/interface/windowconfig/teambar.config:memberSize").toInt();
-  int memberSpacing = assets->json("/interface/windowconfig/teambar.config:memberSpacing").toInt();
+  // buildTeamBar() runs unconditionally every frame (called from update()), but
+  // these config values are fixed for the whole session -- resolve them once
+  // instead of re-parsing the asset path and hitting the assets cache/mutex
+  // every single frame regardless of whether there are any team members.
+  static float const portraitScale = assets->json("/interface/windowconfig/teambar.config:memberPortraitScale").toFloat();
+  static int const memberSize = assets->json("/interface/windowconfig/teambar.config:memberSize").toInt();
+  static int const memberSpacing = assets->json("/interface/windowconfig/teambar.config:memberSpacing").toInt();
 
   Uuid myUuid = player->clientContext()->playerUuid();
   for (auto member : teamClient->members()) {
