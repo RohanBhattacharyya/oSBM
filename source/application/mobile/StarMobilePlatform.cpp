@@ -779,17 +779,22 @@ private:
         alpha);
   }
 
+  float launcherUiScale() const {
+    return std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f);
+  }
+
   void applyLauncherUiStyle() {
     if (!ImGui::GetCurrentContext())
       return;
 
     ImGui::StyleColorsDark();
 
-    float scale = std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f);
+    float scale = launcherUiScale();
     auto& style = ImGui::GetStyle();
     style.TouchExtraPadding = ImVec2(12.0f * scale, 12.0f * scale);
-    style.FramePadding = ImVec2(14.0f * scale, 10.0f * scale);
-    style.ItemSpacing = ImVec2(12.0f * scale, 10.0f * scale);
+    style.WindowPadding = ImVec2(18.0f * scale, 16.0f * scale);
+    style.FramePadding = ImVec2(15.0f * scale, 10.0f * scale);
+    style.ItemSpacing = ImVec2(14.0f * scale, 12.0f * scale);
     style.ScrollbarSize = 28.0f * scale;
 
     auto& colors = style.Colors;
@@ -1240,6 +1245,51 @@ private:
       ImGui::SameLine();
   }
 
+  ImVec4 launcherSafeAreaInImguiUnits(ImVec2 displaySize) const {
+    float scaleX = m_windowSize[0] > 0 ? displaySize.x / (float)m_windowSize[0] : 1.0f;
+    float scaleY = m_windowSize[1] > 0 ? displaySize.y / (float)m_windowSize[1] : 1.0f;
+    return ImVec4(
+      (float)m_safeArea.left * scaleX,
+      (float)m_safeArea.top * scaleY,
+      (float)m_safeArea.right * scaleX,
+      (float)m_safeArea.bottom * scaleY
+    );
+  }
+
+  void setNextLauncherWindowRect(ImVec2 displaySize) const {
+    float shortSide = std::min(displaySize.x, displaySize.y);
+    float margin = std::max(10.0f, shortSide * 0.0125f);
+    ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(displaySize.x - margin * 2.0f, displaySize.y - margin * 2.0f), ImGuiCond_Always);
+  }
+
+  void beginLauncherContentArea(char const* id, ImVec2 displaySize, bool compact = false) const {
+    float scale = launcherUiScale();
+    float edgePadding = (compact ? 6.0f : 10.0f) * scale;
+    ImVec4 safe = launcherSafeAreaInImguiUnits(displaySize);
+
+    ImVec2 windowPos = ImGui::GetWindowPos();
+    ImVec2 min = ImGui::GetCursorScreenPos();
+    ImVec2 max(windowPos.x + ImGui::GetContentRegionMax().x, windowPos.y + ImGui::GetContentRegionMax().y);
+
+    if (safe.x > 0.0f)
+      min.x = std::max(min.x, safe.x + edgePadding);
+    if (safe.y > 0.0f)
+      min.y = std::max(min.y, safe.y + edgePadding);
+    if (safe.z > 0.0f)
+      max.x = std::min(max.x, displaySize.x - safe.z - edgePadding);
+    if (safe.w > 0.0f)
+      max.y = std::min(max.y, displaySize.y - safe.w - edgePadding);
+
+    if (max.x <= min.x)
+      max.x = min.x + std::max(80.0f, ImGui::GetContentRegionAvail().x);
+    if (max.y <= min.y)
+      max.y = min.y + std::max(80.0f, ImGui::GetContentRegionAvail().y);
+
+    ImGui::SetCursorScreenPos(min);
+    ImGui::BeginChild(id, ImVec2(max.x - min.x, max.y - min.y), false, ImGuiWindowFlags_NoScrollbar);
+  }
+
   void renderLauncherBusyIndicator(LauncherState const& state) const {
     if (!state.asyncActionRunning)
       return;
@@ -1250,14 +1300,30 @@ private:
     ImGui::Text("%c %s", frames[frame], label.utf8Ptr());
   }
 
-  void beginLauncherScrollArea(char const* id, LauncherState const& state) const {
-    float reservedFooterHeight = 0.0f;
+  void renderLauncherStatusText(LauncherState const& state) const {
+    if (state.lastStatus.empty() && state.lastError.empty())
+      return;
+
+    ImGui::Separator();
     if (!state.lastStatus.empty())
-      reservedFooterHeight += ImGui::GetTextLineHeightWithSpacing();
-    if (!state.lastError.empty())
-      reservedFooterHeight += ImGui::GetTextLineHeightWithSpacing();
-    if (reservedFooterHeight > 0.0f)
-      reservedFooterHeight += ImGui::GetStyle().ItemSpacing.y;
+      ImGui::TextWrapped("%s: %s", launcherText("common.status", "Status").utf8Ptr(), state.lastStatus.utf8Ptr());
+    if (!state.lastError.empty()) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+      ImGui::TextWrapped("%s", state.lastError.utf8Ptr());
+      ImGui::PopStyleColor();
+    }
+  }
+
+  void beginLauncherScrollArea(char const* id, LauncherState const& state, bool reserveFooter = true) const {
+    float reservedFooterHeight = 0.0f;
+    if (reserveFooter) {
+      if (!state.lastStatus.empty())
+        reservedFooterHeight += ImGui::GetTextLineHeightWithSpacing();
+      if (!state.lastError.empty())
+        reservedFooterHeight += ImGui::GetTextLineHeightWithSpacing();
+      if (reservedFooterHeight > 0.0f)
+        reservedFooterHeight += ImGui::GetStyle().ItemSpacing.y;
+    }
 
     float height = std::max(80.0f, ImGui::GetContentRegionAvail().y - reservedFooterHeight);
     ImGui::BeginChild(id, ImVec2(0.0f, height), false, ImGuiWindowFlags_NoScrollbar);
@@ -2441,14 +2507,13 @@ private:
     ImGui::NewFrame();
 
     ImVec2 displaySize = imguiDisplaySize();
-    float margin = std::max(10.0f, std::min(displaySize.x, displaySize.y) * 0.0125f);
-    ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(displaySize.x - margin * 2.0f, displaySize.y - margin * 2.0f), ImGuiCond_Always);
+    setNextLauncherWindowRect(displaySize);
     ImGui::Begin(
       launcherText("launcher.title", "OpenStarbound Mobile Loader").utf8Ptr(),
       nullptr,
       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar
     );
+    beginLauncherContentArea("LauncherContent", displaySize);
 
     auto runLauncherAction = [this, &state](String const& actionName, std::function<void()> const& fn) {
       try {
@@ -2848,7 +2913,7 @@ private:
       }
       ImGui::EndChild();
     } else {
-      beginLauncherScrollArea("LauncherMainScroll", state);
+      beginLauncherScrollArea("LauncherMainScroll", state, false);
 
       ImGui::TextWrapped("%s", launcherText("launcher.configureHint", "Configure assets and controls before launching.").utf8Ptr());
       ImGui::Separator();
@@ -2969,6 +3034,7 @@ private:
           launchPressed = true;
       }
 
+      renderLauncherStatusText(state);
       ImGui::EndChild();
     }
 
@@ -2979,11 +3045,10 @@ private:
     if (!mainLauncherOpen || state.asyncActionRunning || !state.canLaunch || m_activeGamepadName.empty())
       resetLauncherQuickStart();
 
-    if (!state.lastStatus.empty())
-      ImGui::Text("%s: %s", launcherText("common.status", "Status").utf8Ptr(), state.lastStatus.utf8Ptr());
-    if (!state.lastError.empty())
-      ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", state.lastError.utf8Ptr());
+    if (!mainLauncherOpen)
+      renderLauncherStatusText(state);
 
+    ImGui::EndChild();
     ImGui::End();
 
     if (state.touchPreviewOpen)
@@ -3293,17 +3358,17 @@ private:
     ImGui::NewFrame();
 
     ImVec2 displaySize = imguiDisplaySize();
-    float margin = std::max(10.0f, std::min(displaySize.x, displaySize.y) * 0.0125f);
-    ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(displaySize.x - margin * 2.0f, displaySize.y - margin * 2.0f), ImGuiCond_Always);
+    setNextLauncherWindowRect(displaySize);
     ImGui::Begin(
       launcherText("launcher.title", "OpenStarbound Mobile Loader").utf8Ptr(),
       nullptr,
       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar
     );
+    beginLauncherContentArea("StartupContent", displaySize, true);
     ImGui::TextWrapped("%s", status.utf8Ptr());
     ImGui::Separator();
     ImGui::TextWrapped("%s", launcherText("launcher.loadingHint", "Please wait. Assets and configuration are loading.").utf8Ptr());
+    ImGui::EndChild();
     ImGui::End();
 
     ImGui::Render();
