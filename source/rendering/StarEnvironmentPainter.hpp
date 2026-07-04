@@ -49,13 +49,14 @@ private:
 
   void drawRays(float pixelRatio, SkyRenderData const& sky, Vec2F start, float length, double time, float alpha);
   void drawRay(float pixelRatio,
-      SkyRenderData const& sky,
       Vec2F start,
       float width,
       float length,
       float angle,
       double time,
-      Vec3B color,
+      Vec3B rayColor,
+      float sum,
+      float sunScale,
       float alpha);
   void drawOrbiter(float pixelRatio, Vec2F const& screenSize, SkyRenderData const& sky, SkyOrbiter const& orbiter);
 

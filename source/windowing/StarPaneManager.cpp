@@ -300,12 +300,21 @@ void PaneManager::render() {
     m_backgroundWidget->render(RectI(Vec2I(), windowSize()));
   }
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  static StringMap<int64_t> s_pmPerType;
-  static int s_paneCount = 0;
-  static int64_t s_pmFrames = 0, s_pmTotalUs = 0;
-  int s_thisFrameCount = 0;
-#endif
+  // Self-measured frame pacing: only engage the pane replay cache when this
+  // run is actually below ~20fps (same adaptive pattern as WorldClient's
+  // entity render throttle). A machine with headroom renders every pane
+  // fresh every frame, exactly as before.
+  ++m_paneRenderFrame;
+  int64_t nowUs = Time::monotonicMicroseconds();
+  int64_t gapUs = m_lastRenderTimeUs != 0 ? nowUs - m_lastRenderTimeUs : 0;
+  bool underLoad = gapUs > 50000;
+  int64_t replayInterval = gapUs > 75000 ? 4 : 3;
+  m_lastRenderTimeUs = nowUs;
+  // Periodic sweep so recordings for dismissed panes don't accumulate.
+  if (m_paneRenderFrame % 300 == 0)
+    m_paneRenderCache.clear();
+  auto const& renderer = m_context->renderer();
+
   for (auto const& layerPair : reverseIterate(m_displayedPanes)) {
     for (auto const& panePair : reverseIterate(layerPair.second)) {
       if (panePair.first->active()) {
@@ -314,30 +323,27 @@ void PaneManager::render() {
               calculateNewInterfacePosition(panePair.first, (float)m_context->interfaceScale() / m_prevInterfaceScale));
 
         panePair.first->setDrawingOffset(calculatePaneOffset(panePair.first));
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-        int64_t paneStart = Time::monotonicMicroseconds();
-#endif
-        panePair.first->render(RectI(Vec2I(), windowSize()));
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-        int64_t paneUs = Time::monotonicMicroseconds() - paneStart;
-        s_pmTotalUs += paneUs;
-        ++s_thisFrameCount;
-        s_pmPerType[typeid(*panePair.first).name()] += paneUs;
-#endif
+        bool replayed = false;
+        if (underLoad) {
+          Pane* paneKey = panePair.first.get();
+          if (auto cached = m_paneRenderCache.ptr(paneKey)) {
+            if (m_paneRenderFrame - cached->frame < replayInterval) {
+              renderer->playPrimitiveRecording(cached->segments);
+              replayed = true;
+            }
+          }
+          if (!replayed) {
+            bool recording = renderer->beginPrimitiveRecording();
+            panePair.first->render(RectI(Vec2I(), windowSize()));
+            if (recording)
+              m_paneRenderCache[paneKey] = PaneRenderRecording{renderer->endPrimitiveRecording(), m_paneRenderFrame};
+          }
+        } else {
+          panePair.first->render(RectI(Vec2I(), windowSize()));
+        }
       }
     }
   }
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  s_paneCount = s_thisFrameCount;
-  if (++s_pmFrames >= 120) {
-    String breakdown;
-    for (auto const& p : s_pmPerType)
-      breakdown += strf(" {}={}us", p.first, p.second / s_pmFrames);
-    Logger::info("[perf-pm] panesDisplayed={} totalPaneRender={}us/frame |{}",
-        s_paneCount, s_pmTotalUs / s_pmFrames, breakdown);
-    s_pmPerType.clear(); s_pmTotalUs = 0; s_pmFrames = 0;
-  }
-#endif
 
   m_context->resetInterfaceScissorRect();
   drawUiSelection();
@@ -394,12 +400,29 @@ void PaneManager::update(float dt) {
     }
   }
 
-  for (auto const& layerPair : reverseIterate(m_displayedPanes)) {
-    for (auto const& panePair : reverseIterate(layerPair.second)) {
-      panePair.first->tick(dt);
-      if (panePair.first->active())
-        panePair.first->update(dt);
+  // Under-load pane UPDATE throttle, companion to the render replay cache:
+  // pane update() calls (widget-tree state refresh -- e.g. TeamBar rebuilds
+  // its member list every call) cost ~4ms/frame. When this run is measurably
+  // struggling (same 50ms heuristic as everywhere else) run them every 2nd
+  // call, passing the ACCUMULATED dt so GameTimers and animations inside
+  // panes stay wall-clock correct, just at half refresh granularity. tick()
+  // (dismissal bookkeeping) stays per-frame -- it's cheap and dismissal
+  // latency is user-visible.
+  {
+    int64_t nowUs = Time::monotonicMicroseconds();
+    bool updateUnderLoad = m_lastUpdateTimeUs != 0 && (nowUs - m_lastUpdateTimeUs) > 50000;
+    m_lastUpdateTimeUs = nowUs;
+    m_pendingUpdateDt += dt;
+    bool runUpdates = !updateUnderLoad || (++m_updateCounter % 2 == 0);
+    for (auto const& layerPair : reverseIterate(m_displayedPanes)) {
+      for (auto const& panePair : reverseIterate(layerPair.second)) {
+        panePair.first->tick(dt);
+        if (runUpdates && panePair.first->active())
+          panePair.first->update(m_pendingUpdateDt);
+      }
     }
+    if (runUpdates)
+      m_pendingUpdateDt = 0.0f;
   }
 
   clearInvalidUiSelection();

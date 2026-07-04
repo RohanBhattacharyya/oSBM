@@ -329,6 +329,7 @@ OpenGlRenderer::GlFrameBuffer::GlFrameBuffer(Json const& fbConfig) : config(fbCo
 
   sizeDiv = config.getUInt("sizeDiv", 1);
   sizeMul = config.getFloat("sizeMul", 1.0f);
+  preserve = config.getBool("preserve", false);
   Vec2U size = framebufferTextureSize(jsonToVec2U(config.getArray("size", { 256, 256 })), sizeDiv, sizeMul);
 
   if (multisample)
@@ -710,11 +711,48 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
   return true;
 }
 
+bool OpenGlRenderer::switchFrameBuffer(String const& id) {
+  auto ptr = m_frameBuffers.ptr(id);
+  if (!ptr)
+    return false;
+  if (m_currentFrameBuffer == *ptr)
+    return true;
+  flushImmediatePrimitives();
+  switchGlFrameBuffer(*ptr);
+  // Same viewport rule as switchEffectConfig's framebuffer path: the shader
+  // screenSize uniform keeps the LOGICAL size (vertices are authored in full
+  // screen pixels), only the physical viewport shrinks by sizeDiv/sizeMul, so
+  // the same view rasterizes into fewer pixels.
+  Vec2U fbViewport = framebufferTextureSize(m_screenSize, (*ptr)->sizeDiv, (*ptr)->sizeMul);
+  glViewport(0, 0, fbViewport[0], fbViewport[1]);
+  return true;
+}
+
+void OpenGlRenderer::blitFrameBufferToCurrent(String const& id) {
+  auto ptr = m_frameBuffers.ptr(id);
+  if (!ptr || !m_currentFrameBuffer)
+    return;
+  flushImmediatePrimitives();
+  Vec2U srcSize = framebufferTextureSize(m_screenSize, (*ptr)->sizeDiv, (*ptr)->sizeMul);
+  Vec2U dstSize = framebufferTextureSize(m_screenSize, m_currentFrameBuffer->sizeDiv, m_currentFrameBuffer->sizeMul);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, (*ptr)->id);
+  glBlitFramebuffer(
+    0, 0, srcSize[0], srcSize[1],
+    0, 0, dstSize[0], dstSize[1],
+    GL_COLOR_BUFFER_BIT, srcSize == dstSize ? GL_NEAREST : GL_LINEAR
+  );
+}
+
 void OpenGlRenderer::setScissorRect(Maybe<RectI> const& scissorRect) {
   if (scissorRect == m_scissorRect)
     return;
 
   flushImmediatePrimitives();
+
+  // Scissor state changed mid-recording: primitives submitted from here on
+  // belong to a new segment carrying the new scissor state.
+  if (m_recording)
+    m_recordingSegments.append(RecordedSegment{scissorRect, {}});
 
   m_scissorRect = scissorRect;
   if (m_scissorRect) {
@@ -835,17 +873,6 @@ void OpenGlRenderer::setScreenViewportSize(Vec2U viewportSize) {
   glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
 }
 
-namespace {
-  // Lightweight per-frame draw-call instrumentation. glDrawArrays count and
-  // immediate-flush count are the metrics that reveal whether the in-world frame
-  // is draw-call bound (the suspected cause of the slow mobile/Switch frames).
-  int64_t g_glDrawCalls = 0;
-  int64_t g_glImmediateFlushes = 0;
-  int64_t g_glAccumDraws = 0;
-  int64_t g_glAccumFlushes = 0;
-  int64_t g_glAccumFrames = 0;
-}
-
 void OpenGlRenderer::startFrame() {
   if (m_scissorRect)
     glDisable(GL_SCISSOR_TEST);
@@ -853,8 +880,10 @@ void OpenGlRenderer::startFrame() {
   glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
 
   for (auto& frameBuffer : m_frameBuffers) {
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer.second->id);
-    glClear(GL_COLOR_BUFFER_BIT);
+    if (!frameBuffer.second->preserve) {
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer.second->id);
+      glClear(GL_COLOR_BUFFER_BIT);
+    }
     frameBuffer.second->blitted = false;
   }
 
@@ -868,33 +897,33 @@ void OpenGlRenderer::startFrame() {
 
 void OpenGlRenderer::finishFrame() {
   flushImmediatePrimitives();
-  // Make sure that the immediate render buffer doesn't needlessly lock texutres
-  // from being compressed.
-  List<RenderPrimitive> empty;
-  m_immediateRenderBuffer->set(empty);
 
-  g_glAccumDraws += g_glDrawCalls;
-  g_glAccumFlushes += g_glImmediateFlushes;
-  if (++g_glAccumFrames >= 120) {
-    Logger::info("[perf-gl] avg draws/frame={} immediateFlushes/frame={}",
-        g_glAccumDraws / g_glAccumFrames, g_glAccumFlushes / g_glAccumFrames);
-    g_glAccumDraws = 0;
-    g_glAccumFlushes = 0;
-    g_glAccumFrames = 0;
+  // Atlas compression is pure memory housekeeping (defragmenting atlas
+  // pages), but each pass SCANS every texture in the group -- measured at
+  // several ms/frame with a full world's sprite set loaded. Run it on a
+  // fraction of frames; a few frames of defrag latency is invisible.
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  static unsigned s_compressionCounter = 0;
+  bool runCompression = (++s_compressionCounter % 8) == 0;
+#else
+  bool runCompression = true;
+#endif
+  if (runCompression) {
+    // Make sure that the immediate render buffer doesn't needlessly lock
+    // textures from being compressed (only matters when compression runs).
+    List<RenderPrimitive> empty;
+    m_immediateRenderBuffer->set(empty);
+    filter(m_liveTextureGroups, [](auto const& p) {
+          unsigned const CompressionsPerFrame = 1;
+
+          if (!p.unique() || p->textureAtlasSet.totalTextures() > 0) {
+            p->textureAtlasSet.compressionPass(CompressionsPerFrame);
+            return true;
+          }
+
+          return false;
+        });
   }
-  g_glDrawCalls = 0;
-  g_glImmediateFlushes = 0;
-
-  filter(m_liveTextureGroups, [](auto const& p) {
-        unsigned const CompressionsPerFrame = 1;
-
-        if (!p.unique() || p->textureAtlasSet.totalTextures() > 0) {
-          p->textureAtlasSet.compressionPass(CompressionsPerFrame);
-          return true;
-        }
-
-        return false;
-      });
 
   // Blit if another shader hasn't
   glBindFramebuffer(GL_FRAMEBUFFER, m_screenFbo);
@@ -1260,10 +1289,47 @@ void OpenGlRenderer::flushImmediatePrimitives(Mat3F const& transformation) {
   if (m_immediatePrimitives.empty())
     return;
 
-  ++g_glImmediateFlushes;
+  // Recording pass copies everything into the current segment while STILL
+  // drawing normally below -- the recorded frame renders identically.
+  if (m_recording && !m_recordingSegments.empty())
+    m_recordingSegments.last().primitives.appendAll(m_immediatePrimitives);
+
   m_immediateRenderBuffer->set(m_immediatePrimitives);
   m_immediatePrimitives.resize(0);
   renderGlBuffer(*m_immediateRenderBuffer, transformation);
+}
+
+bool OpenGlRenderer::beginPrimitiveRecording() {
+  if (m_recording)
+    return false;
+  flushImmediatePrimitives();
+  m_recording = true;
+  m_recordingSegments.clear();
+  m_recordingSegments.append(RecordedSegment{m_scissorRect, {}});
+  return true;
+}
+
+List<Renderer::RecordedSegment> OpenGlRenderer::endPrimitiveRecording() {
+  if (!m_recording)
+    return {};
+  flushImmediatePrimitives();
+  m_recording = false;
+  // Scissor changes with no primitives under them (widget-tree walks set the
+  // scissor for every widget, drawn or not) would replay as pointless
+  // flush-inducing state changes; drop them.
+  filter(m_recordingSegments, [](RecordedSegment const& segment) {
+      return !segment.primitives.empty();
+    });
+  return std::move(m_recordingSegments);
+}
+
+void OpenGlRenderer::playPrimitiveRecording(List<RecordedSegment> const& recording) {
+  for (auto const& segment : recording) {
+    // setScissorRect flushes pending primitives itself when the scissor
+    // actually changes, preserving the recorded draw grouping/order.
+    setScissorRect(segment.scissor);
+    m_immediatePrimitives.appendAll(segment.primitives);
+  }
 }
 
 auto OpenGlRenderer::createGlTexture(ImageView const& image, TextureAddressing addressing, TextureFiltering filtering)
@@ -1336,7 +1402,6 @@ void OpenGlRenderer::renderGlBuffer(GlRenderBuffer const& renderBuffer, Mat3F co
     glVertexAttribIPointer(m_dataAttribute, 1, GL_INT, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, pack));
 
     glDrawArrays(GL_TRIANGLES, 0, vb.vertexCount);
-    ++g_glDrawCalls;
   }
 }
 

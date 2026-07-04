@@ -37,21 +37,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
-
-#if defined(STAR_SYSTEM_ANDROID)
-#include <android/log.h>
-#define STAR_ANDROID_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "OpenStarbound", __VA_ARGS__)
-#elif defined(STAR_SYSTEM_IOS)
-#define STAR_ANDROID_LOGI(...) do { \
-  std::fprintf(stderr, "[OpenStarbound] "); \
-  std::fprintf(stderr, __VA_ARGS__); \
-  std::fprintf(stderr, "\n"); \
-  std::fflush(stderr); \
-} while (false)
-#else
-#define STAR_ANDROID_LOGI(...)
-#endif
 
 #if defined STAR_SYSTEM_WINDOWS
 #include <windows.h>
@@ -216,34 +201,92 @@ void ClientApplication::startup(StringList const& cmdLineArgs) {
 
 #if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
   setMobileStartupStatus("Opening asset index...");
-  STAR_ANDROID_LOGI("startup: preloading assets/config begin");
   auto assets = m_root->assets();
   setMobileStartupStatus("Loading interface scale configuration...");
-  STAR_ANDROID_LOGI("startup: assets handle ready");
   m_minInterfaceScale = assets->json("/interface.config:minInterfaceScale").toFloat();
-  STAR_ANDROID_LOGI("startup: minInterfaceScale ready");
   m_maxInterfaceScale = assets->json("/interface.config:maxInterfaceScale").toFloat();
-  STAR_ANDROID_LOGI("startup: maxInterfaceScale ready");
   m_crossoverRes = jsonToVec2F(assets->json("/interface.config:interfaceCrossoverRes"));
-  STAR_ANDROID_LOGI("startup: crossoverRes ready");
   setMobileStartupStatus("Loading client configuration...");
   m_windowTitle = assets->json("/client.config:windowTitle").toString();
-  STAR_ANDROID_LOGI("startup: windowTitle ready");
   m_maxFrameSkipSetting = assets->json("/client.config:maxFrameSkip").toUInt();
-  STAR_ANDROID_LOGI("startup: maxFrameSkip ready");
   m_updateTrackWindowSetting = assets->json("/client.config:updateTrackWindow").toFloat();
-  STAR_ANDROID_LOGI("startup: updateTrackWindow ready");
   m_assetsBootstrapReady = true;
   setMobileStartupStatus("Finished loading assets and configuration...");
-  STAR_ANDROID_LOGI("startup: preloading assets/config done");
 #endif
 
   Logger::info("OpenStarbound Client v{} for v{} ({}) Source ID: {} Protocol: {}", OpenStarVersionString, StarVersionString, StarArchitectureString, StarSourceIdentifierString, StarProtocolVersion);
 }
 
+#ifdef STAR_SYSTEM_SWITCH
+void ClientApplication::startSimTick() {
+  if (!m_simTickPending)
+    return;
+  m_simTickPending = false;
+  MutexLocker locker(m_simMutex);
+  if (!m_simThread) {
+    m_simThread = Thread::invoke("ClientApplication::simTick", [this]() {
+        MutexLocker locker(m_simMutex);
+        while (true) {
+          m_simCond.wait(m_simMutex, [this]() { return m_simRunRequested || m_simShutdown; });
+          if (m_simShutdown)
+            return;
+          m_simRunRequested = false;
+          locker.unlock();
+          try {
+            m_universeClient->update(m_simTickDt);
+          } catch (...) {
+            m_simException = std::current_exception();
+          }
+          locker.lock();
+          m_simRunning = false;
+          m_simCond.broadcast();
+        }
+      });
+  }
+  m_simRunning = true;
+  m_simRunRequested = true;
+  m_simCond.broadcast();
+}
+
+void ClientApplication::joinSimTick() {
+  // A tick that was deferred but never started (world path skipped this
+  // frame) still has to run, or the sim would silently stall.
+  if (m_simTickPending) {
+    m_simTickPending = false;
+    m_universeClient->update(m_simTickDt);
+    return;
+  }
+  MutexLocker locker(m_simMutex);
+  m_simCond.wait(m_simMutex, [this]() { return !m_simRunning; });
+  if (m_simException) {
+    auto e = m_simException;
+    m_simException = nullptr;
+    std::rethrow_exception(e);
+  }
+}
+
+void ClientApplication::stopSimThread() {
+  {
+    MutexLocker locker(m_simMutex);
+    if (!m_simThread)
+      return;
+    m_simCond.wait(m_simMutex, [this]() { return !m_simRunning; });
+    m_simShutdown = true;
+    m_simCond.broadcast();
+  }
+  m_simThread.finish();
+  m_simThread = {};
+  m_simShutdown = false;
+}
+#endif
+
 void ClientApplication::shutdown() {
   // Clear HTTP trust request callback
   LuaBindings::clearHttpTrustRequestCallback();
+
+#ifdef STAR_SYSTEM_SWITCH
+  stopSimThread();
+#endif
 
   m_mainInterface.reset();
   m_player.reset();
@@ -291,13 +334,8 @@ void ClientApplication::shutdown() {
 }
 
 void ClientApplication::applicationInit(ApplicationControllerPtr appController) {
-  STAR_ANDROID_LOGI("applicationInit: begin");
   Application::applicationInit(appController);
-
-  STAR_ANDROID_LOGI("applicationInit: setCursorVisible");
   appController->setCursorVisible(true);
-
-  STAR_ANDROID_LOGI("applicationInit: read config");
   auto configuration = m_root->configuration();
   bool vsync = configuration->get("vsync").toBool();
   Vec2U windowedSize = jsonToVec2U(configuration->get("windowedResolution"));
@@ -306,8 +344,6 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
   bool borderless = configuration->get("borderless").toBool();
   bool maximized = configuration->get("maximized").toBool();
   m_controllerInput = configuration->get("controllerInput").optBool().value();
-  
-  STAR_ANDROID_LOGI("applicationInit: configure window mode");
   if (fullscreen)
     appController->setFullscreenWindow(fullscreenSize);
   else if (borderless)
@@ -325,49 +361,30 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
 
   if (auto jServerUpdateRate = configuration->get("serverUpdateRate"))
     ServerGlobalTimestep = 1.0f / jServerUpdateRate.toFloat();
-
-  STAR_ANDROID_LOGI("applicationInit: set update/vsync/hardware cursor");
   appController->setTargetUpdateRate(updateRate);
   appController->setVSyncEnabled(vsync);
   appController->setCursorHardware(configuration->get("hardwareCursor").optBool().value(true));
 
   // Must be called before anything that can invoke an asset load.
-  STAR_ANDROID_LOGI("applicationInit: loadMods begin");
   loadMods();
-  STAR_ANDROID_LOGI("applicationInit: loadMods done");
-  
-  STAR_ANDROID_LOGI("applicationInit: enableAudio");
   AudioFormat audioFormat = appController->enableAudio();
-  STAR_ANDROID_LOGI("applicationInit: create MainMixer");
   m_mainMixer = make_shared<MainMixer>(audioFormat.sampleRate, audioFormat.channels);
   m_mainMixer->setVolume(0.5);
-  
-  STAR_ANDROID_LOGI("applicationInit: create GuiContext");
   m_guiContext = make_shared<GuiContext>(m_mainMixer->mixer(), appController);
-  STAR_ANDROID_LOGI("applicationInit: create GuiContext done");
-  STAR_ANDROID_LOGI("applicationInit: create Input");
   m_input = make_shared<Input>();
-  STAR_ANDROID_LOGI("applicationInit: create Input done");
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
-  STAR_ANDROID_LOGI("applicationInit: create Voice");
   m_voice = make_shared<Voice>(appController);
 #else
   m_voice.reset();
 #endif
-
-  STAR_ANDROID_LOGI("applicationInit: read assets + load font");
 #if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
   if (m_assetsBootstrapReady) {
-    STAR_ANDROID_LOGI("applicationInit: apply preloaded settings");
     appController->setApplicationTitle(m_windowTitle);
     appController->setMaxFrameSkip(m_maxFrameSkipSetting);
     appController->setUpdateTrackWindow(m_updateTrackWindowSetting);
-  } else {
-    STAR_ANDROID_LOGI("applicationInit: preloaded settings unavailable, using defaults");
   }
 #else
   auto assets = m_root->assets();
-  STAR_ANDROID_LOGI("applicationInit: assets handle acquired");
   {
     auto& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
@@ -378,19 +395,13 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
     io.Fonts->AddFontFromMemoryTTF(m_immediateFont.ptr(), m_immediateFont.size(),
       16, &config, io.Fonts->GetGlyphRangesDefault());
   }
-
-  STAR_ANDROID_LOGI("applicationInit: load interface config");
   m_minInterfaceScale = assets->json("/interface.config:minInterfaceScale").toFloat();
   m_maxInterfaceScale = assets->json("/interface.config:maxInterfaceScale").toFloat();
   m_crossoverRes = jsonToVec2F(assets->json("/interface.config:interfaceCrossoverRes"));
-  
-  STAR_ANDROID_LOGI("applicationInit: apply app title and frame settings");
   appController->setApplicationTitle(assets->json("/client.config:windowTitle").toString());
   appController->setMaxFrameSkip(assets->json("/client.config:maxFrameSkip").toUInt());
   appController->setUpdateTrackWindow(assets->json("/client.config:updateTrackWindow").toFloat());
 #endif
-  
-  STAR_ANDROID_LOGI("applicationInit: load/init voice settings");
   if (m_voice) {
     if (auto jVoice = configuration->get("voice"))
       m_voice->loadJson(jVoice.toObject(), true);
@@ -398,7 +409,6 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
     m_voice->init();
     m_voice->setLocalSpeaker(0);
   }
-  STAR_ANDROID_LOGI("applicationInit: done");
 }
 
 void ClientApplication::renderInit(RendererPtr renderer) {
@@ -406,9 +416,7 @@ void ClientApplication::renderInit(RendererPtr renderer) {
   Application::renderInit(renderer);
   if (!m_worldPainter) {
     setMobileStartupStatus("Renderer: preparing world painter...");
-    STAR_ANDROID_LOGI("renderInit: create WorldPainter");
     m_worldPainter = make_shared<WorldPainter>();
-    STAR_ANDROID_LOGI("renderInit: create WorldPainter done");
   }
   setMobileStartupStatus("Renderer: loading effects and framebuffers...");
   renderReload();
@@ -547,30 +555,7 @@ void ClientApplication::processInput(InputEvent const& event) {
     m_input->handleInput(event, processed);
 }
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-namespace {
-  // Lightweight cross-mobile (Android / iOS / Switch) frame profiler. Splits
-  // main-thread time between update() (sim/client logic) and render() (geometry
-  // build + draw submit) and logs a rolling average roughly every 2s, so the
-  // in-game bottleneck is visible in starbound.log on real hardware where there
-  // is no debug HUD. Negligible overhead (a couple of clock reads per frame).
-  int64_t g_profUpdateUs = 0;
-  int64_t g_profRenderUs = 0;
-  int64_t g_profUpdateCalls = 0;
-  int64_t g_profFrames = 0;
-  int64_t g_profWindowStartMs = 0;
-  // render() sub-section accumulators (in-world only)
-  int64_t g_profWorldClientUs = 0;  // worldClient->render: builds RenderData (CPU)
-  int64_t g_profWorldPaintUs = 0;   // worldPainter->render: tiles/entities draw + lighting
-  int64_t g_profPostUs = 0;         // full-screen post-process effect passes
-  int64_t g_profInterfaceUs = 0;    // main interface / HUD
-}
-#endif
-
 void ClientApplication::update() {
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  int64_t profStartUs = Time::monotonicMicroseconds();
-#endif
   float dt = GlobalTimestep * GlobalTimescale;
   auto& app = appController();
   if (m_state >= MainAppState::Title) {
@@ -624,16 +609,9 @@ void ClientApplication::update() {
   if (m_input)
     m_input->update();
   ++m_framesSkipped;
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  g_profUpdateUs += Time::monotonicMicroseconds() - profStartUs;
-  ++g_profUpdateCalls;
-#endif
 }
 
 void ClientApplication::render() {
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  int64_t profStartUs = Time::monotonicMicroseconds();
-#endif
   m_framesSkipped = 0;
   auto config = m_root->configuration();
   auto assets = m_root->assets();
@@ -673,12 +651,13 @@ void ClientApplication::render() {
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       auto clientStart = totalStart;
 #endif
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-      int64_t subStart = Time::monotonicMicroseconds();
-#endif
       worldClient->render(m_renderData, TilePainter::BorderTileSize);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-      g_profWorldClientUs += Time::monotonicMicroseconds() - subStart;
+#ifdef STAR_SYSTEM_SWITCH
+      // renderData is now a self-contained snapshot (copied tiles/sky/
+      // particles, shared-immutable entity drawables), so the deferred sim
+      // tick can run on the worker while the GL-only paint below proceeds.
+      if (m_simTickPending)
+        startSimTick();
 #endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       LogMap::set("client_render_world_client", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - clientStart));
@@ -687,23 +666,14 @@ void ClientApplication::render() {
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       auto paintStart = Time::monotonicMicroseconds();
 #endif
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-      subStart = Time::monotonicMicroseconds();
-#endif
       m_worldPainter->render(m_renderData, [&]() -> bool {
         return worldClient->waitForLighting(&m_renderData);
       });
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-      g_profWorldPaintUs += Time::monotonicMicroseconds() - subStart;
-#endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       LogMap::set("client_render_world_painter", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - paintStart));
       LogMap::set("client_render_world_total", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - totalStart));
 #endif
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-      subStart = Time::monotonicMicroseconds();
-#endif
       auto size = Vec2F(renderer->screenSize());
       auto quad = renderFlatRect(RectF::withSize(size / -2, size), Vec4B::filled(0), 0.0f);
       for (auto& layer : m_postProcessLayers) {
@@ -716,23 +686,21 @@ void ClientApplication::render() {
           }
         }
       }
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-      g_profPostUs += Time::monotonicMicroseconds() - subStart;
-#endif
     }
+#ifdef STAR_SYSTEM_SWITCH
+    // The UI below reads live game state (player health, quest state, ...),
+    // so the sim tick must be complete before it renders. If the world path
+    // was skipped this frame (e.g. state changed between update and render),
+    // this also runs the still-pending tick synchronously so it never drops.
+    joinSimTick();
+#endif
     renderer->switchEffectConfig("interface");
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     auto start = Time::monotonicMicroseconds();
 #endif
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-    int64_t ifaceStart = Time::monotonicMicroseconds();
-#endif
     m_mainInterface->renderInWorldElements();
     m_mainInterface->render();
     m_cinematicOverlay->render();
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-    g_profInterfaceUs += Time::monotonicMicroseconds() - ifaceStart;
-#endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     LogMap::set("client_render_interface", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - start));
 #endif
@@ -741,35 +709,6 @@ void ClientApplication::render() {
   if (!m_errorScreen->accepted())
     m_errorScreen->render();
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  g_profRenderUs += Time::monotonicMicroseconds() - profStartUs;
-  ++g_profFrames;
-  int64_t nowMs = Time::monotonicMilliseconds();
-  if (g_profWindowStartMs == 0)
-    g_profWindowStartMs = nowMs;
-  int64_t elapsedMs = nowMs - g_profWindowStartMs;
-  if (elapsedMs >= 2000 && g_profFrames > 0) {
-    double fps = g_profFrames * 1000.0 / (double)elapsedMs;
-    int64_t updateMsPerSec = g_profUpdateUs / (elapsedMs > 0 ? elapsedMs : 1);
-    int64_t renderMsPerSec = g_profRenderUs / (elapsedMs > 0 ? elapsedMs : 1);
-    int64_t usPerUpdate = g_profUpdateCalls > 0 ? g_profUpdateUs / g_profUpdateCalls : 0;
-    int64_t usPerFrame = g_profRenderUs / g_profFrames;
-    Logger::info("[perf] fps={:4.1f} | update {}ms/s ({}us/call) | render {}ms/s ({}us/frame) "
-        "[worldClient {}us paint {}us post {}us iface {}us]/frame",
-        fps, updateMsPerSec, usPerUpdate, renderMsPerSec, usPerFrame,
-        g_profWorldClientUs / g_profFrames, g_profWorldPaintUs / g_profFrames,
-        g_profPostUs / g_profFrames, g_profInterfaceUs / g_profFrames);
-    g_profUpdateUs = 0;
-    g_profRenderUs = 0;
-    g_profUpdateCalls = 0;
-    g_profFrames = 0;
-    g_profWorldClientUs = 0;
-    g_profWorldPaintUs = 0;
-    g_profPostUs = 0;
-    g_profInterfaceUs = 0;
-    g_profWindowStartMs = nowMs;
-  }
-#endif
 }
 
 void ClientApplication::getAudioData(int16_t* sampleData, size_t frameCount) {
@@ -816,6 +755,24 @@ void ClientApplication::renderReload() {
   // testing at 0.66 and 0.4 showed the in-world render is CPU-bound (primitive
   // building), NOT GPU fill-rate -- only the planet horizon (~6ms) scaled with
   // resolution, so it is left at full res (no quality cost for negligible gain).
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  // The same render-scale testing DID show the environment background (sky
+  // gradient, sun + rays, planet horizon, stars, debris) scales ~linearly with
+  // resolution -- it's fill-rate, ~19-26ms/frame of the mobile GPU budget in
+  // every scene. That content is all low-frequency (gradients, glows, distant
+  // sprites), so WorldPainter draws it into this quarter-pixel-count buffer
+  // and stretch-blits it under the full-resolution world layers; the upscale
+  // is not visually distinguishable for such content, unlike the world layer
+  // (crisp pixel-art tiles/entities) which stays full-res.
+  {
+    // "preserve": WorldPainter refreshes this buffer only every 2nd frame
+    // under load and re-blits the previous contents in between, so it must
+    // survive across frames (it's fully overdrawn by the sky on refresh).
+    auto frameBuffers = openglConfig.get("frameBuffers").set("background",
+        JsonObject{{"sizeMul", Json(0.5)}, {"preserve", Json(true)}});
+    openglConfig = openglConfig.set("frameBuffers", frameBuffers);
+  }
+#endif
   renderer->loadConfig(openglConfig);
   
   loadEffectConfig("world");
@@ -1335,7 +1292,6 @@ void ClientApplication::updateTitle(float dt) {
         && m_playerStorage && m_playerStorage->playerUuidAt(0)
         && File::isFile("/switch/oSBM/autopilot.flag")) {
       s_autopilotStarted = true;
-      Logger::info("[autopilot] sentinel present; auto-starting single player with first character");
       changeState(MainAppState::SinglePlayer);
     }
   }
@@ -1396,11 +1352,19 @@ void ClientApplication::updateRunning(float dt) {
     // yet, so canBeamDown() never returns true for them, but the server resolves
     // OrbitedWorld from orbitWarpAction() regardless of those UI-only checks.
     {
-      static bool s_autoBeamedDown = false;
-      if (!s_autoBeamedDown && m_mainInterface && File::isFile("/switch/oSBM/autopilot.flag")
-          && !m_universeClient->flying() && m_universeClient->clientContext()->orbitWarpAction()) {
-        s_autoBeamedDown = true;
-        Logger::info("[autopilot] orbitWarpAction present and not flying; auto-warping to orbited world surface");
+      // Re-armable (not one-shot): if the player ends up back on the SHIP
+      // (e.g. died on the surface and respawned) during an unattended soak
+      // run, beam down again after a cooldown so the run keeps measuring the
+      // planet-surface scene instead of idling in orbit forever.
+      static double s_lastAutoBeam = 0;
+      double nowSecs = Time::monotonicTime();
+      // Cheap in-memory checks first: File::isFile is an emulated fs stat on
+      // Switch and this runs every update tick once the cooldown has expired.
+      if (m_mainInterface && (nowSecs - s_lastAutoBeam > 60.0)
+          && m_universeClient->playerWorld().is<ClientShipWorldId>()
+          && !m_universeClient->flying() && m_universeClient->clientContext()->orbitWarpAction()
+          && File::isFile("/switch/oSBM/autopilot.flag")) {
+        s_lastAutoBeam = nowSecs;
         m_universeClient->warpPlayer(WarpAlias::OrbitedWorld, true, "beam");
       }
     }
@@ -1621,25 +1585,30 @@ void ClientApplication::updateRunning(float dt) {
     if (checkDisconnection())
       return;
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-    static int64_t s_urUc=0, s_urPainter=0, s_urRest=0, s_urIface=0, s_urMixer=0, s_urFrames=0;
-    int64_t urT = Time::monotonicMicroseconds();
-    auto urLap = [&urT](int64_t& a){ int64_t n=Time::monotonicMicroseconds(); a+=n-urT; urT=n; };
-#endif
     m_mainInterface->preUpdate(dt);
+#ifdef STAR_SYSTEM_SWITCH
+    // Overlapped sim pipeline: instead of running the (~20-25ms) sim tick
+    // here, defer it so render() can run it on the sim worker thread
+    // CONCURRENTLY with world painting (pure GL from immutable renderData
+    // snapshots). Everything below in this function then reads the previous
+    // tick's state -- one fixed tick of extra latency for the camera/HUD
+    // data, in exchange for the sim tick disappearing from the critical
+    // path. Deferral only happens when the world render path is guaranteed
+    // to run (in-world); otherwise the tick runs synchronously as before.
+    if (worldClient && m_state > MainAppState::Title) {
+      m_simTickDt = dt;
+      m_simTickPending = true;
+    } else {
+      m_universeClient->update(dt);
+    }
+#else
     m_universeClient->update(dt);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-    urLap(s_urUc);
 #endif
-
     if (checkDisconnection())
       return;
 
     if (worldClient) {
       m_worldPainter->update(dt);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-      urLap(s_urPainter);
-#endif
       auto& broadcastCallback = worldClient->broadcastCallback();
       if (!broadcastCallback) {
         broadcastCallback = [&](PlayerPtr player, StringView broadcast) -> bool {
@@ -1682,23 +1651,9 @@ void ClientApplication::updateRunning(float dt) {
     updateCamera(dt);
 
     m_cinematicOverlay->update(dt);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-    urLap(s_urRest);
-#endif
     m_mainInterface->update(dt);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-    urLap(s_urIface);
-#endif
     m_mainMixer->update(dt, m_cinematicOverlay->muteSfx(), m_cinematicOverlay->muteMusic());
     m_mainMixer->setSpeed(GlobalTimescale);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-    urLap(s_urMixer);
-    if (++s_urFrames >= 120) {
-      Logger::info("[perf-ur] universeClient={}us worldPainter={}us camera+cine={}us mainInterface={}us mixer={}us (avg/tick)",
-          s_urUc/s_urFrames, s_urPainter/s_urFrames, s_urRest/s_urFrames, s_urIface/s_urFrames, s_urMixer/s_urFrames);
-      s_urUc=s_urPainter=s_urRest=s_urIface=s_urMixer=0; s_urFrames=0;
-    }
-#endif
 
     bool inputActive = m_mainInterface->textInputActive();
     if (m_input)

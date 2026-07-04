@@ -740,7 +740,10 @@ void Plant::update(float dt, uint64_t) {
 }
 
 void Plant::render(RenderCallback* renderCallback) {
-  float damageXOffset = Random::randf(-0.1f, 0.1f) * m_tileDamageStatus.damageEffectPercentage();
+  // Undamaged plants (the overwhelmingly common case) always get a zero
+  // offset; skip the per-frame global RNG draw for them.
+  float damageEffect = m_tileDamageStatus.damageEffectPercentage();
+  float damageXOffset = damageEffect != 0.0f ? Random::randf(-0.1f, 0.1f) * damageEffect : 0.0f;
 
   for (auto const& plantPiece : m_pieces) {
     auto size = Vec2F(plantPiece.imageSize) / TilePixels;

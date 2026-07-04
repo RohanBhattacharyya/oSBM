@@ -102,6 +102,12 @@ public:
   void setScissorRect(Maybe<RectI> const& scissorRect) override;
 
   bool switchEffectConfig(String const& name) override;
+  bool switchFrameBuffer(String const& id) override;
+  void blitFrameBufferToCurrent(String const& id) override;
+
+  bool beginPrimitiveRecording() override;
+  List<RecordedSegment> endPrimitiveRecording() override;
+  void playPrimitiveRecording(List<RecordedSegment> const& recording) override;
 
   TexturePtr createTexture(Image const& texture, TextureAddressing addressing, TextureFiltering filtering) override;
   void setSizeLimitEnabled(bool enabled) override;
@@ -274,6 +280,11 @@ private:
     // resolution and upscale on blit). Used to relieve fill-rate-bound scenes; sizeDiv
     // is integer-only so this gives finer control. Applied on top of sizeDiv.
     float sizeMul = 1.0f;
+    // Don't clear this framebuffer at startFrame: its contents are reused
+    // across frames (e.g. the world background buffer, re-blitted on frames
+    // that skip re-rendering it). Content must be fully overdrawn whenever it
+    // IS re-rendered.
+    bool preserve = false;
 
     GlFrameBuffer(Json const& config);
     ~GlFrameBuffer();
@@ -347,6 +358,10 @@ private:
   List<shared_ptr<GlTextureGroup>> m_liveTextureGroups;
 
   List<RenderPrimitive> m_immediatePrimitives;
+
+  // Primitive record/replay state (see Renderer::beginPrimitiveRecording).
+  bool m_recording = false;
+  List<RecordedSegment> m_recordingSegments;
   shared_ptr<GlRenderBuffer> m_immediateRenderBuffer;
 };
 

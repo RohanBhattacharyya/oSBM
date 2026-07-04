@@ -334,6 +334,28 @@ void EnvironmentPainter::renderParallaxLayers(
 
     float lightMapMultiplier = (!layer.unlit && layer.lightMapped) ? 1.0f : 0.0f;
 
+    // Resolve this layer's textures ONCE per frame: the AssetPath build
+    // (string copy + directives concat + full-path hash for the texture-map
+    // lookup) and the animation-frame selection depend only on the layer and
+    // the frame time, but used to run inside the x/y screen-tiling loops --
+    // dozens of redundant heap-allocating path constructions per layer per
+    // frame. Iterating the same resolved textures in the same order keeps the
+    // emitted quads byte-identical.
+    List<TexturePtr> resolvedTextures;
+    for (auto const& textureImage : layer.textures) {
+      AssetPath withDirectives = textureImage;
+      withDirectives.directives += layer.directives;
+      if (layer.frameNumber > 1) {
+        float time_within_cycle = (float)fmod(sky.epochTime, (double)layer.animationCycle);
+        float time_per_frame = layer.animationCycle / layer.frameNumber;
+        float frame_number = time_within_cycle / time_per_frame;
+        int frame = (layer.frameOffset + clamp<int>(frame_number, 0, layer.frameNumber - 1)) % layer.frameNumber;
+        withDirectives.subPath.emplace(toString(frame));
+      }
+      if (auto texture = m_textureGroup->tryTexture(withDirectives))
+        resolvedTextures.append(std::move(texture));
+    }
+
     for (int y = bottom; y <= top; ++y) {
       if (!(parallaxRepeat[1] || y == 0) || y > tileLimitTop || y + 1 < tileLimitBottom)
         continue;
@@ -351,24 +373,13 @@ void EnvironmentPainter::renderParallaxLayers(
         if (tileLimitBottom != bottom && y < tileLimitBottom)
           anchorPoint[1] += fpart(tileLimitBottom) * parallaxPixels[1];
 
-        for (auto const& textureImage : layer.textures) {
-          AssetPath withDirectives = textureImage;
-          withDirectives.directives += layer.directives;
-          if (layer.frameNumber > 1) {
-            float time_within_cycle = (float)fmod(sky.epochTime, (double)layer.animationCycle);
-            float time_per_frame = layer.animationCycle / layer.frameNumber;
-            float frame_number = time_within_cycle / time_per_frame;
-            int frame = (layer.frameOffset + clamp<int>(frame_number, 0, layer.frameNumber - 1)) % layer.frameNumber;
-            withDirectives.subPath.emplace(toString(frame));
-          }
-          if (auto texture = m_textureGroup->tryTexture(withDirectives)) {
-            RectF drawRect = RectF::withSize(anchorPoint, subImage.size() * camera.pixelRatio());
-            primitives.emplace_back(std::in_place_type_t<RenderQuad>(), std::move(texture),
-                RenderVertex{drawRect.min(), subImage.min(), drawColor, lightMapMultiplier},
-                RenderVertex{{drawRect.xMax(), drawRect.yMin()}, {subImage.xMax(), subImage.yMin()}, drawColor, lightMapMultiplier},
-                RenderVertex{drawRect.max(), subImage.max(), drawColor, lightMapMultiplier},
-                RenderVertex{{drawRect.xMin(), drawRect.yMax()}, {subImage.xMin(), subImage.yMax()}, drawColor, lightMapMultiplier});
-          }
+        for (auto const& texture : resolvedTextures) {
+          RectF drawRect = RectF::withSize(anchorPoint, subImage.size() * camera.pixelRatio());
+          primitives.emplace_back(std::in_place_type_t<RenderQuad>(), texture,
+              RenderVertex{drawRect.min(), subImage.min(), drawColor, lightMapMultiplier},
+              RenderVertex{{drawRect.xMax(), drawRect.yMin()}, {subImage.xMax(), subImage.yMin()}, drawColor, lightMapMultiplier},
+              RenderVertex{drawRect.max(), subImage.max(), drawColor, lightMapMultiplier},
+              RenderVertex{{drawRect.xMin(), drawRect.yMax()}, {subImage.xMin(), subImage.yMax()}, drawColor, lightMapMultiplier});
         }
       }
     }
@@ -395,38 +406,15 @@ void EnvironmentPainter::drawRays(
   float sectorWidth = 2 * Constants::pi / rayCount; // Radians
   Vec3B color = sky.topRectColor.toRgb();
 
-  for (int i = 0; i < rayCount; i++)
-    drawRay(pixelRatio,
-        sky,
-        start,
-        sectorWidth * (std::abs(m_rayPerlin.get(i * 25)) * RayWidthVariance + RayMinWidth),
-        length,
-        i * sectorWidth + m_rayPerlin.get(i * 314) * RayAngleVariance,
-        time,
-        color,
-        alpha);
-
-  m_renderer->flush();
-}
-
-void EnvironmentPainter::drawRay(float pixelRatio,
-    SkyRenderData const& sky,
-    Vec2F start,
-    float width,
-    float length,
-    float angle,
-    double time,
-    Vec3B color,
-    float alpha) {
-  // All magic constants are arbritrary to allow the Perlin to act as a PRNG
-
+  // Everything here depends only on per-frame sky state, not on the
+  // individual ray, but used to be recomputed inside drawRay -- including
+  // THREE Json path queries (string parse + tree walk + array conversion)
+  // per ray, ~100+ heap-allocating queries per frame for a purely cosmetic
+  // effect. Hoisted to once per frame; per-ray output is identical.
   float currentTime = sky.timeOfDay / sky.dayLength;
   float timeSinceSunEvent = std::min(std::abs(currentTime - SunriseTime), std::abs(currentTime - SunsetTime));
   float percentFaded = MaxFade * (1.0f - std::min(1.0f, std::pow(timeSinceSunEvent / SunFadeRate, 2.0f)));
-  // Gets the current average sky color
   color = (Vec3B)((Vec3F)color * (1 - percentFaded) + (Vec3F)sky.mainSkyColor.toRgb() * percentFaded);
-  // Sum is used to vary the ray intensity based on sky color
-  // Rays show up more on darker backgrounds, so this scales to remove that
   float sum = std::pow((color[0] + color[1]) * RayColorDependenceScale, RayColorDependenceLevel);
   Vec3B rayColor;
   if (sky.settings.queryBool("sun.dynamicImage.enabled", false) && !sky.skyParameters.sunType.empty())
@@ -434,6 +422,33 @@ void EnvironmentPainter::drawRay(float pixelRatio,
   else
     rayColor = jsonToVec3B(sky.settings.query("sun.rayColor", JsonArray{RayColor[0], RayColor[1], RayColor[2]}));
   float sunScale = sky.settings.queryFloat("sun.scale", 1.0f);
+
+  for (int i = 0; i < rayCount; i++)
+    drawRay(pixelRatio,
+        start,
+        sectorWidth * (std::abs(m_rayPerlin.get(i * 25)) * RayWidthVariance + RayMinWidth),
+        length,
+        i * sectorWidth + m_rayPerlin.get(i * 314) * RayAngleVariance,
+        time,
+        rayColor,
+        sum,
+        sunScale,
+        alpha);
+
+  m_renderer->flush();
+}
+
+void EnvironmentPainter::drawRay(float pixelRatio,
+    Vec2F start,
+    float width,
+    float length,
+    float angle,
+    double time,
+    Vec3B rayColor,
+    float sum,
+    float sunScale,
+    float alpha) {
+  // All magic constants are arbritrary to allow the Perlin to act as a PRNG
   m_renderer->immediatePrimitives().emplace_back(std::in_place_type_t<RenderQuad>(), TexturePtr(),
       RenderVertex{start + Vec2F(std::cos(angle + width), std::sin(angle + width)) * length, {}, Vec4B(rayColor, 0), 0.0f},
       RenderVertex{start + Vec2F(std::cos(angle + width), std::sin(angle + width)) * SunRadius * sunScale * pixelRatio,

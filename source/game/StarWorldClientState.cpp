@@ -10,6 +10,14 @@ WorldClientState::WorldClientState() {
 
   m_windowMonitoringBorder = clientConfig.getInt("windowMonitoringBorder");
   m_presenceEntityMonitoringBorder = clientConfig.getInt("presenceEntityMonitoringBorder");
+#ifdef STAR_SYSTEM_SWITCH
+  // Shrink the entity/sector monitoring bubble: its area directly scales the
+  // loaded entity count, and nearly every per-frame cost (client entity
+  // updates, net-state deserialization, server-side simulation) scales with
+  // that count. The bubble stays comfortably larger than the screen; the
+  // tradeoff is entities activating a bit closer to the visible edge.
+  m_windowMonitoringBorder = min(m_windowMonitoringBorder, 12);
+#endif
 
   m_playerId.set(NullEntityId);
 

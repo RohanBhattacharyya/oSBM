@@ -119,6 +119,25 @@ private:
   WorldPainterPtr m_worldPainter;
   WorldRenderData m_renderData;
   MainInterfacePtr m_mainInterface;
+
+#ifdef STAR_SYSTEM_SWITCH
+  // Overlapped sim pipeline (see updateRunning/render): the deferred
+  // universeClient tick runs on this persistent worker thread concurrently
+  // with the GL-only world painting phase.
+  void startSimTick();
+  void joinSimTick();
+  void stopSimThread();
+
+  ThreadFunction<void> m_simThread;
+  Mutex m_simMutex;
+  ConditionVariable m_simCond;
+  bool m_simRunRequested = false;
+  bool m_simRunning = false;
+  bool m_simShutdown = false;
+  bool m_simTickPending = false;
+  float m_simTickDt = 0.0f;
+  std::exception_ptr m_simException;
+#endif
   
   StringMap<PostProcessGroup> m_postProcessGroups;
   List<PostProcessLayer> m_postProcessLayers;

@@ -194,7 +194,13 @@ private:
     void addTilePreview(PreviewTile preview) override;
     void addOverheadBar(OverheadBar bar) override;
 
-    Map<EntityRenderLayer, List<Drawable>> drawables;
+    // HashMap, not Map: addDrawable() below is called once per drawable
+    // across every entity every frame, and this container is freshly
+    // constructed per-entity, so a std::map's per-insert heap-allocated tree
+    // node (paid on every distinct render layer, every entity, every frame)
+    // is real, avoidable overhead for what's typically only 1-5 distinct
+    // layers -- a flat hash map needs at most one backing allocation total.
+    HashMap<EntityRenderLayer, List<Drawable>> drawables;
     List<LightSource> lightSources;
     List<Particle> particles;
     List<AudioInstancePtr> audios;
@@ -259,6 +265,13 @@ private:
   void setupForceRegions();
 
   Json m_clientConfig;
+  // Cached from m_clientConfig in initWorld(): these are read every single
+  // update tick, and a Json path lookup per read is measurable waste on weak
+  // CPUs. Members (not function-local statics) because m_clientConfig is
+  // per-instance -- a new world gets a fresh WorldClient and fresh values.
+  int m_particleRegionPadding = 0;
+  int m_itemRequestResetInterval = 1;
+  int m_worldClientStateUpdateDelta = 1;
   WorldTemplatePtr m_worldTemplate;
   WorldStructure m_centralStructure;
   Vec2F m_playerStart;
@@ -369,6 +382,37 @@ private:
   int m_modifiedTilePredictionTimeout;
   HashMap<Vec2I, PredictedTile> m_predictedTiles;
   HashSet<EntityId> m_startupHiddenEntities;
+
+  // Peripheral-entity render throttle, engaged adaptively (only while this
+  // run is measurably struggling, see m_lastRenderTimeUs/underLoad in
+  // render()): Npc/Monster entities reuse a cached drawable set (re-translated
+  // for any movement since the cache was built) on most frames instead of
+  // paying full per-entity render() cost (sprite composition, tools,
+  // particles) every frame. Player and other entity types always render at
+  // full rate.
+  struct CachedEntityRender {
+    // Shared with renderData.entityDrawables on reuse frames (refcount bump
+    // instead of a deep per-drawable copy -- the copy cost was measured to
+    // cancel out the entire skip-frame win). Immutable once cached.
+    shared_ptr<EntityDrawables const> drawables;
+    Vec2F position;
+    int64_t frame;
+  };
+  HashMap<EntityId, CachedEntityRender> m_peripheralRenderCache;
+  int64_t m_peripheralRenderFrame = 0;
+  int64_t m_lastRenderTimeUs = 0;
+
+  // Under-load slave-entity tick spreading state (see update()).
+  int64_t m_lastUpdateTimeUs = 0;
+  float m_pendingSlaveDt = 0.0f;
+
+  // Particle snapshot for renderData (see render()); reused each frame.
+  List<Particle> m_particleSnapshot;
+
+  // Persistent parallax layer buffer (see render()); renderData points at it.
+  ParallaxLayers m_parallaxLayersBuffer;
+  List<float> m_parallaxLayerBaseAlpha;
+  Parallax const* m_parallaxBuiltFrom = nullptr;
 
   HashMap<DungeonId, float> m_dungeonIdGravity;
   HashMap<DungeonId, bool> m_dungeonIdBreathable;

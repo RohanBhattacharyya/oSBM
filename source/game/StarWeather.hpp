@@ -60,6 +60,7 @@ private:
   void spawnWeatherProjectiles(float dt);
 
   WeatherPool m_weatherPool;
+  float m_densityScale = 1.0f;
   float m_undergroundLevel;
   WorldGeometry m_worldGeometry;
   WeatherEffectsActiveQuery m_weatherEffectsActiveQuery;
@@ -100,6 +101,12 @@ public:
 
   void setVisibleRegion(RectI visibleRegion);
 
+  // Scales weather particle spawn density (1.0 = full). Set below 1 under
+  // load: every spawned drop costs a per-drop tile-exposure query, a
+  // per-tick particle update, and a per-frame particle draw -- in storms
+  // these three together dominate the frame.
+  void setDensityScale(float densityScale);
+
   void update(double dt);
 
   float wind() const;
@@ -116,6 +123,7 @@ private:
   void spawnWeatherParticles(RectF newClientRegion, float dt);
 
   WeatherPool m_weatherPool;
+  float m_densityScale = 1.0f;
   float m_undergroundLevel;
   WorldGeometry m_worldGeometry;
   WeatherEffectsActiveQuery m_weatherEffectsActiveQuery;

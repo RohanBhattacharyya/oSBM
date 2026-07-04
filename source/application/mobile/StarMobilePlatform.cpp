@@ -238,18 +238,12 @@ public:
   int run() {
     androidLogInfo("Mobile run() start");
     setupSdl();
-    androidLogInfo("run: setupSdl done");
     setupWindowAndRenderer();
-    androidLogInfo("run: setupWindowAndRenderer done");
 
     m_legacyStorageRoot = defaultMobileStorageRoot();
-    androidLogInfo("run: storage root resolved");
     m_storageRoot = writableMobileStorageRoot(m_legacyStorageRoot);
-    androidLogInfo("run: writable storage root ready");
     m_platformServices = MobilePlatformServices::create(m_storageRoot);
-    androidLogInfo("run: platform services created");
     syncLauncherBundledAssets();
-    androidLogInfo("run: bundled assets synced");
     reloadLauncherLocalization();
     setupImGui();
 
@@ -260,7 +254,6 @@ public:
       Thread::sleepPrecise(4);
     }
 
-    androidLogInfo("run: first launcher loop exited (quitRequested=%d)", (int)m_quitRequested);
     if (m_quitRequested)
       return 0;
 
@@ -653,11 +646,9 @@ private:
     int windowHeight = 720;
 #endif
 
-    androidLogInfo("setupWindowAndRenderer: creating SDL window");
     m_window = SDL_CreateWindow("OpenStarbound", windowWidth, windowHeight, windowFlags);
     if (!m_window)
       throw ApplicationException::format("Could not create SDL window: {}", SDL_GetError());
-    androidLogInfo("setupWindowAndRenderer: window created, creating GL context");
 
 #ifdef STAR_SYSTEM_IOS
     StarIosBridge_setSdlWindow(m_window);
@@ -672,14 +663,12 @@ private:
     m_glContext = SDL_GL_CreateContext(m_window);
     if (!m_glContext)
       throw ApplicationException::format("Could not create GLES context: {}", SDL_GetError());
-    androidLogInfo("setupWindowAndRenderer: GL context created, constructing renderer");
 
     // Avoid touching swap interval at startup on Android. Some devices crash
     // in VsyncReceiver when swap interval state mutates while surfaces settle.
     m_vsync = false;
 
     m_renderer = make_shared<GlesRenderer>();
-    androidLogInfo("setupWindowAndRenderer: renderer constructed");
 
 #ifdef STAR_SYSTEM_IOS
     // iOS EAGL binds a non-zero viewFramebuffer after context creation.
@@ -2057,7 +2046,6 @@ private:
     static bool s_autoLaunched = false;
     if (!s_autoLaunched && File::isFile("/switch/oSBM/autopilot.flag")) {
       s_autoLaunched = true;
-      androidLogInfo("runLauncher: autopilot.flag present, auto-launching");
       return true;
     }
 #endif
@@ -2639,12 +2627,9 @@ private:
     if (launchPressed) {
       androidLogInfo("Launch pressed");
       resetLauncherQuickStart();
-      androidLogInfo("Launch: persisting launcher state");
       persistLauncherState(state);
-      androidLogInfo("Launch: launcher state persisted");
     }
 
-    androidLogInfo("runLauncher: returning %d", (int)launchPressed);
     return launchPressed;
   }
 
@@ -2681,24 +2666,18 @@ private:
       }}
     };
 
-    androidLogInfo("persistLauncherState: json built, saving config");
     if (auto configService = m_platformServices->launchConfigService())
       configService->saveLauncherConfig(config);
-    androidLogInfo("persistLauncherState: config saved");
   }
 
   bool prepareBootConfig(LauncherState const& state, String& errorMessage) {
-    androidLogInfo("prepareBootConfig: begin (pak=%s)", state.packedPakPath.utf8Ptr());
     if (!File::isFile(state.packedPakPath)) {
-      androidLogInfo("prepareBootConfig: packedPak not found, returning false");
       errorMessage = launcherText("runtime.missingPackedPak", "Selected packed.pak was not found. Please re-select it.");
       return false;
     }
 
-    androidLogInfo("prepareBootConfig: pak ok, ensuring mods dir");
     auto modsPath = modsDirectoryPath();
     File::makeDirectoryRecursive(modsPath);
-    androidLogInfo("prepareBootConfig: mods dir ready, syncing bundled assets");
 
     String bundledAssetsRoot;
 #if STAR_SYSTEM_ANDROID
@@ -3028,7 +3007,6 @@ private:
         m_application->update();
         m_updateRate = m_updateTicker.tick();
       }
-
       m_renderer->startFrame();
       m_application->render();
 
@@ -3053,15 +3031,9 @@ private:
         Thread::sleepPrecise(spare);
     }
 
-    androidLogInfo("runGameLoop exited: quitRequested=%d softQuitRequested=%d interrupt=%d",
-      (int)m_quitRequested, (int)m_softQuitRequested, (int)m_signalHandler.interruptCaught());
-    Logger::info("runGameLoop exited: quitRequested={} softQuitRequested={} interrupt={}",
-      (int)m_quitRequested, (int)m_softQuitRequested, (int)m_signalHandler.interruptCaught());
   }
 
   void shutdownApplication() {
-    androidLogInfo("shutdownApplication begin");
-    Logger::info("shutdownApplication begin");
     std::lock_guard<std::mutex> lock(m_audioMutex);
     m_audioEnabled = false;
     if (m_sdlAudioOutputStream)
@@ -3271,9 +3243,6 @@ private:
         // from the system. Once that happens it is STICKY (SDL re-posts QUIT on
         // every PumpEvents), so we must NOT ignore-and-continue (that turns the
         // event-drain loop into an infinite spin = freeze). Honor it as a quit.
-        // Log the moment via the guest debug channel so we can correlate the
-        // trigger (e.g. Ryujinx window focus loss).
-        androidLogInfo("Switch: SDL_EVENT_QUIT in runGameLoop (appletMainLoop->false)");
         m_quitRequested = true;
         continue;
 #else
@@ -3444,7 +3413,6 @@ private:
         // See runGameLoop's handler: appletMainLoop()->false is sticky and SDL
         // re-posts QUIT every PumpEvents, so break out of the drain loop (a
         // `continue` would spin forever and freeze) and honor the quit.
-        androidLogInfo("Switch: SDL_EVENT_QUIT in processWindowEvents (appletMainLoop->false)");
         m_quitRequested = true;
         break;
 #else

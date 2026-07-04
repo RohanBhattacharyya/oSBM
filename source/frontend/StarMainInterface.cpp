@@ -661,8 +661,10 @@ void MainInterface::update(float dt) {
     m_lastMouseoverTarget = NullEntityId;
 
   // special damage bar entities
-  auto barConfig = Root::singleton().assets()->json("/interface.config:specialDamageBar");
-  size_t maxBars = barConfig.getUInt("maxCount",10);
+  // Fixed content config -- resolve once instead of an assets-cache query
+  // (mutex + path parse) every single frame.
+  static Json const barConfig = Root::singleton().assets()->json("/interface.config:specialDamageBar");
+  static size_t const maxBars = barConfig.getUInt("maxCount",10);
 
   for (auto it = m_specialDamageBars.begin(); it != m_specialDamageBars.end();) {
     auto& bar = *it;
@@ -681,7 +683,11 @@ void MainInterface::update(float dt) {
     }
   }
 
-  if (m_specialDamageBars.size() < maxBars && m_client->mainPlayer()->inWorld()) {
+  // Scanning EVERY loaded entity for special (boss) damage bars each frame
+  // is O(entities) of pure overhead in the overwhelmingly common case of no
+  // boss present; every 8th frame is more than fast enough for a bar that
+  // slides in when a boss appears.
+  if (++m_specialBarScanCounter % 8 == 0 && m_specialDamageBars.size() < maxBars && m_client->mainPlayer()->inWorld()) {
     List<DamageBarEntityPtr> specialDamageTargets;
     m_client->worldClient()->forAllEntities([&specialDamageTargets](EntityPtr const& entity) {
         if (auto damageBarEntity = as<DamageBarEntity>(entity))
@@ -938,50 +944,46 @@ void MainInterface::render() {
   if (m_disableHud)
     return;
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  static int64_t s_miBarsUs = 0, s_miDebugUs = 0, s_miCanvasUs = 0, s_miWindowsUs = 0, s_miWheelCursorUs = 0;
-  static int64_t s_miFrames = 0;
-  int64_t miT = Time::monotonicMicroseconds();
-  auto miLap = [&miT](int64_t& accum) { int64_t n = Time::monotonicMicroseconds(); accum += n - miT; miT = n; };
-#endif
-
   m_guiContext->clearTextStyle();
-  renderBreath();
-  renderMessages();
-  renderMonsterHealthBar();
-  renderSpecialDamageBar();
-  renderMainBar();
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  miLap(s_miBarsUs);
-#endif
+  // Same under-load replay pattern as PaneManager's pane cache: the HUD bar
+  // group is an immediate-mode rebuild costing ~4-5ms/frame; when this run is
+  // measurably struggling (< ~20fps) render it fresh only every 3rd frame and
+  // replay the recorded primitives in between.
+  ++m_barsRenderFrame;
+  {
+    int64_t nowUs = Time::monotonicMicroseconds();
+    int64_t gapUs = m_lastBarsRenderTimeUs != 0 ? nowUs - m_lastBarsRenderTimeUs : 0;
+    bool underLoad = gapUs > 50000;
+    int64_t replayInterval = gapUs > 75000 ? 4 : 3;
+    m_lastBarsRenderTimeUs = nowUs;
+    auto const& renderer = m_guiContext->renderer();
+    bool replayed = false;
+    if (underLoad && !m_barsRecording.empty() && m_barsRenderFrame - m_barsRecordingFrame < replayInterval) {
+      renderer->playPrimitiveRecording(m_barsRecording);
+      replayed = true;
+    }
+    if (!replayed) {
+      bool recording = underLoad && renderer->beginPrimitiveRecording();
+      renderBreath();
+      renderMessages();
+      renderMonsterHealthBar();
+      renderSpecialDamageBar();
+      renderMainBar();
+      if (recording) {
+        m_barsRecording = renderer->endPrimitiveRecording();
+        m_barsRecordingFrame = m_barsRenderFrame;
+      }
+    }
+  }
   renderDebug();
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  miLap(s_miDebugUs);
-#endif
 
   RectI screenRect = RectI::withSize(Vec2I(), Vec2I(m_guiContext->windowSize()));
   for (auto& pair : m_canvases)
     pair.second->render(screenRect);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  miLap(s_miCanvasUs);
-#endif
 
   renderWindows();
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  miLap(s_miWindowsUs);
-#endif
   renderActionWheel();
   renderCursor();
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  miLap(s_miWheelCursorUs);
-  if (++s_miFrames >= 120) {
-    Logger::info("[perf-mi] bars={}us debug={}us canvases={}us windows={}us wheelCursor={}us (avg/frame)",
-        s_miBarsUs / s_miFrames, s_miDebugUs / s_miFrames, s_miCanvasUs / s_miFrames,
-        s_miWindowsUs / s_miFrames, s_miWheelCursorUs / s_miFrames);
-    s_miBarsUs = s_miDebugUs = s_miCanvasUs = s_miWindowsUs = s_miWheelCursorUs = 0;
-    s_miFrames = 0;
-  }
-#endif
 }
 
 Vec2F MainInterface::cursorWorldPosition() const {
@@ -1786,8 +1788,16 @@ void MainInterface::renderCursor() {
 
   cursorPos[0] -= cursorOffset[0] * cursorScale;
   cursorPos[1] -= (cursorSize[1] - cursorOffset[1]) * cursorScale;
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  // Mobile setCursorImage is an unconditional no-op stub, but trySetCursor
+  // fetches the cursor image from Assets (a mutex contended with the server
+  // thread's world-gen/entity loads) every frame before finding that out.
+  // Skip straight to drawing the software cursor.
+  m_guiContext->drawDrawable(cursorDrawable, Vec2F(cursorPos), cursorScale);
+#else
   if (!m_guiContext->trySetCursor(cursorDrawable, cursorOffset, cursorScale))
     m_guiContext->drawDrawable(cursorDrawable, Vec2F(cursorPos), cursorScale);
+#endif
 
   if (m_cursorTooltip) {
     auto assets = Root::singleton().assets();
@@ -1817,13 +1827,18 @@ void MainInterface::renderCursor() {
 
   m_cursorItem->setPosition(Vec2I::round(m_cursorScreenPos / interfaceScale() + Vec2F(m_config->inventoryItemMouseOffset)));
 
-  if (auto swapItem = m_client->mainPlayer()->inventory()->swapSlotItem())
+  // Only render the cursor item slot while something is actually being
+  // dragged: an EMPTY slot draws no pixels, but Widget::render still sets a
+  // scissor rect for it, and a scissor change flushes every pending UI
+  // primitive to the GPU mid-batch -- measured at ~3ms/frame of pure flush
+  // overhead on mobile GPU drivers, for a widget drawing nothing.
+  if (auto swapItem = m_client->mainPlayer()->inventory()->swapSlotItem()) {
     m_cursorItem->setItem(swapItem);
-  else
+    m_cursorItem->render(RectI::withSize({}, {(int)windowWidth(), (int)windowHeight()}));
+    m_guiContext->resetInterfaceScissorRect();
+  } else {
     m_cursorItem->setItem({});
-
-  m_cursorItem->render(RectI::withSize({}, {(int)windowWidth(), (int)windowHeight()}));
-  m_guiContext->resetInterfaceScissorRect();
+  }
 }
 
 bool MainInterface::overButton(PolyI const& buttonPoly, Vec2F const& mousePos) const {

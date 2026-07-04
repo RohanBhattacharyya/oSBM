@@ -15,7 +15,11 @@ namespace Star {
 
 struct EntityDrawables {
   EntityHighlightEffect highlightEffect;
-  Map<EntityRenderLayer, List<Drawable>> layers;
+  // HashMap, not Map: constructed fresh per entity per frame and typically
+  // holds only 1-5 distinct render layers -- a std::map pays a heap-allocated
+  // tree node per distinct key on every entity every frame; a flat hash map
+  // needs at most one backing allocation total.
+  HashMap<EntityRenderLayer, List<Drawable>> layers;
 };
 
 
@@ -29,7 +33,13 @@ struct WorldRenderData {
   Vec2I lightMinPosition;
   Lightmap lightMap;
 
-  List<EntityDrawables> entityDrawables;
+  // Shared, not by-value: entries are usually built fresh per frame, but
+  // WorldClient's under-load entity render throttle re-appends the SAME
+  // cached entry across frames for static entities -- a refcount bump instead
+  // of a deep copy of every Drawable (whose AssetPath strings/directives make
+  // copies genuinely expensive at ~100 entities/frame). Consumers must treat
+  // entries as immutable.
+  List<shared_ptr<EntityDrawables const>> entityDrawables;
   List<Particle> const* particles;
 
   List<OverheadBar> overheadBars;
@@ -38,7 +48,10 @@ struct WorldRenderData {
   List<Drawable> backgroundOverlays;
   List<Drawable> foregroundOverlays;
 
-  List<ParallaxLayer> parallaxLayers;
+  // Points at WorldClient's cached parallax-layer buffer (rebuilt only when
+  // the parallax set or fade state changes, not every frame). Null when no
+  // parallax. Valid for the frame it was produced.
+  ParallaxLayers const* parallaxLayers = nullptr;
 
   SkyRenderData skyRenderData;
 
@@ -56,7 +69,7 @@ inline void WorldRenderData::clear() {
   nametags.clear();
   backgroundOverlays.clear();
   foregroundOverlays.clear();
-  parallaxLayers.clear();
+  parallaxLayers = nullptr;
 }
 
 }

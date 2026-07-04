@@ -1,5 +1,4 @@
 #include "StarDungeonGenerator.hpp"
-#include "StarTime.hpp"
 #include "StarThread.hpp"
 #include "StarCasting.hpp"
 #include "StarRandom.hpp"
@@ -1217,9 +1216,6 @@ namespace Dungeon {
     if (!spaceBlendingVertexes.empty())
       m_facade->markSpace(PolyF::convexHull(spaceBlendingVertexes));
 
-#ifdef STAR_SYSTEM_SWITCH
-    int64_t perfT0 = Time::monotonicMilliseconds();
-#endif
     for (auto iter = m_backgroundMaterial.begin(); iter != m_backgroundMaterial.end(); iter++)
       m_facade->setBackgroundMaterial(displace(iter->first), iter->second.material, iter->second.hueshift, iter->second.colorVariant);
     for (auto iter = m_foregroundMaterial.begin(); iter != m_foregroundMaterial.end(); iter++)
@@ -1228,11 +1224,6 @@ namespace Dungeon {
       m_facade->setForegroundMod(displace(iter->first), iter->second.mod, iter->second.hueshift);
     for (auto iter = m_backgroundMod.begin(); iter != m_backgroundMod.end(); iter++)
       m_facade->setBackgroundMod(displace(iter->first), iter->second.mod, iter->second.hueshift);
-#ifdef STAR_SYSTEM_SWITCH
-    int64_t perfT1 = Time::monotonicMilliseconds();
-    Logger::info("[perf-dg]   tiles: {}ms ({} bg, {} fg, {} fgMod, {} bgMod)", perfT1 - perfT0,
-        m_backgroundMaterial.size(), m_foregroundMaterial.size(), m_foregroundMod.size(), m_backgroundMod.size());
-#endif
 
     List<Vec2I> sortedPositions = m_objects.keys();
     sortByComputedValue(sortedPositions, [](Vec2I pos) { return pos[1] + pos[0] / 1000.0f; });
@@ -1240,10 +1231,6 @@ namespace Dungeon {
       auto& object = m_objects[pos];
       m_facade->placeObject(displace(pos), object.objectName, object.direction, object.parameters);
     }
-#ifdef STAR_SYSTEM_SWITCH
-    int64_t perfT2 = Time::monotonicMilliseconds();
-    Logger::info("[perf-dg]   objects: {}ms ({} objects)", perfT2 - perfT1, sortedPositions.size());
-#endif
 
     for (auto entry : m_vehicles) {
       String vehicleName;
@@ -1257,28 +1244,16 @@ namespace Dungeon {
     for (auto pos : sortedPositions) {
       m_facade->placeBiomeTree(pos);
     }
-#ifdef STAR_SYSTEM_SWITCH
-    int64_t perfT3 = Time::monotonicMilliseconds();
-    Logger::info("[perf-dg]   vehicles+biomeTrees: {}ms ({} trees)", perfT3 - perfT2, sortedPositions.size());
-#endif
 
     sortedPositions = List<Vec2I>::from(m_biomeItems);
     sortByComputedValue(sortedPositions, [](Vec2I pos) { return pos[1] + pos[0] / 1000.0f; });
     for (auto pos : sortedPositions) {
       m_facade->placeSurfaceBiomeItems(pos);
     }
-#ifdef STAR_SYSTEM_SWITCH
-    int64_t perfT4 = Time::monotonicMilliseconds();
-    Logger::info("[perf-dg]   biomeItems: {}ms ({} positions)", perfT4 - perfT3, sortedPositions.size());
-#endif
 
     for (auto& npc : m_npcs) {
       m_facade->spawnNpc(displaceF(npc.first), npc.second);
     }
-#ifdef STAR_SYSTEM_SWITCH
-    int64_t perfT5 = Time::monotonicMilliseconds();
-    Logger::info("[perf-dg]   npcs: {}ms ({} npcs)", perfT5 - perfT4, m_npcs.size());
-#endif
 
     for (auto& stagehand : m_stagehands) {
       m_facade->spawnStagehand(displaceF(stagehand.first), stagehand.second);
@@ -1296,10 +1271,6 @@ namespace Dungeon {
         wireGroup.append(displace(pos));
       m_facade->connectWireGroup(wireGroup);
     }
-#ifdef STAR_SYSTEM_SWITCH
-    int64_t perfT6 = Time::monotonicMilliseconds();
-    Logger::info("[perf-dg]   stagehands+wires: {}ms", perfT6 - perfT5);
-#endif
 
     for (auto iter = m_drops.begin(); iter != m_drops.end(); iter++)
       m_facade->addDrop(displaceF(iter->first), iter->second);
@@ -1309,9 +1280,6 @@ namespace Dungeon {
 
     for (auto const& dungeonId : m_dungeonIds)
       m_facade->setDungeonIdAt(dungeonId.first, dungeonId.second);
-#ifdef STAR_SYSTEM_SWITCH
-    Logger::info("[perf-dg]   drops+liquids+dungeonIds: {}ms", Time::monotonicMilliseconds() - perfT6);
-#endif
   }
 
   List<RectI> DungeonGeneratorWriter::boundingBoxes() const {
@@ -1352,28 +1320,12 @@ DungeonDefinitions::DungeonDefinitions() : m_paths(), m_cacheMutex(), m_definiti
 
 DungeonDefinitionConstPtr DungeonDefinitions::get(String const& name) const {
   MutexLocker locker(m_cacheMutex);
-#ifdef STAR_SYSTEM_SWITCH
-  bool perfMiss = false;
-  int64_t perfStart = Time::monotonicMilliseconds();
-#endif
   auto result = m_definitionCache.get(name,
-      [this
-#ifdef STAR_SYSTEM_SWITCH
-       , &perfMiss
-#endif
-      ](String const& name) -> DungeonDefinitionPtr {
-#ifdef STAR_SYSTEM_SWITCH
-        perfMiss = true;
-#endif
+      [this](String const& name) -> DungeonDefinitionPtr {
         if (auto path = m_paths.maybe(name))
           return readDefinition(*path);
         throw DungeonException::format("Unknown dungeon: '{}'", name);
       });
-#ifdef STAR_SYSTEM_SWITCH
-  if (perfMiss)
-    Logger::info("[perf-dg] DungeonDefinitions cache MISS '{}' took {}ms, cache now {}/{}", name,
-        Time::monotonicMilliseconds() - perfStart, m_definitionCache.currentSize(), DefinitionsCacheSize);
-#endif
   return result;
 }
 
@@ -1543,13 +1495,7 @@ Maybe<pair<List<RectI>, Set<Vec2I>>> DungeonGenerator::generate(DungeonGenerator
     }
 
     auto pos = position + Vec2I(0, -anchor->placementLevelConstraint());
-#ifdef STAR_SYSTEM_SWITCH
-    int64_t perfAnchorCanPlaceStart = Time::monotonicMilliseconds();
-#endif
     bool anchorCanPlace = forcePlacement || anchor->canPlace(pos, &writer);
-#ifdef STAR_SYSTEM_SWITCH
-    Logger::info("[perf-dg] {} anchor canPlace: {}ms ({})", name, Time::monotonicMilliseconds() - perfAnchorCanPlaceStart, anchorCanPlace ? "passed" : "failed");
-#endif
     if (anchorCanPlace) {
       Logger::info("Placing dungeon {} at {}", name, position);
       return buildDungeon(anchor, pos, &writer, forcePlacement);
@@ -1573,17 +1519,7 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
 
   Logger::debug("Placing dungeon entrance at {}", basePos);
 
-#ifdef STAR_SYSTEM_SWITCH
-  int64_t perfPlacePartTimeMs = 0;
-  int perfPlacePartCalls = 0;
-  int64_t perfScanTimeMs = 0, perfClearTimeMs = 0, perfPlaceTimeMs = 0;
-#endif
   auto placePart = [&](Dungeon::Part const* part, Vec2I const& placePos) {
-#ifdef STAR_SYSTEM_SWITCH
-      int64_t perfPlacePartStart = Time::monotonicMilliseconds();
-      int64_t perfLap = perfPlacePartStart;
-      ++perfPlacePartCalls;
-#endif
       // usesPlaces()/modifiesPlaces() depend only on each tile's own static
       // brush/rule config (fixed at part-parse time), so both the
       // clear-entities scan and the preserve/modified-tracking scan can be
@@ -1607,13 +1543,7 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
           return false;
         });
       auto partBounds = RectI::withSize(placePos, Vec2I(part->size()));
-#ifdef STAR_SYSTEM_SWITCH
-      { int64_t n = Time::monotonicMilliseconds(); perfScanTimeMs += n - perfLap; perfLap = n; }
-#endif
       writer->clearTileEntities(partBounds, clearTileEntityPositions, part->clearAnchoredObjects());
-#ifdef STAR_SYSTEM_SWITCH
-      { int64_t n = Time::monotonicMilliseconds(); perfClearTimeMs += n - perfLap; perfLap = n; }
-#endif
 
       if (part->markDungeonId())
         writer->setMarkDungeonId(m_dungeonId);
@@ -1621,16 +1551,10 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
         writer->setMarkDungeonId();
 
       part->place(placePos, preserveTiles, writer);
-#ifdef STAR_SYSTEM_SWITCH
-      { int64_t n = Time::monotonicMilliseconds(); perfPlaceTimeMs += n - perfLap; perfLap = n; }
-#endif
       writer->finishPart();
 
       preserveTiles.addAll(partPreserveTiles);
       modifiedTiles.addAll(partModifiedTiles);
-#ifdef STAR_SYSTEM_SWITCH
-      { int64_t n = Time::monotonicMilliseconds(); perfScanTimeMs += n - perfLap; perfLap = n; }
-#endif
 
       openSet.append({part, placePos});
 
@@ -1638,25 +1562,13 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
       piecesPlaced++;
 
       Logger::debug("placed {}", part->name());
-#ifdef STAR_SYSTEM_SWITCH
-      perfPlacePartTimeMs += Time::monotonicMilliseconds() - perfPlacePartStart;
-#endif
     };
 
-  placePart(anchor.get(), basePos);
-#ifdef STAR_SYSTEM_SWITCH
-  Logger::info("[perf-dg] anchor placePart: {}ms ({} tiles) [scan {}ms clear {}ms place {}ms]", perfPlacePartTimeMs,
-      anchor->size()[0] * anchor->size()[1], perfScanTimeMs, perfClearTimeMs, perfPlaceTimeMs);
-#endif
+    placePart(anchor.get(), basePos);
 
   Vec2I origin = basePos + Vec2I(anchor->size()) / 2;
 
   Set<Vec2I> closedConnectors;
-#ifdef STAR_SYSTEM_SWITCH
-  int64_t perfBfsStart = Time::monotonicMilliseconds();
-  int64_t perfCanPlaceCalls = 0;
-  int64_t perfCanPlaceTimeMs = 0;
-#endif
   while (openSet.size()) {
     Dungeon::Part const* parentPart = openSet.first().first;
     Vec2I parentPos = openSet.first().second;
@@ -1702,15 +1614,8 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
           Logger::debug("part failed in maximumThreatLevel");
           continue;
         }
-#ifdef STAR_SYSTEM_SWITCH
-        int64_t perfCanPlaceStart = Time::monotonicMilliseconds();
-#endif
-        bool perfCanPlaceResult = forcePlacement || option->part()->canPlace(partPos, writer);
-#ifdef STAR_SYSTEM_SWITCH
-        ++perfCanPlaceCalls;
-        perfCanPlaceTimeMs += Time::monotonicMilliseconds() - perfCanPlaceStart;
-#endif
-        if (perfCanPlaceResult) {
+        bool canPlaceResult = forcePlacement || option->part()->canPlace(partPos, writer);
+        if (canPlaceResult) {
           placePart(option->part(), partPos);
           closedConnectors.add(connectorPos);
           closedConnectors.add(optionPos);
@@ -1721,23 +1626,10 @@ pair<List<RectI>, Set<Vec2I>> DungeonGenerator::buildDungeon(Dungeon::PartConstP
       }
     }
   }
-#ifdef STAR_SYSTEM_SWITCH
-  Logger::info("[perf-dg] BFS: {}ms, {} pieces, {} canPlace calls ({}ms), placePart total {}ms ({} calls, incl. anchor)",
-      Time::monotonicMilliseconds() - perfBfsStart, piecesPlaced, perfCanPlaceCalls, perfCanPlaceTimeMs,
-      perfPlacePartTimeMs, perfPlacePartCalls);
-  int64_t perfLiquidStart = Time::monotonicMilliseconds();
-#endif
   Logger::debug("Settling dungeon water.");
   writer->flushLiquid();
-#ifdef STAR_SYSTEM_SWITCH
-  Logger::info("[perf-dg] flushLiquid: {}ms", Time::monotonicMilliseconds() - perfLiquidStart);
-  int64_t perfFlushStart = Time::monotonicMilliseconds();
-#endif
   Logger::debug("Flushing dungeon into the worldgen.");
   writer->flush();
-#ifdef STAR_SYSTEM_SWITCH
-  Logger::info("[perf-dg] flush: {}ms", Time::monotonicMilliseconds() - perfFlushStart);
-#endif
 
   return {writer->boundingBoxes(), modifiedTiles};
 }

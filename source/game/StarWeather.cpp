@@ -331,6 +331,10 @@ void ClientWeather::setVisibleRegion(RectI visibleRegion) {
   m_visibleRegion = visibleRegion;
 }
 
+void ClientWeather::setDensityScale(float densityScale) {
+  m_densityScale = densityScale;
+}
+
 void ClientWeather::update(double dt) {
   m_currentTime += dt;
 
@@ -394,7 +398,7 @@ void ClientWeather::spawnWeatherParticles(RectF newClientRegion, float dt) {
     visibleRegion.translate(targetVelocity * dt);
 
     for (auto const& renderZone : newClientRegion.subtract(visibleRegion)) {
-      float count = particleConfig.density * renderZone.width() * renderZone.height() * m_currentWeatherIntensity;
+      float count = particleConfig.density * m_densityScale * renderZone.width() * renderZone.height() * m_currentWeatherIntensity;
       if (Random::randf() > fpart(count))
         count = std::floor(count);
       else

@@ -8,14 +8,23 @@ DrawablePainter::DrawablePainter(RendererPtr renderer, AssetTextureGroupPtr text
 }
 
 void DrawablePainter::drawDrawable(Drawable const& drawable) {
+  // Identity transform: geometry as-authored, positioned at the drawable's
+  // own position (byte-identical to the historical behavior).
+  drawDrawable(drawable, 1.0f, drawable.position, 1.0f);
+}
+
+void DrawablePainter::drawDrawable(Drawable const& drawable, float scale, Vec2F const& screenPos, float lineWidthScale) {
   Vec4B color = drawable.color.toRgba();
   auto& primitives = m_renderer->immediatePrimitives();
 
   if (auto linePart = drawable.part.ptr<Drawable::LinePart>()) {
     auto line = linePart->line;
-    line.translate(drawable.position);
-    Vec2F left = Vec2F(vnorm(line.diff())).rot90() * linePart->width / 2.0f;
-    
+    if (scale != 1.0f)
+      line.scale(Vec2F::filled(scale));
+    line.translate(screenPos);
+    float width = linePart->width * lineWidthScale;
+    Vec2F left = Vec2F(vnorm(line.diff())).rot90() * width / 2.0f;
+
     float fullbright = drawable.fullbright ? 0.0f : 1.0f;
     auto& primitive = primitives.emplace_back(std::in_place_type_t<RenderQuad>(),
       line.min() + left,
@@ -29,17 +38,20 @@ void DrawablePainter::drawDrawable(Drawable const& drawable) {
     }
   } else if (auto polyPart = drawable.part.ptr<Drawable::PolyPart>()) {
     PolyF poly = polyPart->poly;
-    poly.translate(drawable.position);
+    if (scale != 1.0f)
+      poly.scale(Vec2F::filled(scale));
+    poly.translate(screenPos);
 
     primitives.emplace_back(std::in_place_type_t<RenderPoly>(), poly.vertexes(), color, 0.0f);
 
   } else if (auto imagePart = drawable.part.ptr<Drawable::ImagePart>()) {
     TexturePtr texture = m_textureGroup->loadTexture(imagePart->image);
 
-    Vec2F position = drawable.position;
     Vec2F textureSize(texture->size());
     Mat3F transformation = imagePart->transformation;
-    Vec2F lowerLeft  = { transformation[0][2] += position.x(), transformation[1][2] += position.y() };
+    if (scale != 1.0f)
+      transformation.scale(Vec2F::filled(scale));
+    Vec2F lowerLeft  = { transformation[0][2] += screenPos.x(), transformation[1][2] += screenPos.y() };
     Vec2F lowerRight = transformation * Vec2F(textureSize.x(), 0.f);
     Vec2F upperRight = transformation * textureSize;
     Vec2F upperLeft  = transformation * Vec2F(0.f, textureSize.y());

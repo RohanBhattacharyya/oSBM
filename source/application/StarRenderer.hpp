@@ -147,6 +147,16 @@ public:
   virtual void setEffectTexture(String const& textureName, ImageView const& image) = 0;
   virtual bool switchEffectConfig(String const& name) = 0;
 
+  // Temporarily redirect rendering into a named framebuffer without changing
+  // the current effect (shader/uniform state is untouched). Returns false if
+  // no framebuffer with this id exists, in which case rendering continues
+  // into the current target unchanged. Used to draw low-frequency content
+  // (e.g. sky/background layers) into a reduced-resolution buffer.
+  virtual bool switchFrameBuffer(String const& id) { return false; }
+  // Stretch-blit a named framebuffer's contents over the currently bound
+  // framebuffer (no blending, linear filtered when sizes differ).
+  virtual void blitFrameBufferToCurrent(String const& id) {}
+
   // Any further rendering will be scissored based on this rect, specified in
   // pixels
   virtual void setScissorRect(Maybe<RectI> const& scissorRect) = 0;
@@ -165,6 +175,23 @@ public:
   virtual void renderBuffer(RenderBufferPtr const& renderBuffer, Mat3F const& transformation = Mat3F::identity()) = 0;
 
   virtual void flush(Mat3F const& transformation = Mat3F::identity()) = 0;
+
+  // Primitive record/replay: capture every immediate-mode primitive submitted
+  // between begin/end (together with the scissor state it was submitted
+  // under, since UI rendering changes the scissor per widget) so the exact
+  // same output can be replayed later without re-running the code that
+  // generated it. The recording pass still draws normally. Replay is only
+  // exact for content submitted with the identity flush transformation (true
+  // for all UI rendering, which is the intended use). Backends may not
+  // support this; beginPrimitiveRecording() returning false means the caller
+  // should just render normally every time.
+  struct RecordedSegment {
+    Maybe<RectI> scissor;
+    List<RenderPrimitive> primitives;
+  };
+  virtual bool beginPrimitiveRecording() { return false; }
+  virtual List<RecordedSegment> endPrimitiveRecording() { return {}; }
+  virtual void playPrimitiveRecording(List<RecordedSegment> const& recording) {}
 };
 
 }

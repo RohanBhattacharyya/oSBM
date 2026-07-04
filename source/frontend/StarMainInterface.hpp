@@ -2,6 +2,7 @@
 
 #include "StarInventory.hpp"
 #include "StarInteractionTypes.hpp"
+#include "StarRenderer.hpp"
 #include "StarItemDescriptor.hpp"
 #include "StarGameTypes.hpp"
 #include "StarInterfaceCursor.hpp"
@@ -235,6 +236,15 @@ private:
 
   ActionBarPtr m_actionBar;
   Vec2F m_cursorScreenPos{};
+
+  // Frame counter for the every-Nth-frame special-damage-bar entity scan.
+  uint64_t m_specialBarScanCounter = 0;
+
+  // Under-load replay cache for the HUD bar group (see render()).
+  List<Renderer::RecordedSegment> m_barsRecording;
+  int64_t m_barsRecordingFrame = 0;
+  int64_t m_barsRenderFrame = 0;
+  int64_t m_lastBarsRenderTimeUs = 0;
   Vec2I m_cursorScreenIPos{};
   bool m_cursorVisible = true;
   ItemSlotWidgetPtr m_cursorItem;

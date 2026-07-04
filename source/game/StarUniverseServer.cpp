@@ -1141,35 +1141,14 @@ void UniverseServer::arriveShips() {
         clientSystem->addClient(clientId, clientContext->playerUuid(), clientContext->shipUpgrades().shipSpeed, coordinate);
 
       clientContext->setSystemWorld(clientSystem);
-#ifdef STAR_SYSTEM_SWITCH
-      Logger::info("[autopilot-dbg] arriveShips: created systemWorld for client {} at coordinate {}", clientId, coordinate);
-#endif
     }
 
     auto location = clientSystem->clientShipLocation(clientId);
-    if (!location) {
-#ifdef STAR_SYSTEM_SWITCH
-      static int64_t s_lastLocLog = 0;
-      int64_t nowMs = Time::monotonicMilliseconds();
-      if (nowMs - s_lastLocLog > 5000) {
-        s_lastLocLog = nowMs;
-        Logger::info("[autopilot-dbg] arriveShips: clientShipLocation empty for client {}", clientId);
-      }
-#endif
+    if (!location)
       return false;
-    }
 
-    if (!coordinate.isSystem() && !triggerWorldCreation(CelestialWorldId(coordinate))) {
-#ifdef STAR_SYSTEM_SWITCH
-      static int64_t s_lastWcLog = 0;
-      int64_t nowMs = Time::monotonicMilliseconds();
-      if (nowMs - s_lastWcLog > 5000) {
-        s_lastWcLog = nowMs;
-        Logger::info("[autopilot-dbg] arriveShips: triggerWorldCreation not ready for {}", coordinate);
-      }
-#endif
+    if (!coordinate.isSystem() && !triggerWorldCreation(CelestialWorldId(coordinate)))
       return false;
-    }
 
     Logger::info("UniverseServer: Arriving ship for player {} at {}", clientId, coordinate);
 

@@ -1,6 +1,5 @@
 #include "StarWorldGeneration.hpp"
 #include "StarWorldServer.hpp"
-#include "StarTime.hpp"
 #include "StarMaterialItem.hpp"
 #include "StarMaterialDatabase.hpp"
 #include "StarNpcDatabase.hpp"
@@ -658,9 +657,6 @@ WorldGenerator::WorldGenerator(WorldServer* server) : m_worldServer(server) {
 }
 
 void WorldGenerator::generateSectorLevel(WorldStorage* worldStorage, Sector const& sector, SectorGenerationLevel generationLevel) {
-#ifdef STAR_SYSTEM_SWITCH
-  int64_t perfGslStart = Time::monotonicMilliseconds();
-#endif
   if (generationLevel == SectorGenerationLevel::BaseTiles) {
     prepareTiles(worldStorage, sector);
   } else if (generationLevel == SectorGenerationLevel::MicroDungeons) {
@@ -676,11 +672,6 @@ void WorldGenerator::generateSectorLevel(WorldStorage* worldStorage, Sector cons
       prepareSectorBiomeBlocks(worldStorage, sector);
     m_worldServer->activateLiquidRegion(worldStorage->tileArray()->sectorRegion(sector));
   }
-#ifdef STAR_SYSTEM_SWITCH
-  int64_t perfGslElapsed = Time::monotonicMilliseconds() - perfGslStart;
-  if (perfGslElapsed > 20)
-    Logger::info("[perf-dg] generateSectorLevel sector={} level={} took {}ms", sector, (int)generationLevel, perfGslElapsed);
-#endif
 }
 
 void WorldGenerator::sectorLoadLevelChanged(WorldStorage* worldStorage, Sector const& sector, SectorLoadLevel loadLevel) {

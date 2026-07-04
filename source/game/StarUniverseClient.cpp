@@ -268,13 +268,6 @@ void UniverseClient::update(float dt) {
     }
   }
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  static int64_t s_ucPacketsUs = 0, s_ucWorldUs = 0, s_ucSystemUs = 0, s_ucScriptUs = 0;
-  static int64_t s_ucFrames = 0;
-  int64_t ucT = Time::monotonicMicroseconds();
-  auto ucLap = [&ucT](int64_t& accum) { int64_t n = Time::monotonicMicroseconds(); accum += n - ucT; ucT = n; };
-#endif
-
   m_connection->receive();
   try {
     handlePackets(m_connection->pull());
@@ -285,10 +278,6 @@ void UniverseClient::update(float dt) {
     if (!m_disconnectReason)
       m_disconnectReason = String("Exception caught handling incoming server packets, check log");
   }
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  ucLap(s_ucPacketsUs);
-#endif
-
   if (!isConnected())
     return;
 
@@ -298,28 +287,13 @@ void UniverseClient::update(float dt) {
 
   if (!m_pause) {
     m_worldClient->update(dt);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-    ucLap(s_ucWorldUs);
-#endif
     for (auto& p : m_scriptContexts)
       p.second->update();
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-    ucLap(s_ucScriptUs);
-#endif
   }
   m_connection->push(m_worldClient->getOutgoingPackets());
 
   if (!m_pause)
     m_systemWorldClient->update(dt);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  ucLap(s_ucSystemUs);
-  if (++s_ucFrames >= 120) {
-    Logger::info("[perf-uc] packets={}us worldClient={}us scripts={}us systemWorld={}us (avg/call)",
-        s_ucPacketsUs / s_ucFrames, s_ucWorldUs / s_ucFrames, s_ucScriptUs / s_ucFrames, s_ucSystemUs / s_ucFrames);
-    s_ucPacketsUs = s_ucWorldUs = s_ucScriptUs = s_ucSystemUs = 0;
-    s_ucFrames = 0;
-  }
-#endif
   m_connection->push(m_systemWorldClient->pullOutgoingPackets());
 
   m_teamClient->update();

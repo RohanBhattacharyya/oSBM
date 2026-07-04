@@ -4,6 +4,7 @@
 #include "StarOrderedMap.hpp"
 #include "StarBiMap.hpp"
 #include "StarGameTimers.hpp"
+#include "StarRenderer.hpp"
 
 namespace Star {
 
@@ -106,6 +107,28 @@ private:
 
   GuiContext* m_context;
   float m_prevInterfaceScale;
+
+  // Under-load pane render replay cache: pane rendering is immediate-mode (a
+  // full widget-tree walk emitting primitives every frame) and costs
+  // ~15-20ms/frame of HUD on weak hardware even when nothing on screen
+  // changed. When this instance is measurably struggling (see underLoad in
+  // render()), each pane is freshly rendered only every 3rd frame and its
+  // recorded primitives (with scissor state) are replayed in between --
+  // identical output, just up to 2 frames stale, and only ever engaged below
+  // ~20fps where UI staleness of ~100-150ms is imperceptible next to the
+  // frame stutter itself.
+  struct PaneRenderRecording {
+    List<Renderer::RecordedSegment> segments;
+    int64_t frame = 0;
+  };
+  HashMap<Pane*, PaneRenderRecording> m_paneRenderCache;
+  int64_t m_paneRenderFrame = 0;
+  int64_t m_lastRenderTimeUs = 0;
+
+  // Under-load pane update() throttle state (see update()).
+  int64_t m_lastUpdateTimeUs = 0;
+  int64_t m_updateCounter = 0;
+  float m_pendingUpdateDt = 0.0f;
 
   // Map of each pane layer, where the 0th pane is the topmost pane in each layer.
   Map<PaneLayer, OrderedMap<PanePtr, DismissCallback>> m_displayedPanes;

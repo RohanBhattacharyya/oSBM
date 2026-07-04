@@ -51,31 +51,13 @@ void WorldPainter::update(float dt) {
   m_environmentPainter->update(dt);
 }
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-namespace {
-  // Phase breakdown of WorldPainter::render (the in-world "paint" cost, which
-  // profiling showed is CPU-bound primitive generation, NOT GL submission --
-  // only ~34 draw calls/frame). Logged every 120 frames.
-  int64_t g_wpSetupUs = 0, g_wpEnvUs = 0, g_wpLightUs = 0, g_wpMapUs = 0, g_wpDrawUs = 0, g_wpCleanupUs = 0;
-  int64_t g_wpStarsUs = 0, g_wpDebrisUs = 0;
-  int64_t g_wpFrames = 0;
-}
-#endif
-
 void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWaiter) {
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  int64_t wpT = Time::monotonicMicroseconds();
-  auto wpLap = [&wpT](int64_t& accum) { int64_t n = Time::monotonicMicroseconds(); accum += n - wpT; wpT = n; };
-#endif
   m_camera.setScreenSize(m_renderer->screenSize());
   m_camera.setTargetPixelRatio(Root::singleton().configuration()->get("zoomLevel").toFloat());
 
   m_assets = Root::singleton().assets();
 
   m_tilePainter->setup(m_camera, renderData);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wpLap(g_wpSetupUs);
-#endif
 
   // Stars, Debris Fields, Sky, and Orbiters
 
@@ -84,25 +66,85 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   float starAndDebrisRatio = lerp(0.0625f, pixelRatioBasis * 2.0f, m_camera.pixelRatio());
   float orbiterAndPlanetRatio = lerp(0.125f, pixelRatioBasis * 3.0f, m_camera.pixelRatio());
 
-  m_environmentPainter->renderStars(starAndDebrisRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+  bool bgScaled = false;
+  bool bgReuse = false;
 #ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wpLap(g_wpStarsUs);
+  // Draw the environment background (sky, sun + rays, orbiters, horizon,
+  // stars, debris, parallax) into the reduced-resolution "background"
+  // framebuffer and stretch-blit it under the world layers. This content is
+  // all low-frequency and expensive mostly through primitive BUILD + buffer
+  // UPLOAD cost (~15ms/frame measured), so under load it's additionally only
+  // REFRESHED every 2nd frame: the buffer is marked "preserve" (not cleared
+  // at startFrame) and the previous contents are re-blitted on skip frames.
+  // At the sub-20fps rates where this engages, the background (sky gradient,
+  // distant parallax) moves less than a pixel per frame, so the one-frame
+  // staleness is imperceptible.
+  {
+    int64_t nowUs = Time::monotonicMicroseconds();
+    int64_t gapUs = m_bgLastRenderTimeUs != 0 ? nowUs - m_bgLastRenderTimeUs : 0;
+    bool wpUnderLoad = gapUs > 50000;
+    int64_t bgInterval = gapUs > 75000 ? 3 : 2;
+    m_bgLastRenderTimeUs = nowUs;
+    ++m_bgFrameCounter;
+    Vec2U screenSize = m_renderer->screenSize();
+    if (wpUnderLoad && m_bgValidSize == screenSize && (m_bgFrameCounter % bgInterval != 0))
+      bgReuse = true;
+    else if ((bgScaled = m_renderer->switchFrameBuffer("background")))
+      m_bgValidSize = screenSize;
+    else
+      m_bgValidSize = Vec2U();
+  }
 #endif
-  m_environmentPainter->renderDebrisFields(starAndDebrisRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+
+  if (!bgReuse) {
+    m_environmentPainter->renderStars(starAndDebrisRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+    m_environmentPainter->renderDebrisFields(starAndDebrisRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+    if (renderData.skyRenderData.type != SkyType::Atmosphereless)
+      m_environmentPainter->renderBackOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+    m_environmentPainter->renderPlanetHorizon(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+    m_environmentPainter->renderSky(Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+    m_environmentPainter->renderFrontOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+    if (renderData.skyRenderData.type == SkyType::Atmosphereless)
+      m_environmentPainter->renderBackOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+  }
+
+  // Parallax camera tracking must run exactly once per frame regardless of
+  // which render target the parallax layers are drawn into below.
+  auto parallaxDelta = m_camera.worldGeometry().diff(m_camera.centerWorldPosition(), m_previousCameraCenter);
+  if (parallaxDelta.magnitude() > 10)
+    m_parallaxWorldPosition = m_camera.centerWorldPosition();
+  else
+    m_parallaxWorldPosition += parallaxDelta;
+  m_previousCameraCenter = m_camera.centerWorldPosition();
+  m_parallaxWorldPosition[1] = m_camera.centerWorldPosition()[1];
+
+  bool parallaxRendered = false;
+
 #ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wpLap(g_wpDebrisUs);
+  // Parallax layers are several full-screen alpha-blended passes (~5-13ms of
+  // fill at full res) of the same low-frequency background content, so when
+  // the scaled background buffer is active they're drawn into it too (same
+  // z-order: above sky/orbiters, below all world layers). Tradeoff: they are
+  // flushed BEFORE this frame's lightMap uniforms are set, so lightMapped
+  // parallax layers shade with the previous frame's lightmap -- one frame
+  // stale, imperceptible for distant background content.
+  if (bgScaled && renderData.parallaxLayers && !renderData.parallaxLayers->empty()) {
+    m_environmentPainter->renderParallaxLayers(m_parallaxWorldPosition, m_camera, *renderData.parallaxLayers, renderData.skyRenderData);
+    parallaxRendered = true;
+  }
 #endif
-  if (renderData.skyRenderData.type != SkyType::Atmosphereless)
-    m_environmentPainter->renderBackOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
-  m_environmentPainter->renderPlanetHorizon(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
-  m_environmentPainter->renderSky(Vec2F(m_camera.screenSize()), renderData.skyRenderData);
-  m_environmentPainter->renderFrontOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
-  if (renderData.skyRenderData.type == SkyType::Atmosphereless)
-    m_environmentPainter->renderBackOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
 
   m_renderer->flush();
 #ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wpLap(g_wpEnvUs);
+  if (bgReuse) {
+    // Skip frame: composite the preserved background from the last refresh.
+    parallaxRendered = true;
+    m_renderer->switchFrameBuffer("main");
+    m_renderer->blitFrameBufferToCurrent("background");
+  } else if (bgScaled) {
+    m_renderer->switchFrameBuffer("main");
+    m_renderer->blitFrameBufferToCurrent("background");
+  }
 #endif
 
   bool lightMapUpdated = lightWaiter ? lightWaiter() : false;
@@ -124,33 +166,21 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
     m_renderer->setEffectParameter("lightMapOffset", m_camera.worldToScreen(Vec2F(renderData.lightMinPosition)));
   }
 
-  // Parallax layers
+  // Parallax layers (unless already drawn into the scaled background buffer)
 
-  auto parallaxDelta = m_camera.worldGeometry().diff(m_camera.centerWorldPosition(), m_previousCameraCenter);
-  if (parallaxDelta.magnitude() > 10)
-    m_parallaxWorldPosition = m_camera.centerWorldPosition();
-  else
-    m_parallaxWorldPosition += parallaxDelta;
-  m_previousCameraCenter = m_camera.centerWorldPosition();
-  m_parallaxWorldPosition[1] = m_camera.centerWorldPosition()[1];
-
-  if (!renderData.parallaxLayers.empty())
-    m_environmentPainter->renderParallaxLayers(m_parallaxWorldPosition, m_camera, renderData.parallaxLayers, renderData.skyRenderData);
+  if (!parallaxRendered && renderData.parallaxLayers && !renderData.parallaxLayers->empty())
+    m_environmentPainter->renderParallaxLayers(m_parallaxWorldPosition, m_camera, *renderData.parallaxLayers, renderData.skyRenderData);
 
   // Main world layers
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wpLap(g_wpLightUs);
-#endif
-
-  Map<EntityRenderLayer, List<pair<EntityHighlightEffect, List<Drawable>>>> entityDrawables;
+  // Entries reference (not steal) the render data's drawable lists: entries
+  // may be shared with WorldClient's entity render cache across frames, so
+  // they must be treated as immutable here.
+  Map<EntityRenderLayer, List<pair<EntityHighlightEffect, List<Drawable> const*>>> entityDrawables;
   for (auto& ed : renderData.entityDrawables) {
-    for (auto& p : ed.layers)
-      entityDrawables[p.first].append({ed.highlightEffect, std::move(p.second)});
+    for (auto& p : ed->layers)
+      entityDrawables[p.first].append({ed->highlightEffect, &p.second});
   }
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wpLap(g_wpMapUs);
-#endif
 
   auto entityDrawableIterator = entityDrawables.begin();
   auto renderEntitiesUntil = [this, &entityDrawables, &entityDrawableIterator](Maybe<EntityRenderLayer> until) {
@@ -160,7 +190,7 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
       if (until && entityDrawableIterator->first >= *until)
         break;
       for (auto& edl : entityDrawableIterator->second)
-        drawEntityLayer(std::move(edl.second), edl.first);
+        drawEntityLayer(*edl.second, edl.first);
       ++entityDrawableIterator;
     }
 
@@ -193,26 +223,12 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   auto dimLevel = round(renderData.dimLevel * 255);
   if (dimLevel != 0)
     m_renderer->render(renderFlatRect(RectF::withSize({}, Vec2F(m_camera.screenSize())), Vec4B(renderData.dimColor, dimLevel), 0.0f));
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wpLap(g_wpDrawUs);
-#endif
 
   static int64_t const textureTimeout = m_assets->json("/rendering.config:textureTimeout").toInt();
   m_textPainter->cleanup(textureTimeout);
   m_drawablePainter->cleanup(textureTimeout);
   m_environmentPainter->cleanup(textureTimeout);
   m_tilePainter->cleanup();
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wpLap(g_wpCleanupUs);
-  if (++g_wpFrames >= 120) {
-    Logger::info("[perf-wp] setup={}us stars={}us debris={}us skyrest={}us light={}us entityMap={}us draw={}us cleanup={}us (avg/frame)",
-        g_wpSetupUs / g_wpFrames, g_wpStarsUs / g_wpFrames, g_wpDebrisUs / g_wpFrames, g_wpEnvUs / g_wpFrames,
-        g_wpLightUs / g_wpFrames, g_wpMapUs / g_wpFrames, g_wpDrawUs / g_wpFrames, g_wpCleanupUs / g_wpFrames);
-    g_wpSetupUs = g_wpEnvUs = g_wpLightUs = g_wpMapUs = g_wpDrawUs = g_wpCleanupUs = 0;
-    g_wpStarsUs = g_wpDebrisUs = 0;
-    g_wpFrames = 0;
-  }
-#endif
 }
 
 void WorldPainter::adjustLighting(WorldRenderData& renderData) {
@@ -317,7 +333,7 @@ void WorldPainter::renderBars(WorldRenderData& renderData) {
   m_renderer->flush();
 }
 
-void WorldPainter::drawEntityLayer(List<Drawable> drawables, EntityHighlightEffect highlightEffect) {
+void WorldPainter::drawEntityLayer(List<Drawable> const& drawables, EntityHighlightEffect highlightEffect) {
   highlightEffect.level *= m_highlightConfig.getFloat("maxHighlightLevel", 1.0);
   if (m_highlightDirectives.contains(highlightEffect.type) && highlightEffect.level > 0) {
     // first pass, draw underlay
@@ -336,8 +352,8 @@ void WorldPainter::drawEntityLayer(List<Drawable> drawables, EntityHighlightEffe
 
     // second pass, draw main drawables and overlays
     auto overlayDirectives = m_highlightDirectives[highlightEffect.type].second;
-    for (auto& d : drawables) {
-      drawDrawable(d);
+    for (auto const& d : drawables) {
+      drawDrawable(d, true);
       if (!overlayDirectives.empty() && d.isImage()) {
         auto overlayDrawable = Drawable(d);
         overlayDrawable.fullbright = true;
@@ -347,30 +363,47 @@ void WorldPainter::drawEntityLayer(List<Drawable> drawables, EntityHighlightEffe
       }
     }
   } else {
-    for (auto& d : drawables)
-      drawDrawable(std::move(d));
+    for (auto const& d : drawables)
+      drawDrawable(d, true);
   }
 }
 
-void WorldPainter::drawDrawable(Drawable drawable) {
-  drawable.position = m_camera.worldToScreen(drawable.position);
-  drawable.scale(m_camera.pixelRatio() * TilePixels, drawable.position);
+void WorldPainter::drawDrawable(Drawable const& drawable, bool skipOnScreenCheck) {
+  // Non-mutating equivalent of the old copy-transform-draw path: the camera
+  // transform (worldToScreen + uniform scale about the screen position) is an
+  // affine map, so it's composed at primitive-emit time inside
+  // DrawablePainter instead of copying and mutating every Drawable -- which
+  // matters because Drawable copies carry AssetPath strings/directives and
+  // the entity drawable lists are now SHARED with WorldClient's render cache
+  // (mutating them would corrupt the cache).
+  Vec2F screenPos = m_camera.worldToScreen(drawable.position);
+  float scale = m_camera.pixelRatio() * TilePixels;
 
-  if (drawable.isLine())
-    drawable.linePart().width *= m_camera.pixelRatio();
+  if (!skipOnScreenCheck) {
+    // Same on-screen test as before: the old code transformed the drawable
+    // then took boundBox; since the transform is affine, transforming the
+    // world-space boundBox corners is identical.
+    RectF worldBound = drawable.boundBox(false);
+    RectF screenBound = RectF(
+        (worldBound.min() - drawable.position) * scale + screenPos,
+        (worldBound.max() - drawable.position) * scale + screenPos);
 
-  // draw the drawable if it's on screen
-  // if it's not on screen, there's a random chance to pre-load
-  // pre-load is not done on every tick because it's expensive to look up images with long paths
-  if (RectF::withSize(Vec2F(), Vec2F(m_camera.screenSize())).intersects(drawable.boundBox(false)))
-    m_drawablePainter->drawDrawable(drawable);
-  else if (drawable.isImage() && Random::randf() < m_preloadTextureChance)
-    m_assets->tryImage(drawable.imagePart().image);
+    // draw the drawable if it's on screen
+    // if it's not on screen, there's a random chance to pre-load
+    // pre-load is not done on every tick because it's expensive to look up images with long paths
+    if (!RectF::withSize(Vec2F(), Vec2F(m_camera.screenSize())).intersects(screenBound)) {
+      if (drawable.isImage() && Random::randf() < m_preloadTextureChance)
+        m_assets->tryImage(drawable.imagePart().image);
+      return;
+    }
+  }
+
+  m_drawablePainter->drawDrawable(drawable, scale, screenPos, m_camera.pixelRatio());
 }
 
 void WorldPainter::drawDrawableSet(List<Drawable>& drawables) {
-  for (Drawable& drawable : drawables)
-    drawDrawable(std::move(drawable));
+  for (Drawable const& drawable : drawables)
+    drawDrawable(drawable);
 
   m_renderer->flush();
 }

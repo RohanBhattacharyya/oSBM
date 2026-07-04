@@ -33,6 +33,9 @@ WorldClient::WorldClient(PlayerPtr mainPlayer, LuaRootPtr luaRoot) {
   auto assets = root.assets();
 
   m_clientConfig = assets->json("/client.config");
+  m_particleRegionPadding = m_clientConfig.getInt("particleRegionPadding");
+  m_itemRequestResetInterval = m_clientConfig.getInt("itemRequestReset");
+  m_worldClientStateUpdateDelta = m_clientConfig.getInt("worldClientStateUpdateDelta");
 
   m_currentStep = 0;
   m_currentTime = 0;
@@ -469,6 +472,18 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
   if (!inWorld())
     return;
 
+  // Self-measured frame pacing, used below to adaptively engage the
+  // peripheral-entity render throttle only when this specific run is
+  // actually struggling (< ~20fps), on any platform -- rather than tying a
+  // visual-smoothness tradeoff to a compile-time platform switch. A capable
+  // desktop that never drops this low never engages it and stays at full
+  // per-entity fidelity every frame.
+  int64_t nowUs = Time::monotonicMicroseconds();
+  int64_t frameGapUs = m_lastRenderTimeUs != 0 ? nowUs - m_lastRenderTimeUs : 0;
+  bool underLoad = frameGapUs > 50000;   // below ~20fps
+  bool deepLoad = frameGapUs > 75000;    // below ~12.5fps: throttle harder
+  m_lastRenderTimeUs = nowUs;
+
   // If we're dimming the world, then that takes priority
   m_worldDimTimer.tick();
   float dimRatio = m_worldDimTimer.percent();
@@ -499,10 +514,21 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
   // the entities near what's actually on screen (via the same spatial index
   // used elsewhere for range queries) skips real per-entity render() cost --
   // sprite composition, particles, tools -- for entities that were previously
-  // rendered unconditionally regardless of position. Light range extends a
-  // bit further than the tile range since a light source just off-screen can
-  // still spill onto the visible edge.
-  RectF lightQueryRange = RectF(window.padded(bufferTiles + 32));
+  // rendered unconditionally regardless of position.
+  //
+  // bufferTiles (TilePainter::BorderTileSize, ~16-20 tiles) is sized for tile
+  // CHUNK/material-neighbor alignment, not entity visibility -- an entity
+  // that far past the actual screen edge can never be seen. A much smaller,
+  // entity-specific margin (just enough for a large sprite or particle to
+  // visibly extend past its logical position) makes the entity query cover a
+  // meaningfully smaller area than the tile query, at the cost of entities
+  // popping in/out slightly closer to the screen edge than before (accepted
+  // -- edge-of-vision detail, not a focal-point change). This is a strict
+  // subset of what was queried before, so it's a pure win on every platform.
+  unsigned const entityQueryPad = 6;
+  // Light range extends further than the entity range since a light source
+  // just off-screen can still spill onto the visible edge.
+  RectF lightQueryRange = RectF(window.padded(entityQueryPad + 32));
   ClientRenderCallback lightingRenderCallback;
   m_entityMap->forEachEntity(lightQueryRange, [&](EntityPtr const& entity) {
     if (m_startupHiddenEntities.contains(entity->entityId()))
@@ -528,12 +554,13 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
       lightingCalc();
   }
 
-  float pulseAmount = Root::singleton().assets()->json("/highlights.config:interactivePulseAmount").toFloat();
-  float pulseRate = Root::singleton().assets()->json("/highlights.config:interactivePulseRate").toFloat();
+  static float const pulseAmount = Root::singleton().assets()->json("/highlights.config:interactivePulseAmount").toFloat();
+  static float const pulseRate = Root::singleton().assets()->json("/highlights.config:interactivePulseRate").toFloat();
   float pulseLevel = 1 - pulseAmount * 0.5 * (sin(2 * Constants::pi * pulseRate * Time::monotonicMilliseconds() / 1000.0) + 1);
 
   bool inspecting = m_mainPlayer->inspecting();
-  float inspectionFlickerMultiplier = Random::randf(1 - Root::singleton().assets()->json("/highlights.config:inspectionFlickerAmount").toFloat(), 1);
+  static float const inspectionFlickerAmount = Root::singleton().assets()->json("/highlights.config:inspectionFlickerAmount").toFloat();
+  float inspectionFlickerMultiplier = Random::randf(1 - inspectionFlickerAmount, 1);
 
   EntityId playerAimInteractive = NullEntityId;
   if (Root::singleton().configuration()->get("interactiveHighlight").toBool()) {
@@ -548,22 +575,86 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
         directives = &globalDirectives.get();
   }
   List<EntityPtr> visibleEntities;
-  m_entityMap->forEachEntity(RectF(tileRange), [&](EntityPtr const& entity) {
+  m_entityMap->forEachEntity(RectF(window.padded(entityQueryPad)), [&](EntityPtr const& entity) {
       visibleEntities.append(entity);
     });
   sort(visibleEntities, [](EntityPtr const& a, EntityPtr const& b) {
       return a->entityId() < b->entityId();
     });
+
+  // Entity render throttle: profiling showed the per-entity render loop is
+  // the single largest worldClient cost (~23-26ms at ~117 entities on a
+  // planet surface) and is spread across MANY individually-cheap entities
+  // (Plants/Objects/ItemDrops), plus concentrated humanoid composition for
+  // Npc/Monster. Under load, all of those types get a fresh render only 1 in
+  // 3 frames and reuse the last computed drawable set (re-translated for any
+  // movement) otherwise. Player (the focal point) always renders fresh.
+  // Static entities (Plants/Objects -- the majority) take a zero-delta fast
+  // path on reuse. Only engages while underLoad (this run is measurably
+  // struggling, see render()'s frame-pacing check above) -- a platform with
+  // headroom to spare never pays the animation-smoothness cost. Tradeoff on
+  // skip frames: animation state (wind sway, animator frames) freezes and
+  // new particle/audio emission from render() pauses -- at the sub-20fps
+  // frame rates where this engages, that staleness is imperceptible next to
+  // the frame stutter itself.
+  ++m_peripheralRenderFrame;
+  const int64_t peripheralSkipInterval = deepLoad ? 4 : 3;
+
   for (auto const& entity : visibleEntities) {
       if (m_startupHiddenEntities.contains(entity->entityId()))
         continue;
+
+      EntityType entityType = entity->entityType();
+      bool isPeripheral = underLoad
+          && entity->entityId() != playerAimInteractive // aim highlight pulses per-frame, keep it live
+          && (entityType == EntityType::Npc || entityType == EntityType::Monster
+              || entityType == EntityType::Plant || entityType == EntityType::Object
+              || entityType == EntityType::ItemDrop);
+      int64_t skipInterval = peripheralSkipInterval;
+      // The player's humanoid composition alone measured ~8ms/frame -- by far
+      // the most expensive single render() in the world. As the focal entity
+      // it gets a gentler 1-in-2 refresh under load (vs 1-in-3 for the rest):
+      // position stays exact every frame via the delta translation, only the
+      // walk-cycle/armor animation refreshes at half rate -- while the game is
+      // already below 20fps.
+      if (underLoad && entityType == EntityType::Player) {
+        isPeripheral = true;
+        skipInterval = 2;
+      }
+      // Plants are fully static apart from subtle wind sway; refresh them at
+      // half the rate of other throttled types.
+      if (isPeripheral && entityType == EntityType::Plant)
+        skipInterval *= 2;
+      if (isPeripheral) {
+        if (auto cached = m_peripheralRenderCache.ptr(entity->entityId())) {
+          if (m_peripheralRenderFrame - cached->frame < skipInterval) {
+            Vec2F delta = m_geometry.diff(entity->position(), cached->position);
+            if (delta == Vec2F()) {
+              // Static entity (the overwhelmingly common case: Plants and
+              // Objects don't move): re-share the exact cached entry -- a
+              // refcount bump, no per-drawable copy.
+              renderData.entityDrawables.append(cached->drawables);
+            } else {
+              // Moved since caching: emit a translated copy (cache entry
+              // itself stays put, keyed to its original position).
+              auto ed = make_shared<EntityDrawables>(*cached->drawables);
+              for (auto& p : ed->layers) {
+                for (auto& d : p.second)
+                  d.translate(delta);
+              }
+              renderData.entityDrawables.append(std::move(ed));
+            }
+            continue;
+          }
+        }
+      }
 
       ClientRenderCallback renderCallback;
 
       try { entity->render(&renderCallback); }
       catch (StarException const& e) {
         if (entity->isMaster()) // this is YOUR problem!!
-          throw e; 
+          throw e;
         else { // this is THEIR problem!!
           auto issue = printException(e, true);
           auto hash = hashOf(issue);
@@ -581,9 +672,8 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
           renderCallback.addDrawable(std::move(drawable), RenderLayerMiddleParticle);
         }
       }
-      
 
-      EntityDrawables ed;
+      auto ed = make_shared<EntityDrawables>();
       for (auto& p : renderCallback.drawables) {
         if (directives) {
           int directiveIndex = unsigned(entity->entityId()) % directives->size();
@@ -592,22 +682,25 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
               d.imagePart().addDirectives(directives->at(directiveIndex), true);
           }
         }
-        ed.layers[p.first] = std::move(p.second);
+        ed->layers[p.first] = std::move(p.second);
       }
 
       if (m_interactiveHighlightMode || (!inspecting && entity->entityId() == playerAimInteractive)) {
         if (auto interactive = as<InteractiveEntity>(entity)) {
           if (interactive->isInteractive()) {
-            ed.highlightEffect.type = EntityHighlightEffectType::Interactive;
-            ed.highlightEffect.level = pulseLevel;
+            ed->highlightEffect.type = EntityHighlightEffectType::Interactive;
+            ed->highlightEffect.level = pulseLevel;
           }
         }
       } else if (inspecting) {
         if (auto inspectable = as<InspectableEntity>(entity)) {
-          ed.highlightEffect = m_mainPlayer->inspectionHighlight(inspectable);
-          ed.highlightEffect.level *= inspectionFlickerMultiplier;
+          ed->highlightEffect = m_mainPlayer->inspectionHighlight(inspectable);
+          ed->highlightEffect.level *= inspectionFlickerMultiplier;
         }
       }
+
+      if (isPeripheral)
+        m_peripheralRenderCache[entity->entityId()] = CachedEntityRender{ed, entity->position(), m_peripheralRenderFrame};
       renderData.entityDrawables.append(std::move(ed));
 
       if (directives) {
@@ -615,11 +708,24 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
         for (auto& p : renderCallback.particles)
           p.directives.append(directives->get(directiveIndex));
       }
-      
+
       m_particles->addParticles(std::move(renderCallback.particles));
       m_samples.appendAll(std::move(renderCallback.audios));
       m_previewTiles.appendAll(std::move(renderCallback.previewTiles));
       renderData.overheadBars.appendAll(std::move(renderCallback.overheadBars));
+  }
+
+  // Drop cache entries for entities that are no longer in view (left the
+  // padded tile range, e.g. walked away or were unloaded) to keep this
+  // bounded rather than growing across a whole play session.
+  if (m_peripheralRenderFrame % 60 == 0) {
+    HashSet<EntityId> stillVisible;
+    for (auto const& entity : visibleEntities)
+      stillVisible.add(entity->entityId());
+    for (auto const& id : m_peripheralRenderCache.keys()) {
+      if (!stillVisible.contains(id))
+        m_peripheralRenderCache.remove(id);
+    }
   }
 
   m_tileArray->tileEachTo(renderData.tiles, tileRange, [&](RenderTile& renderTile, Vec2I const&, ClientTile const& clientTile) {
@@ -693,7 +799,12 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
     }
   }
 
-  renderData.particles = &m_particles->particles();
+  // Snapshot the particle list into a reused buffer: renderData must stay
+  // valid while the sim tick (which mutates the live particle list) runs
+  // concurrently with world painting on Switch.
+  m_particleSnapshot.clear();
+  m_particleSnapshot.appendAll(m_particles->particles());
+  renderData.particles = &m_particleSnapshot;
   LogMap::set("client_render_particle_count", renderData.particles->size());
 
   renderData.skyRenderData = m_sky->renderData();
@@ -709,33 +820,49 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
   if (environmentBiome)
     setParallax(environmentBiome->parallax);
 
-  if (m_currentParallax) {
-    if (m_parallaxFadeTimer.ready()) {
-      renderData.parallaxLayers.appendAll(m_currentParallax->layers());
-    } else {
-      for (auto layer : m_currentParallax->layers()) {
-        layer.alpha = min(1.0f, m_parallaxFadeTimer.percent() * 2);
-        renderData.parallaxLayers.append(layer);
+  // Rebuilding + copying + sorting the parallax layer list (each layer holds
+  // texture path lists and directives -- real string copies) measured ~4ms
+  // EVERY frame. The list's structure only changes when the parallax set or
+  // fade state changes, so build it into a persistent buffer then and only
+  // refresh the per-frame alphas (fade + time-of-day) in place.
+  bool parallaxSteady = m_parallaxFadeTimer.ready() && !m_nextParallax;
+  if (!parallaxSteady || m_currentParallax.get() != m_parallaxBuiltFrom) {
+    m_parallaxLayersBuffer.clear();
+    if (m_currentParallax) {
+      if (m_parallaxFadeTimer.ready()) {
+        m_parallaxLayersBuffer.appendAll(m_currentParallax->layers());
+      } else {
+        for (auto layer : m_currentParallax->layers()) {
+          layer.alpha = min(1.0f, m_parallaxFadeTimer.percent() * 2);
+          m_parallaxLayersBuffer.append(layer);
+        }
       }
     }
+    if (m_nextParallax) {
+      for (auto layer : m_nextParallax->layers()) {
+        layer.alpha = min(1.0f, (1.0f - m_parallaxFadeTimer.percent()) * 2);
+        m_parallaxLayersBuffer.append(layer);
+      }
+    }
+    stableSort(m_parallaxLayersBuffer, [](ParallaxLayer const& a, ParallaxLayer const& b) {
+        return tie(a.zLevel, a.verticalOrigin) > tie(b.zLevel, b.verticalOrigin);
+      });
+    m_parallaxLayerBaseAlpha.clear();
+    for (auto const& layer : m_parallaxLayersBuffer)
+      m_parallaxLayerBaseAlpha.append(layer.alpha);
+    m_parallaxBuiltFrom = parallaxSteady ? m_currentParallax.get() : nullptr;
   }
 
-  if (m_nextParallax) {
-    for (auto layer : m_nextParallax->layers()) {
-      layer.alpha = min(1.0f, (1.0f - m_parallaxFadeTimer.percent()) * 2);
-      renderData.parallaxLayers.append(layer);
+  {
+    auto functionDatabase = Root::singleton().functionDatabase();
+    for (size_t i = 0; i < m_parallaxLayersBuffer.size(); ++i) {
+      auto& layer = m_parallaxLayersBuffer[i];
+      if (!layer.timeOfDayCorrelation.empty())
+        layer.alpha = m_parallaxLayerBaseAlpha[i] * clamp((float)functionDatabase->function(layer.timeOfDayCorrelation)->evaluate(m_sky->timeOfDay() / m_sky->dayLength()), 0.0f, 1.0f);
     }
   }
 
-  auto functionDatabase = Root::singleton().functionDatabase();
-  for (auto& layer : renderData.parallaxLayers) {
-    if (!layer.timeOfDayCorrelation.empty())
-      layer.alpha *= clamp((float)functionDatabase->function(layer.timeOfDayCorrelation)->evaluate(m_sky->timeOfDay() / m_sky->dayLength()), 0.0f, 1.0f);
-  }
-
-  stableSort(renderData.parallaxLayers, [](ParallaxLayer const& a, ParallaxLayer const& b) {
-      return tie(a.zLevel, a.verticalOrigin) > tie(b.zLevel, b.verticalOrigin);
-    });
+  renderData.parallaxLayers = m_parallaxLayersBuffer.empty() ? nullptr : &m_parallaxLayersBuffer;
 
   auto overlayToDrawable = [](WorldStructure::Overlay const& overlay) -> Drawable {
     Drawable drawable = Drawable::makeImage(overlay.image, 1.0f / TilePixels, false, overlay.min);
@@ -1153,14 +1280,6 @@ void WorldClient::update(float dt) {
 
   auto assets = Root::singleton().assets();
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  static int64_t s_wcEntityUs = 0, s_wcParticleUs = 0, s_wcSectorUs = 0, s_wcOtherUs = 0;
-  static int64_t s_wcDamageUs = 0, s_wcSkyUs = 0, s_wcWeatherUs = 0, s_wcSparkUs = 0, s_wcPacketUs = 0;
-  static int64_t s_wcFrames = 0;
-  int64_t wcT = Time::monotonicMicroseconds();
-  auto wcLap = [&wcT](int64_t& accum) { int64_t n = Time::monotonicMicroseconds(); accum += n - wcT; wcT = n; };
-#endif
-
   float expireTime = min(float(m_latency + 800), 2000.f);
   auto now = Time::monotonicMilliseconds();
   eraseWhere(m_predictedTiles, [&](auto& pair) {
@@ -1179,8 +1298,13 @@ void WorldClient::update(float dt) {
 
   // Secret broadcasts are transmitted through DamageNotifications for vanilla server compatibility.
   // Because DamageNotification packets are spoofable, we have to sign the data so other clients can validate that it is legitimate.
-  auto& publicKey = Curve25519::publicKey();
-  String publicKeyString((const char*)publicKey.data(), publicKey.size());
+  // Curve25519::publicKey() is a process-lifetime constant, so the String
+  // conversion (a heap allocation + copy) only needs to happen once, not
+  // every single update tick.
+  static String const publicKeyString = [] {
+    auto& publicKey = Curve25519::publicKey();
+    return String((const char*)publicKey.data(), publicKey.size());
+  }();
   m_mainPlayer->setSecretProperty(SECRET_BROADCAST_PUBLIC_KEY, publicKeyString);
   // Temporary: Backwards compatibility with StarExtensions
   m_mainPlayer->effectsAnimator()->setGlobalTag("\0SE_VOICE_SIGNING_KEY"s, publicKeyString);
@@ -1203,11 +1327,34 @@ void WorldClient::update(float dt) {
 
   List<EntityId> toRemove;
   List<EntityId> clientPresenceEntities;
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcOtherUs);
-#endif
+  // Under-load slave-entity tick spreading: client-side updates of SLAVE
+  // entities (server-authoritative NPCs/monsters/plants/objects/drops --
+  // their client update is interpolation stepping + animation, not gameplay
+  // logic) run every 2nd tick with the ACCUMULATED dt, half of the entities
+  // (by id parity) on each tick. Net movement is identical (dt-compensated),
+  // animation/interpolation granularity halves, and the per-tick entity cost
+  // roughly halves. Master entities (the player, client-fired projectiles)
+  // and Projectile slaves (fast-moving, highly visible) always tick fully.
+  // Same >50ms self-measured engage heuristic as the render-side throttles.
+  int64_t updateNowUs = Time::monotonicMicroseconds();
+  int64_t updateGapUs = m_lastUpdateTimeUs != 0 ? updateNowUs - m_lastUpdateTimeUs : 0;
+  bool updateUnderLoad = updateGapUs > 50000;
+  bool updateDeepLoad = updateGapUs > 75000;
+  m_lastUpdateTimeUs = updateNowUs;
+  // dt is the fixed sim timestep, so a fixed multiplier equals accumulating
+  // the skipped ticks' dt exactly; each slave runs 1-in-N ticks with N*dt.
+  unsigned slaveInterval = updateDeepLoad ? 3 : 2;
+  float slaveDt = dt * (float)slaveInterval;
+  unsigned slaveBucket = (unsigned)(m_currentStep % slaveInterval);
+
   m_entityMap->updateAllEntities([&](EntityPtr const& entity) {
-      try { entity->update(dt, m_currentStep); }
+      float entityDt = dt;
+      if (updateUnderLoad && !entity->isMaster() && entity->entityType() != EntityType::Projectile) {
+        if (unsigned(entity->entityId()) % slaveInterval != slaveBucket)
+          return;
+        entityDt = slaveDt;
+      }
+      try { entity->update(entityDt, m_currentStep); }
       catch (StarException const& e) {
         if (entity->isMaster()) // this is YOUR problem!!
           throw e;
@@ -1230,40 +1377,29 @@ void WorldClient::update(float dt) {
     }, [](EntityPtr const& a, EntityPtr const& b) {
       return a->entityType() < b->entityType();
     });
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcEntityUs);
-#endif
-
   m_clientState.setPlayer(m_mainPlayer->entityId());
   m_clientState.setClientPresenceEntities(std::move(clientPresenceEntities));
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcOtherUs);
-#endif
   m_damageManager->update(dt);
   handleDamageNotifications();
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcDamageUs);
-#endif
 
   m_sky->setAltitude(m_clientState.windowCenter()[1]);
   m_sky->update(dt);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcSkyUs);
-#endif
 
-  RectI particleRegion = m_clientState.window().padded(m_clientConfig.getInt("particleRegionPadding"));
+  RectI particleRegion = m_clientState.window().padded(m_particleRegionPadding);
 
   m_weather.setVisibleRegion(particleRegion);
+  // Under load, halve weather particle spawn density: each drop costs a
+  // tile-exposure query at spawn, an update every tick, and a draw every
+  // frame -- in storms these dominated the frame (16ms update + 20ms draw).
+  // Half-density rain in a storm at sub-20fps is not visually conspicuous.
+  m_weather.setDensityScale(updateUnderLoad ? 0.5f : 1.0f);
   m_weather.update(dt);
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcWeatherUs);
-#endif
 
   if (!m_mainPlayer->isDead()) {
     // Clear m_requestedDrops every so often in case of entity id reuse or
     // desyncs etc
-    if (m_currentStep % m_clientConfig.getInt("itemRequestReset") == 0)
+    if (m_currentStep % m_itemRequestResetInterval == 0)
       m_requestedDrops.clear();
 
     Vec2F playerPos = m_mainPlayer->position();
@@ -1287,14 +1423,8 @@ void WorldClient::update(float dt) {
 
   sparkDamagedBlocks();
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcSparkUs);
-#endif
   m_particles->addParticles(m_weather.pullNewParticles());
   m_particles->update(dt, RectF(particleRegion), m_weather.wind());
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcParticleUs);
-#endif
 
   if (auto audioSample = m_ambientSounds.updateAmbient(currentAmbientNoises(), m_sky->isDayTime()))
     m_samples.append(audioSample);
@@ -1339,13 +1469,7 @@ void WorldClient::update(float dt) {
   for (EntityId entityId : toRemove)
     removeEntity(entityId, true);
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcOtherUs);
-#endif
   queueUpdatePackets(m_entityUpdateTimer.wrapTick(dt));
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcPacketUs);
-#endif
 
   if ((!m_clientState.netCompatibilityRules().isLegacy() && m_currentStep % 3 == 0) || m_pingTime.isNothing()) {
     m_pingTime = Time::monotonicMilliseconds();
@@ -1354,9 +1478,6 @@ void WorldClient::update(float dt) {
 
   LogMap::set("client_ping", m_latency);
 
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcOtherUs);
-#endif
   // Remove active sectors that are outside of the current monitoring region
   Set<ClientTileSectorArray::Sector> neededSectors;
   auto monitoredRegions = m_clientState.monitoringRegions([this](EntityId entityId) -> Maybe<RectI> {
@@ -1379,19 +1500,6 @@ void WorldClient::update(float dt) {
   LogMap::set("client_entities", m_entityMap->size());
   LogMap::set("client_sectors", toString(loadedSectors.size()));
   LogMap::set("client_lua_mem", m_luaRoot->luaMemoryUsage());
-
-#ifdef STAR_SYSTEM_FAMILY_MOBILE
-  wcLap(s_wcSectorUs);
-  if (++s_wcFrames >= 120) {
-    Logger::info("[perf-wc] entities={}us damage={}us sky={}us weather={}us spark={}us particles={}us packets={}us sectors={}us other={}us | entityCount={}",
-        s_wcEntityUs / s_wcFrames, s_wcDamageUs / s_wcFrames, s_wcSkyUs / s_wcFrames, s_wcWeatherUs / s_wcFrames,
-        s_wcSparkUs / s_wcFrames, s_wcParticleUs / s_wcFrames, s_wcPacketUs / s_wcFrames,
-        s_wcSectorUs / s_wcFrames, s_wcOtherUs / s_wcFrames, m_entityMap->size());
-    s_wcEntityUs = s_wcDamageUs = s_wcSkyUs = s_wcWeatherUs = s_wcSparkUs = 0;
-    s_wcParticleUs = s_wcPacketUs = s_wcSectorUs = s_wcOtherUs = 0;
-    s_wcFrames = 0;
-  }
-#endif
 }
 
 ConnectionId WorldClient::connection() const {
@@ -1583,7 +1691,7 @@ void WorldClient::queueUpdatePackets(bool sendEntityUpdates) {
 
   m_outgoingPackets.append(make_shared<StepUpdatePacket>(m_currentTime));
 
-  if (m_currentStep % m_clientConfig.getInt("worldClientStateUpdateDelta") == 0)
+  if (m_currentStep % m_worldClientStateUpdateDelta == 0)
     m_outgoingPackets.append(make_shared<WorldClientStateUpdatePacket>(m_clientState.writeDelta()));
 
   m_entityMap->forAllEntities([&](EntityPtr const& entity) { notifyEntityCreate(entity); });
@@ -1865,22 +1973,29 @@ void WorldClient::initWorld(WorldStartPacket const& startPacket) {
   m_outgoingPackets.append(make_shared<WorldStartAcknowledgePacket>());
 
   auto assets = Root::singleton().assets();
+#ifdef STAR_SYSTEM_SWITCH
+  // Always use the "normal" (multiplayer-style, interpolation-enabled)
+  // profile even for a local connection: the local server halves its
+  // entity-update rate on Switch (see WorldServer::queueUpdatePackets), and
+  // interpolation is what keeps entity motion smooth between the sparser
+  // authoritative updates -- exactly as it does for real remote play.
+  m_interpolationTracker = InterpolationTracker(m_clientConfig.query("interpolationSettings.normal"));
+#else
   if (startPacket.localInterpolationMode)
     m_interpolationTracker = InterpolationTracker(m_clientConfig.query("interpolationSettings.local"));
   else
     m_interpolationTracker = InterpolationTracker(m_clientConfig.query("interpolationSettings.normal"));
-
-  m_entityUpdateTimer = GameTimer(m_interpolationTracker.entityUpdateDelta()
-#ifdef STAR_SYSTEM_SWITCH
-    // Halve how often the client serializes + sends the (heavily-modded) local
-    // player's full net state to the in-process server. writeNetState of the
-    // player dominated the update tick (~12ms avg). At half rate the local
-    // server's view of the player is at most a few extra ticks stale, which is
-    // imperceptible in single player (world streaming uses the separate client-
-    // state window packet, not entity net state).
-    * 4.0f
 #endif
-  );
+
+  // Reduce how often the client serializes + sends the local player's full
+  // net state to the server. writeNetState of the player can dominate the
+  // update tick. Only safe when the connection is local (localInterpolationMode):
+  // client and server are the same process, so the server's view of the
+  // player being a few extra ticks stale is imperceptible (world streaming
+  // uses the separate client-state window packet, not entity net state). Over
+  // a real remote connection this would visibly desync the player for other
+  // clients, so it stays tied to locality, not platform.
+  m_entityUpdateTimer = GameTimer(m_interpolationTracker.entityUpdateDelta() * (startPacket.localInterpolationMode ? 4.0f : 1.0f));
 
   m_clientId = startPacket.clientId;
   m_mainPlayer->clientContext()->setConnectionId(startPacket.clientId);
