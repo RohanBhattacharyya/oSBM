@@ -90,6 +90,10 @@ public final class MainActivity extends SDLActivity {
 
     public static native void onNativeGyroAim(float x, float y, float z);
 
+    // Forwards an OS back (button or predictive-back edge-swipe gesture) to the
+    // native launcher so it can navigate back through its menu history.
+    public static native void nativeOnLauncherBack();
+
     private static boolean isControllerSource(int source) {
         return (source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
             || (source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
@@ -203,8 +207,12 @@ public final class MainActivity extends SDLActivity {
 
         if (Build.VERSION.SDK_INT >= 33) {
             mBackCallback = () -> {
-                // Consume predictive back to avoid activity teardown races that can
-                // abort in SDL's native Vsync receiver.
+                // Consume predictive back so the OS does not tear the activity down
+                // (which can abort in SDL's native Vsync receiver), and forward it
+                // to the native launcher for menu back-navigation. This fires for
+                // both the navigation-bar back button and the edge-swipe back
+                // gesture on Android 13+.
+                dispatchNativeLauncherBack();
             };
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                 OnBackInvokedDispatcher.PRIORITY_DEFAULT,
@@ -242,7 +250,22 @@ public final class MainActivity extends SDLActivity {
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
-        // Consume back button instead of finishing the activity.
+        // Consume the back button/gesture instead of finishing the activity, and
+        // forward it to the native launcher for menu back-navigation. On Android
+        // 13+ the predictive-back dispatcher routes to mBackCallback instead, so
+        // this path only runs on API < 33.
+        dispatchNativeLauncherBack();
+    }
+
+    // Safely forwards an OS back to the native layer. The native library is
+    // loaded before the SDL surface is created, but guard defensively so an
+    // early back (e.g. before native init) can never crash the activity.
+    private void dispatchNativeLauncherBack() {
+        try {
+            nativeOnLauncherBack();
+        } catch (Throwable t) {
+            Log.w(TAG, "nativeOnLauncherBack failed", t);
+        }
     }
 
     private static MainActivity instance() {

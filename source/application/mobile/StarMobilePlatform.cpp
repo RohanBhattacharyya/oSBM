@@ -17,6 +17,9 @@
 extern "C" void StarIosBridge_setSdlWindow(void* window);
 extern "C" void StarIosBridge_getSafeAreaInsets(float* top, float* left, float* bottom, float* right);
 extern "C" int  StarIosBridge_getInterfaceOrientation();
+// Installs native UIScreenEdgePanGestureRecognizers on the SDL window so that a
+// true iOS left/right screen-edge swipe drives launcher back/forward navigation.
+extern "C" void StarIosBridge_installLauncherEdgeSwipes();
 #elif STAR_SYSTEM_SWITCH
 #include "mobile/switch/StarSwitchPlatform.hpp"
 #endif
@@ -133,6 +136,31 @@ void setAndroidImGuiTextInputActive(bool) {}
 void drainAndroidImGuiEditKeys() {}
 #endif
 
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+// Pending launcher navigation requested from a native OS gesture/button. Written
+// from the platform callback thread (Android JNI / iOS UIKit main thread) and
+// consumed by the launcher loop. -1 = back, +1 = forward, 0 = none.
+//
+// This is deliberately sourced from real OS events rather than a synthetic touch
+// recognizer: the Android system back button and its predictive-back edge-swipe
+// gesture both arrive through MainActivity, and iOS screen-edge pans arrive via
+// the Objective-C bridge. Both platforms funnel through starMobileRequestLauncherNav.
+std::atomic<int> g_launcherNativeNavRequest{0};
+
+extern "C" void starMobileRequestLauncherNav(int direction) {
+  g_launcherNativeNavRequest.store(direction, std::memory_order_relaxed);
+}
+#endif
+
+#ifdef STAR_SYSTEM_ANDROID
+// Invoked from MainActivity's OnBackInvokedCallback (API 33+) and its
+// onBackPressed() fallback (API < 33) whenever the OS delivers a back — whether
+// from the navigation bar / hardware button or the edge-swipe back gesture.
+extern "C" JNIEXPORT void JNICALL Java_io_github_openstarbound_mobile_MainActivity_nativeOnLauncherBack(JNIEnv*, jclass) {
+  starMobileRequestLauncherNav(-1);
+}
+#endif
+
 namespace Star {
 
 // Defined in game/StarGameTypes.cpp; declared here to avoid pulling the game
@@ -174,6 +202,18 @@ enum class GamepadGlyphFamily {
   Playstation,
   Switch,
   SteamDeck
+};
+
+// Logical launcher navigation destinations. Each maps deterministically onto the
+// LauncherState open-flags so that edge-swipe / back-button navigation and the
+// in-panel buttons stay in sync through a single browser-style history stack.
+enum class LauncherScreen {
+  Main,
+  UiSettings,
+  TouchManager,
+  GamepadManager,
+  ModManager,
+  SaveManager
 };
 
 static int64_t const LauncherQuickStartHoldMs = 1000;
@@ -222,6 +262,14 @@ struct LauncherState {
   bool asyncActionCompleted = false;
   String asyncActionName;
   LauncherActionResult asyncActionResult;
+
+  // Browser-style navigation history for edge-swipe / back-button navigation.
+  // currentScreen mirrors the active open-flag combination; navBackStack holds
+  // the screens a "back" gesture unwinds through, navForwardStack the screens a
+  // "forward" gesture re-enters. These persist for the launcher's lifetime.
+  LauncherScreen currentScreen = LauncherScreen::Main;
+  std::vector<LauncherScreen> navBackStack;
+  std::vector<LauncherScreen> navForwardStack;
 };
 
 
@@ -652,6 +700,9 @@ private:
 
 #ifdef STAR_SYSTEM_IOS
     StarIosBridge_setSdlWindow(m_window);
+    // Attach native iOS screen-edge pan recognizers for launcher back/forward
+    // navigation, so edge swipes are driven by real UIKit gestures.
+    StarIosBridge_installLauncherEdgeSwipes();
     // Explicitly request fullscreen so the SDL window covers the entire screen
     // on all iOS versions. On iOS 26+ the implicit "0x0 = fullscreen" behaviour
     // is not guaranteed, and without this call the window may be inset,
@@ -2038,6 +2089,120 @@ private:
     ImGui::EndChild();
   }
 
+  // Derive the active logical screen from the LauncherState open-flags. The
+  // priority here must match the render dispatch in runLauncher exactly.
+  LauncherScreen deriveLauncherScreen(LauncherState const& state) const {
+    if (state.uiSettingsOpen)
+      return LauncherScreen::UiSettings;
+    if (state.touchManagerOpen && state.gamepadManagerOpen)
+      return LauncherScreen::GamepadManager;
+    if (state.touchManagerOpen)
+      return LauncherScreen::TouchManager;
+    if (state.modManagerOpen)
+      return LauncherScreen::ModManager;
+    if (state.saveManagerOpen)
+      return LauncherScreen::SaveManager;
+    return LauncherScreen::Main;
+  }
+
+  // Set the open-flags so that deriveLauncherScreen() would return `screen`.
+  // Mirrors the side effects the in-panel navigation buttons perform on entry.
+  void applyLauncherScreen(LauncherState& state, LauncherScreen screen) {
+    bool touch = screen == LauncherScreen::TouchManager || screen == LauncherScreen::GamepadManager;
+    state.uiSettingsOpen = screen == LauncherScreen::UiSettings;
+    state.touchManagerOpen = touch;
+    state.gamepadManagerOpen = screen == LauncherScreen::GamepadManager;
+    state.modManagerOpen = screen == LauncherScreen::ModManager;
+    state.saveManagerOpen = screen == LauncherScreen::SaveManager;
+
+    if (screen == LauncherScreen::ModManager)
+      state.modListDirty = true;
+    if (touch)
+      state.selectedTouchElement = std::clamp(state.selectedTouchElement, 0, std::max(0, (int)state.touchElements.size() - 1));
+
+    state.currentScreen = screen;
+  }
+
+  // Move one step back through the navigation history. The touch-layout preview
+  // is a transient overlay, so a back gesture dismisses it first. Returns true
+  // if the gesture consumed a navigation step.
+  bool navigateLauncherBack(LauncherState& state) {
+    if (state.touchPreviewOpen) {
+      state.touchPreviewOpen = false;
+      return true;
+    }
+    if (state.navBackStack.empty())
+      return false;
+
+    LauncherScreen previous = state.navBackStack.back();
+    state.navBackStack.pop_back();
+    state.navForwardStack.push_back(state.currentScreen);
+    applyLauncherScreen(state, previous);
+    return true;
+  }
+
+  // Re-enter a screen a previous back gesture unwound out of.
+  bool navigateLauncherForward(LauncherState& state) {
+    if (state.touchPreviewOpen || state.navForwardStack.empty())
+      return false;
+
+    LauncherScreen next = state.navForwardStack.back();
+    state.navForwardStack.pop_back();
+    state.navBackStack.push_back(state.currentScreen);
+    applyLauncherScreen(state, next);
+    return true;
+  }
+
+  // Consume a back/forward request queued by the hardware back button, Escape,
+  // a gamepad face button, or an edge swipe. Modal popups and text input keep
+  // their own Escape/back semantics, so navigation is suppressed while they are
+  // active to avoid pulling a screen out from under them.
+  void applyLauncherPendingNavigation(LauncherState& state) {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+    // Fold in any back/forward requested by a native OS gesture or button since
+    // the last frame. A native request takes precedence over an in-app one.
+    if (int nativeNav = ::g_launcherNativeNavRequest.exchange(0, std::memory_order_relaxed))
+      m_launcherPendingNav = nativeNav;
+#endif
+
+    int pending = m_launcherPendingNav;
+    m_launcherPendingNav = 0;
+    if (pending == 0)
+      return;
+
+    if (ImGui::GetCurrentContext()) {
+      if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
+        return;
+      if (ImGui::GetIO().WantTextInput)
+        return;
+    }
+
+    if (pending < 0)
+      navigateLauncherBack(state);
+    else
+      navigateLauncherForward(state);
+  }
+
+  // After a frame renders, the in-panel buttons may have changed the open-flags
+  // directly. Fold that change into the history stack so button navigation and
+  // gesture navigation share one consistent back/forward model: navigating to
+  // the screen sitting on top of the back stack (e.g. "Back to Launcher") is
+  // treated as a back step; any other change is a new forward navigation.
+  void reconcileLauncherNavigation(LauncherState& state) {
+    LauncherScreen derived = deriveLauncherScreen(state);
+    if (derived == state.currentScreen)
+      return;
+
+    if (!state.navBackStack.empty() && state.navBackStack.back() == derived) {
+      state.navBackStack.pop_back();
+      state.navForwardStack.push_back(state.currentScreen);
+    } else {
+      state.navBackStack.push_back(state.currentScreen);
+      state.navForwardStack.clear();
+    }
+    state.currentScreen = derived;
+  }
+
   bool runLauncher(LauncherState& state) {
     static bool loggedLauncherFrame = false;
 #ifdef STAR_SYSTEM_SWITCH
@@ -2052,6 +2217,7 @@ private:
     syncWindowMetrics(false);
     processWindowEvents();
     syncWindowMetrics(false);
+    applyLauncherPendingNavigation(state);
     applyLauncherUiConfig(state.uiConfig);
 
     if (!loggedLauncherFrame) {
@@ -2597,6 +2763,10 @@ private:
 
       ImGui::EndChild();
     }
+
+    // Fold any screen change made by the in-panel buttons this frame into the
+    // navigation history so button and gesture navigation stay consistent.
+    reconcileLauncherNavigation(state);
 
     if (!mainLauncherOpen || state.asyncActionRunning || !state.canLaunch || m_activeGamepadName.empty())
       resetLauncherQuickStart();
@@ -3424,14 +3594,28 @@ private:
           || event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED
           || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) {
         syncWindowMetrics(false);
+      } else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+        // A physical keyboard Escape requests a launcher "back". The Android
+        // system back button and edge-swipe gesture do NOT arrive here: the app
+        // opts into the predictive-back dispatcher, so they are delivered
+        // natively through MainActivity -> nativeOnLauncherBack (see the JNI
+        // bridge below) and folded in via applyLauncherPendingNavigation.
+        if (event.key.key == SDLK_ESCAPE) {
+          if (!ImGui::GetCurrentContext() || !ImGui::GetIO().WantTextInput)
+            m_launcherPendingNav = -1;
+        }
       } else if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
         openGamepad(event.gdevice.which);
       } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
         closeGamepad(event.gdevice.which);
       } else if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-        if (controllerButtonFromSdlControllerButton(event.gbutton.button) == ControllerButton::A && !m_launcherQuickStartButtonHeld) {
+        ControllerButton button = controllerButtonFromSdlControllerButton(event.gbutton.button);
+        if (button == ControllerButton::A && !m_launcherQuickStartButtonHeld) {
           m_launcherQuickStartButtonHeld = true;
           m_launcherQuickStartStartMs = Time::monotonicMilliseconds();
+        } else if (button == ControllerButton::B || button == ControllerButton::Back) {
+          // B / View act as the launcher "back" navigation for gamepads.
+          m_launcherPendingNav = -1;
         }
       } else if (event.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
         if (controllerButtonFromSdlControllerButton(event.gbutton.button) == ControllerButton::A)
@@ -3794,6 +3978,10 @@ private:
   uint64_t m_launcherTouchFinger = 0;
   ImVec2 m_launcherTouchLastPos = ImVec2(0.0f, 0.0f);
   float m_launcherTouchDragDistance = 0.0f;
+  // Queued launcher navigation intent: -1 = back, +1 = forward, 0 = none.
+  // Populated from real input events (gamepad/keyboard) and, on mobile, from
+  // native OS back/edge-swipe callbacks folded in via g_launcherNativeNavRequest.
+  int m_launcherPendingNav = 0;
   bool m_launcherImGuiClickConsumed = false;
   bool m_launcherQuickStartButtonHeld = false;
   int64_t m_launcherQuickStartStartMs = 0;

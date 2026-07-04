@@ -24,6 +24,10 @@
 #include <string>
 #include <vector>
 
+// Defined in StarMobilePlatform.cpp. Records a launcher navigation intent
+// requested from a native gesture: -1 = back, +1 = forward.
+extern "C" void starMobileRequestLauncherNav(int direction);
+
 @interface StarIosDocumentPickerDelegate : NSObject <UIDocumentPickerDelegate>
 @property (nonatomic, strong) NSArray<NSURL*>* pickedUrls;
 @property (nonatomic, strong) dispatch_semaphore_t semaphore;
@@ -54,6 +58,33 @@
   self.pickedUrls = @[];
   NSLog(@"[OpenStarbound][iOSBridge] document picker cancelled");
   [self signalCompletion];
+}
+@end
+
+// Target for the launcher's native screen-edge pan recognizers. A left-edge
+// swipe navigates back, a right-edge swipe navigates forward. Firing on the
+// gesture's Began phase mirrors the immediate response of the system's own
+// interactive edge gestures.
+@interface StarIosLauncherEdgeSwipeTarget : NSObject <UIGestureRecognizerDelegate>
+@end
+
+@implementation StarIosLauncherEdgeSwipeTarget
+- (void)handleLeftEdge:(UIScreenEdgePanGestureRecognizer*)recognizer {
+  if (recognizer.state == UIGestureRecognizerStateBegan)
+    starMobileRequestLauncherNav(-1);
+}
+
+- (void)handleRightEdge:(UIScreenEdgePanGestureRecognizer*)recognizer {
+  if (recognizer.state == UIGestureRecognizerStateBegan)
+    starMobileRequestLauncherNav(1);
+}
+
+// Let the edge pans coexist with SDL's own touch handling on the same view.
+- (BOOL)gestureRecognizer:(UIGestureRecognizer*)gestureRecognizer
+    shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer*)other {
+  (void)gestureRecognizer;
+  (void)other;
+  return YES;
 }
 @end
 
@@ -1086,6 +1117,42 @@ static NSArray<NSURL*>* presentOpenPicker(PickerMode mode) {
 
 extern "C" void StarIosBridge_setSdlWindow(void* window) {
   g_sdlWindow = static_cast<SDL_Window*>(window);
+}
+
+extern "C" void StarIosBridge_installLauncherEdgeSwipes() {
+  static StarIosLauncherEdgeSwipeTarget* target = nil;
+  runOnMainSync(^{
+    UIWindow* window = activeWindow();
+    if (!window)
+      return;
+
+    // Idempotent: setup can be re-entered (e.g. window recreation), so avoid
+    // stacking duplicate recognizers on the same view.
+    for (UIGestureRecognizer* existing in window.gestureRecognizers) {
+      if ([existing isKindOfClass:[UIScreenEdgePanGestureRecognizer class]]
+          && [existing.name isEqualToString:@"StarLauncherEdgeSwipe"])
+        return;
+    }
+
+    if (!target)
+      target = [StarIosLauncherEdgeSwipeTarget new];
+
+    UIScreenEdgePanGestureRecognizer* leftEdge = [[UIScreenEdgePanGestureRecognizer alloc]
+        initWithTarget:target action:@selector(handleLeftEdge:)];
+    leftEdge.edges = UIRectEdgeLeft;
+    leftEdge.delegate = target;
+    leftEdge.name = @"StarLauncherEdgeSwipe";
+    [window addGestureRecognizer:leftEdge];
+
+    UIScreenEdgePanGestureRecognizer* rightEdge = [[UIScreenEdgePanGestureRecognizer alloc]
+        initWithTarget:target action:@selector(handleRightEdge:)];
+    rightEdge.edges = UIRectEdgeRight;
+    rightEdge.delegate = target;
+    rightEdge.name = @"StarLauncherEdgeSwipe";
+    [window addGestureRecognizer:rightEdge];
+
+    NSLog(@"[OpenStarbound][iOSBridge] installed launcher edge-swipe recognizers");
+  });
 }
 
 extern "C" void StarIosBridge_getSafeAreaInsets(float* top, float* left, float* bottom, float* right) {
