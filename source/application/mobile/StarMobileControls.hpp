@@ -93,6 +93,9 @@ struct MobileTouchAction {
   MouseButton mouseButton = MouseButton::Left;
   UiNavigationDirection uiNavigationDirection = UiNavigationDirection::Down;
   List<Key> keys;
+  // For KeyMacro: true = play the keys as an ordered sequence of taps,
+  // false = hold all keys down together (a chord / key combination).
+  bool macroSequential = true;
 };
 
 struct MobileTouchElement {
@@ -124,7 +127,7 @@ struct MobileGamepadBinding {
 String keysName(List<Key> const& keys);
 String actionName(MobileTouchAction const& action);
 MobileTouchAction keyAction(Key key);
-MobileTouchAction macroAction(List<Key> keys);
+MobileTouchAction macroAction(List<Key> keys, bool sequential = true);
 MobileTouchAction mouseAction(MouseButton button);
 MobileTouchAction wheelAction(bool up);
 MobileTouchAction gyroToggleAction();

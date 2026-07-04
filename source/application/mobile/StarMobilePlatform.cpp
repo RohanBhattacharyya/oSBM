@@ -242,7 +242,13 @@ struct LauncherState {
   int selectedTouchElement = 0;
   String touchLabelBufferElementId;
   char touchLabelBuffer[64] = {};
-  StringMap<std::array<char, 256>> touchActionBuffers;
+  // Virtual-keyboard macro editor state. Only one editor is open at a time; it is
+  // keyed by the action-editor's bufferId so the modal applies back to the right
+  // action. macroEditorKeys is the working, ordered key sequence being built.
+  String macroEditorBufferId;
+  bool macroEditorOpen = false;
+  bool macroEditorSequential = true;
+  std::vector<Key> macroEditorKeys;
   bool newTouchButtonPopup = false;
   int newTouchActionIndex = 0;
   float newTouchButtonSize = 1.0f;
@@ -1217,9 +1223,6 @@ private:
     return actionIndex(action, touchActionChoices());
   }
 
-  String touchActionKeysText(MobileTouchAction const& action) const {
-    return keysName(keysFromTouchAction(action));
-  }
 
   float imguiButtonWidth(char const* label, ImVec2 size = {}) const {
     if (size.x > 0.0f)
@@ -1260,46 +1263,201 @@ private:
     ImGui::BeginChild(id, ImVec2(0.0f, height), false, ImGuiWindowFlags_NoScrollbar);
   }
 
-  void renderActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId, std::vector<pair<String, MobileTouchAction>> const& choices) {
-    int index = actionIndex(action, choices);
-    if (ImGui::BeginCombo(label, choices[index].first.utf8Ptr())) {
-      for (size_t i = 0; i < choices.size(); ++i) {
-        bool selected = index == (int)i;
-        if (ImGui::Selectable(choices[i].first.utf8Ptr(), selected)) {
-          index = (int)i;
-          action = choices[i].second;
-          if (auto buffer = state.touchActionBuffers.ptr(bufferId))
-            std::snprintf(buffer->data(), buffer->size(), "%s", touchActionKeysText(action).utf8Ptr());
+  // Human-readable name for a single key, reused for macro chips.
+  String keyLabel(Key key) const {
+    List<Key> single;
+    single.append(key);
+    return keysName(single);
+  }
+
+  // The on-screen keyboard used by the macro editor. Each entry is a short
+  // display label paired with the Key it inserts. Rows mirror a physical
+  // keyboard so keys are easy to find; the editor wraps rows that don't fit.
+  static std::vector<std::vector<pair<char const*, Key>>> const& virtualKeyboardRows() {
+    static std::vector<std::vector<pair<char const*, Key>>> const rows = {
+      {{"Esc", Key::Escape}, {"Tab", Key::Tab}, {"`", Key::Backquote},
+       {"F1", Key::F1}, {"F2", Key::F2}, {"F3", Key::F3}, {"F4", Key::F4},
+       {"F5", Key::F5}, {"F6", Key::F6}, {"F7", Key::F7}, {"F8", Key::F8},
+       {"F9", Key::F9}, {"F10", Key::F10}, {"F11", Key::F11}, {"F12", Key::F12}},
+      {{"1", Key::One}, {"2", Key::Two}, {"3", Key::Three}, {"4", Key::Four}, {"5", Key::Five},
+       {"6", Key::Six}, {"7", Key::Seven}, {"8", Key::Eight}, {"9", Key::Nine}, {"0", Key::Zero},
+       {"-", Key::Minus}, {"=", Key::Equals}},
+      {{"Q", Key::Q}, {"W", Key::W}, {"E", Key::E}, {"R", Key::R}, {"T", Key::T}, {"Y", Key::Y},
+       {"U", Key::U}, {"I", Key::I}, {"O", Key::O}, {"P", Key::P}, {"[", Key::LeftBracket}, {"]", Key::RightBracket}},
+      {{"A", Key::A}, {"S", Key::S}, {"D", Key::D}, {"F", Key::F}, {"G", Key::G}, {"H", Key::H},
+       {"J", Key::J}, {"K", Key::K}, {"L", Key::L}, {";", Key::Semicolon}, {"'", Key::Quote}},
+      {{"Z", Key::Z}, {"X", Key::X}, {"C", Key::C}, {"V", Key::V}, {"B", Key::B}, {"N", Key::N},
+       {"M", Key::M}, {",", Key::Comma}, {".", Key::Period}, {"/", Key::Slash}},
+      {{"Shift", Key::LShift}, {"Ctrl", Key::LCtrl}, {"Alt", Key::LAlt}, {"Space", Key::Space},
+       {"Enter", Key::Return}, {"Bksp", Key::Backspace}, {"Del", Key::Delete}},
+      {{"Up", Key::Up}, {"Down", Key::Down}, {"Left", Key::Left}, {"Right", Key::Right}}
+    };
+    return rows;
+  }
+
+  void openMacroEditor(LauncherState& state, MobileTouchAction const& action, String const& bufferId) {
+    state.macroEditorBufferId = bufferId;
+    state.macroEditorOpen = true;
+    state.macroEditorKeys.clear();
+    for (auto key : keysFromTouchAction(action))
+      state.macroEditorKeys.push_back(key);
+    state.macroEditorSequential = action.kind == MobileTouchActionKind::KeyMacro ? action.macroSequential : true;
+    ImGui::OpenPopup(launcherText("macroEditor.title", "Macro Editor").utf8Ptr());
+  }
+
+  // Full-featured on-screen macro editor. Replaces the old free-text key entry
+  // (which the mobile soft keyboard could not reliably feed) with a virtual
+  // keyboard: tap keys to append, reorder or remove them, and choose whether the
+  // keys play as an ordered sequence or a held chord.
+  void renderMacroEditorModal(LauncherState& state, MobileTouchAction& action, String const& bufferId) {
+    ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowSize(ImVec2(std::min(display.x * 0.94f, 760.0f), std::min(display.y * 0.90f, 640.0f)), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal(launcherText("macroEditor.title", "Macro Editor").utf8Ptr(), nullptr, ImGuiWindowFlags_NoCollapse))
+      return;
+
+    // Guard against a stale target: only the editor that opened the popup edits.
+    if (state.macroEditorBufferId != bufferId) {
+      ImGui::EndPopup();
+      return;
+    }
+
+    ImGui::TextWrapped("%s", launcherText("macroEditor.help", "Tap keys below to add them to the macro. Reorder or remove them in the list above.").utf8Ptr());
+
+    if (ImGui::RadioButton(launcherText("macroEditor.sequence", "Play in order (sequence)").utf8Ptr(), state.macroEditorSequential))
+      state.macroEditorSequential = true;
+    ImGui::SameLine();
+    if (ImGui::RadioButton(launcherText("macroEditor.chord", "Hold together (chord)").utf8Ptr(), !state.macroEditorSequential))
+      state.macroEditorSequential = false;
+
+    ImGui::Separator();
+    ImGui::Text("%s (%u)", launcherText("macroEditor.sequenceLabel", "Macro keys").utf8Ptr(), (unsigned)state.macroEditorKeys.size());
+
+    float listHeight = ImGui::GetTextLineHeightWithSpacing() * 4.5f;
+    ImGui::BeginChild("MacroSequenceList", ImVec2(0.0f, listHeight), true);
+    if (state.macroEditorKeys.empty()) {
+      ImGui::TextDisabled("%s", launcherText("macroEditor.empty", "No keys yet — tap the keyboard below.").utf8Ptr());
+    } else {
+      int removeIndex = -1, moveUpIndex = -1, moveDownIndex = -1;
+      for (int i = 0; i < (int)state.macroEditorKeys.size(); ++i) {
+        ImGui::PushID(i);
+        ImGui::Text("%d.", i + 1);
+        ImGui::SameLine();
+        ImGui::TextUnformatted(keyLabel(state.macroEditorKeys[i]).utf8Ptr());
+        float rowRight = ImGui::GetWindowContentRegionMax().x;
+        float btnW = ImGui::GetFrameHeight();
+        ImGui::SameLine(std::max(ImGui::GetCursorPosX(), rowRight - btnW * 3.0f - ImGui::GetStyle().ItemSpacing.x * 2.0f));
+        ImGui::BeginDisabled(i == 0);
+        if (ImGui::Button("^", ImVec2(btnW, 0.0f)))
+          moveUpIndex = i;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(i == (int)state.macroEditorKeys.size() - 1);
+        if (ImGui::Button("v", ImVec2(btnW, 0.0f)))
+          moveDownIndex = i;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("x", ImVec2(btnW, 0.0f)))
+          removeIndex = i;
+        ImGui::PopID();
+      }
+      if (moveUpIndex > 0)
+        std::swap(state.macroEditorKeys[moveUpIndex], state.macroEditorKeys[moveUpIndex - 1]);
+      if (moveDownIndex >= 0 && moveDownIndex < (int)state.macroEditorKeys.size() - 1)
+        std::swap(state.macroEditorKeys[moveDownIndex], state.macroEditorKeys[moveDownIndex + 1]);
+      if (removeIndex >= 0)
+        state.macroEditorKeys.erase(state.macroEditorKeys.begin() + removeIndex);
+    }
+    ImGui::EndChild();
+
+    ImGui::Separator();
+    float footerHeight = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
+    ImGui::BeginChild("MacroKeyboard", ImVec2(0.0f, -footerHeight), true);
+    float avail = ImGui::GetContentRegionAvail().x;
+    float spacing = ImGui::GetStyle().ItemSpacing.x;
+    float minKeyW = ImGui::GetFrameHeight() * 1.35f;
+    for (auto const& row : virtualKeyboardRows()) {
+      float lineX = 0.0f;
+      bool firstInLine = true;
+      for (auto const& entry : row) {
+        float keyW = std::max(minKeyW, ImGui::CalcTextSize(entry.first).x + ImGui::GetStyle().FramePadding.x * 2.0f);
+        if (!firstInLine && lineX + spacing + keyW > avail) {
+          lineX = 0.0f;
+          firstInLine = true;
         }
+        if (!firstInLine)
+          ImGui::SameLine();
+        ImGui::PushID(&entry);
+        if (ImGui::Button(entry.first, ImVec2(keyW, ImGui::GetFrameHeight() * 1.35f)))
+          state.macroEditorKeys.push_back(entry.second);
+        ImGui::PopID();
+        lineX += (firstInLine ? 0.0f : spacing) + keyW;
+        firstInLine = false;
+      }
+    }
+    ImGui::EndChild();
+
+    auto closeEditor = [&state]() {
+      state.macroEditorOpen = false;
+      state.macroEditorBufferId.clear();
+      state.macroEditorKeys.clear();
+      ImGui::CloseCurrentPopup();
+    };
+
+    if (ImGui::Button(launcherText("macroEditor.removeLast", "Remove Last").utf8Ptr()) && !state.macroEditorKeys.empty())
+      state.macroEditorKeys.pop_back();
+    ImGui::SameLine();
+    if (ImGui::Button(launcherText("macroEditor.clear", "Clear").utf8Ptr()))
+      state.macroEditorKeys.clear();
+    ImGui::SameLine();
+    if (ImGui::Button(launcherText("common.cancel", "Cancel").utf8Ptr()))
+      closeEditor();
+    ImGui::SameLine();
+    if (ImGui::Button(launcherText("common.save", "Save").utf8Ptr())) {
+      List<Key> keys;
+      for (auto key : state.macroEditorKeys)
+        keys.append(key);
+      if (keys.size() == 1)
+        action = keyAction(keys[0]);
+      else if (!keys.empty())
+        action = macroAction(keys, state.macroEditorSequential);
+      else
+        action = noneAction();
+      closeEditor();
+    }
+
+    ImGui::EndPopup();
+  }
+
+  void renderActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId, std::vector<pair<String, MobileTouchAction>> const& choices) {
+    ImGui::PushID(bufferId.utf8Ptr());
+
+    // Preview reflects a custom macro so it isn't misrepresented as a preset.
+    bool isMacro = action.kind == MobileTouchActionKind::KeyMacro && !action.keys.empty();
+    int index = actionIndex(action, choices);
+    String preview = isMacro
+        ? strf("{} {}", action.macroSequential ? launcherText("macroEditor.previewSequence", "Macro:") : launcherText("macroEditor.previewChord", "Chord:"), keysName(action.keys))
+        : choices[index].first;
+
+    if (ImGui::BeginCombo(label, preview.utf8Ptr())) {
+      for (size_t i = 0; i < choices.size(); ++i) {
+        bool selected = !isMacro && index == (int)i;
+        if (ImGui::Selectable(choices[i].first.utf8Ptr(), selected))
+          action = choices[i].second;
         if (selected)
           ImGui::SetItemDefaultFocus();
       }
       ImGui::EndCombo();
     }
 
-    if (!state.touchActionBuffers.contains(bufferId)) {
-      state.touchActionBuffers[bufferId] = {};
-      auto& buffer = state.touchActionBuffers[bufferId];
-      std::snprintf(buffer.data(), buffer.size(), "%s", touchActionKeysText(action).utf8Ptr());
-    }
+    // Virtual-keyboard macro editor: the touch-friendly replacement for typing
+    // key names into a text box.
+    String summary = isMacro ? keysName(action.keys) : launcherText("macroEditor.none", "none set");
+    if (ImGui::Button(launcherText("macroEditor.editButton", "Edit macro keys...").utf8Ptr()))
+      openMacroEditor(state, action, bufferId);
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", summary.utf8Ptr());
 
-    auto& buffer = state.touchActionBuffers[bufferId];
-    ImGui::PushID(bufferId.utf8Ptr());
-    float applyWidth = imguiButtonWidth(launcherText("common.apply", "Apply").utf8Ptr());
-    float availableWidth = ImGui::GetContentRegionAvail().x;
-    bool inlineApply = availableWidth >= applyWidth + ImGui::GetStyle().ItemSpacing.x + 180.0f;
-    if (inlineApply)
-      ImGui::SetNextItemWidth(availableWidth - applyWidth - ImGui::GetStyle().ItemSpacing.x);
-    ImGui::InputTextWithHint(launcherText("touchManager.customKeys", "Custom keys").utf8Ptr(), launcherText("touchManager.customKeysHint", "Example: LShift+F1 or Ctrl,Alt,E").utf8Ptr(), buffer.data(), buffer.size());
-    if (inlineApply)
-      ImGui::SameLine();
-    if (ImGui::Button(launcherText("common.apply", "Apply").utf8Ptr())) {
-      auto keys = keysFromText(String(buffer.data()));
-      if (keys.size() == 1)
-        action = keyAction(keys[0]);
-      else if (!keys.empty())
-        action = macroAction(keys);
-    }
+    renderMacroEditorModal(state, action, bufferId);
     ImGui::PopID();
   }
 

@@ -94,10 +94,11 @@ MobileTouchAction keyAction(Key key) {
   return action;
 }
 
-MobileTouchAction macroAction(List<Key> keys) {
+MobileTouchAction macroAction(List<Key> keys, bool sequential) {
   MobileTouchAction action;
   action.kind = MobileTouchActionKind::KeyMacro;
   action.keys = std::move(keys);
+  action.macroSequential = sequential;
   return action;
 }
 
@@ -286,7 +287,7 @@ List<Key> keysFromJson(Json const& json) {
 
 Json jsonFromTouchAction(MobileTouchAction const& action) {
   if (action.kind == MobileTouchActionKind::KeyMacro)
-    return JsonObject{{"type", "keys"}, {"keys", jsonFromKeys(action.keys)}};
+    return JsonObject{{"type", "keys"}, {"keys", jsonFromKeys(action.keys)}, {"sequential", action.macroSequential}};
   if (action.kind == MobileTouchActionKind::MouseButton)
     return JsonObject{{"type", "mouse"}, {"button", MouseButtonNames.getRight(action.mouseButton)}};
   if (action.kind == MobileTouchActionKind::MouseWheelUp)
@@ -312,7 +313,7 @@ MobileTouchAction touchActionFromJson(Json const& json, MobileTouchAction def) {
   auto type = json.getString("type", "key");
   if (type.equals("keys", String::CaseInsensitive) || type.equals("macro", String::CaseInsensitive)) {
     auto keys = keysFromJson(json);
-    return keys.empty() ? def : macroAction(keys);
+    return keys.empty() ? def : macroAction(keys, json.getBool("sequential", true));
   }
   if (type.equals("mouse", String::CaseInsensitive))
     return mouseAction(MouseButtonNames.valueLeft(json.getString("button", MouseButtonNames.getRight(def.mouseButton)), def.mouseButton));
@@ -642,6 +643,7 @@ public:
 
   void cancelAll() {
     clearPulsedActions();
+    m_macroEvents.clear();
 
     for (auto const& pair : m_keyHoldCounts.pairs()) {
       if (pair.second > 0)
@@ -1286,6 +1288,7 @@ private:
     setKeyOwner("joystick:down", Key::S, m_moveVec[1] > 0.30f);
     updateVirtualAimTarget();
     releaseExpiredPulsedActions();
+    processMacroEvents();
     repeatActionButtons();
     repeatDPadWheelActions();
 
@@ -1526,8 +1529,16 @@ private:
     if (action.kind == MobileTouchActionKind::Key) {
       setKeyOwner(owner, action.key, desired);
     } else if (action.kind == MobileTouchActionKind::KeyMacro) {
-      for (auto key : action.keys)
-        setKeyOwner(owner, key, desired);
+      if (action.macroSequential) {
+        // Sequence macro: on trigger, schedule an ordered run of key taps.
+        // Releasing is a no-op — the run completes on its own timeline.
+        if (desired && !action.keys.empty() && !hasActiveMacro(owner))
+          enqueueMacro(action.keys, owner);
+      } else {
+        // Chord macro: hold every key down together for the button's lifetime.
+        for (auto key : action.keys)
+          setKeyOwner(owner, key, desired);
+      }
     } else if (action.kind == MobileTouchActionKind::MouseButton) {
       setMouseOwner(owner, action.mouseButton, desired);
     } else if (desired && action.kind == MobileTouchActionKind::MouseWheelUp) {
@@ -1540,7 +1551,60 @@ private:
   }
 
   bool actionNeedsRelease(MobileTouchAction const& action) const {
-    return action.kind == MobileTouchActionKind::Key || action.kind == MobileTouchActionKind::KeyMacro || action.kind == MobileTouchActionKind::MouseButton;
+    // Sequence macros self-terminate, so they don't need a paired release.
+    if (action.kind == MobileTouchActionKind::KeyMacro)
+      return !action.macroSequential;
+    return action.kind == MobileTouchActionKind::Key || action.kind == MobileTouchActionKind::MouseButton;
+  }
+
+  // --- Sequential macro playback ---------------------------------------------
+  // A macro run is expanded into a list of timed key up/down events. Each key in
+  // the sequence is pressed for MacroKeyHoldMs then released, with MacroKeyGapMs
+  // before the next key. Every key instance gets a unique owner token so it plays
+  // through setKeyOwner's reference counting and coexists with other held keys.
+  static constexpr int64_t MacroKeyHoldMs = 45;
+  static constexpr int64_t MacroKeyGapMs = 55;
+
+  int64_t macroRunDurationMs(size_t keyCount) const {
+    return (int64_t)keyCount * (MacroKeyHoldMs + MacroKeyGapMs);
+  }
+
+  bool hasActiveMacro(String const& owner) const {
+    String prefix = owner + "#macro";
+    for (auto const& event : m_macroEvents) {
+      if (event.ownerToken.beginsWith(prefix))
+        return true;
+    }
+    return false;
+  }
+
+  void enqueueMacro(List<Key> const& keys, String const& owner) {
+    int64_t base = Time::monotonicMilliseconds();
+    int64_t instance = ++m_macroInstanceCounter;
+    int64_t cursor = base;
+    size_t step = 0;
+    for (auto key : keys) {
+      String token = strf("{}#macro{}#{}", owner, instance, step);
+      m_macroEvents.append(MacroKeyEvent{key, true, cursor, token});
+      m_macroEvents.append(MacroKeyEvent{key, false, cursor + MacroKeyHoldMs, token});
+      cursor += MacroKeyHoldMs + MacroKeyGapMs;
+      ++step;
+    }
+  }
+
+  void processMacroEvents() {
+    if (m_macroEvents.empty())
+      return;
+
+    int64_t now = Time::monotonicMilliseconds();
+    List<MacroKeyEvent> pending;
+    for (auto const& event : m_macroEvents) {
+      if (event.atMs <= now)
+        setKeyOwner(event.ownerToken, event.key, event.down);
+      else
+        pending.append(event);
+    }
+    m_macroEvents = std::move(pending);
   }
 
   void startPulsedAction(MobileTouchAction const& action, String const& owner) {
@@ -1700,6 +1764,15 @@ private:
   StringSet m_mouseActionOwners;
   HashMap<MouseButton, unsigned> m_mouseHoldCounts;
 
+  struct MacroKeyEvent {
+    Key key;
+    bool down;
+    int64_t atMs;
+    String ownerToken;
+  };
+  List<MacroKeyEvent> m_macroEvents;
+  int64_t m_macroInstanceCounter = 0;
+
   bool m_joystickActive = false;
   uint64_t m_joystickFinger = 0;
   uint64_t m_aimFinger = 0;
@@ -1777,6 +1850,7 @@ public:
       updateStickAim();
     }
     releaseExpiredPulsedActions();
+    processMacroEvents();
     repeatButtons();
   }
 
@@ -1830,6 +1904,7 @@ public:
   void cancelAll() {
     clearPulsedActions();
     closeActionWheel(false);
+    m_macroEvents.clear();
 
     for (auto const& pair : m_keyHoldCounts.pairs()) {
       if (pair.second > 0)
@@ -2116,8 +2191,13 @@ private:
     if (action.kind == MobileTouchActionKind::Key) {
       setKeyOwner(owner, action.key, desired);
     } else if (action.kind == MobileTouchActionKind::KeyMacro) {
-      for (auto key : action.keys)
-        setKeyOwner(owner, key, desired);
+      if (action.macroSequential) {
+        if (desired && !action.keys.empty() && !hasActiveMacro(owner))
+          enqueueMacro(action.keys, owner);
+      } else {
+        for (auto key : action.keys)
+          setKeyOwner(owner, key, desired);
+      }
     } else if (action.kind == MobileTouchActionKind::MouseButton) {
       setMouseOwner(owner, action.mouseButton, desired);
     } else if (desired && action.kind == MobileTouchActionKind::MouseWheelUp) {
@@ -2138,7 +2218,51 @@ private:
   }
 
   bool actionNeedsRelease(MobileTouchAction const& action) const {
-    return action.kind == MobileTouchActionKind::Key || action.kind == MobileTouchActionKind::KeyMacro || action.kind == MobileTouchActionKind::MouseButton;
+    if (action.kind == MobileTouchActionKind::KeyMacro)
+      return !action.macroSequential;
+    return action.kind == MobileTouchActionKind::Key || action.kind == MobileTouchActionKind::MouseButton;
+  }
+
+  // Sequential macro playback (mirrors the touch adapter). See that adapter for
+  // the design notes on timing and per-key owner tokens.
+  static constexpr int64_t MacroKeyHoldMs = 45;
+  static constexpr int64_t MacroKeyGapMs = 55;
+
+  bool hasActiveMacro(String const& owner) const {
+    String prefix = owner + "#macro";
+    for (auto const& event : m_macroEvents) {
+      if (event.ownerToken.beginsWith(prefix))
+        return true;
+    }
+    return false;
+  }
+
+  void enqueueMacro(List<Key> const& keys, String const& owner) {
+    int64_t instance = ++m_macroInstanceCounter;
+    int64_t cursor = Time::monotonicMilliseconds();
+    size_t step = 0;
+    for (auto key : keys) {
+      String token = strf("{}#macro{}#{}", owner, instance, step);
+      m_macroEvents.append(MacroKeyEvent{key, true, cursor, token});
+      m_macroEvents.append(MacroKeyEvent{key, false, cursor + MacroKeyHoldMs, token});
+      cursor += MacroKeyHoldMs + MacroKeyGapMs;
+      ++step;
+    }
+  }
+
+  void processMacroEvents() {
+    if (m_macroEvents.empty())
+      return;
+
+    int64_t now = Time::monotonicMilliseconds();
+    List<MacroKeyEvent> pending;
+    for (auto const& event : m_macroEvents) {
+      if (event.atMs <= now)
+        setKeyOwner(event.ownerToken, event.key, event.down);
+      else
+        pending.append(event);
+    }
+    m_macroEvents = std::move(pending);
   }
 
   void startPulsedAction(MobileTouchAction const& action, String const& owner) {
@@ -2224,6 +2348,15 @@ private:
   HashMap<Key, unsigned> m_keyHoldCounts;
   StringSet m_mouseActionOwners;
   HashMap<MouseButton, unsigned> m_mouseHoldCounts;
+
+  struct MacroKeyEvent {
+    Key key;
+    bool down;
+    int64_t atMs;
+    String ownerToken;
+  };
+  List<MacroKeyEvent> m_macroEvents;
+  int64_t m_macroInstanceCounter = 0;
 };
 
 
