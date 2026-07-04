@@ -1132,6 +1132,7 @@ private:
       state.touchConfig.gyroEnabled = false;
     state.touchConfig.opacity = config.queryFloat("touch.opacity", 0.35f);
     state.touchConfig.size = config.queryFloat("touch.size", 1.0f);
+    state.touchConfig.outlineThickness = config.queryFloat("touch.outlineThickness", 1.5f);
     state.touchConfig.deadzone = config.queryFloat("touch.deadzone", 0.15f);
     state.touchConfig.gyroSensitivity = config.queryFloat("touch.gyroSensitivity", 1.0f);
     state.touchConfig.gyroInvertX = config.queryBool("touch.gyroInvertX", false);
@@ -1820,7 +1821,32 @@ private:
     ImGui::EndChild();
   }
 
-  void renderTouchElementPreview(LauncherState& state, ImDrawList* draw, ImVec2 canvasMin, ImVec2 canvasSize, int index) {
+  // Deferred label for the preview, drawn with a contrast outline after the
+  // inversion-blended shape pass (see renderTouchPreview).
+  struct PreviewLabel {
+    ImVec2 pos;
+    String text;
+  };
+
+  // Same inversion (difference) blend the in-game overlay uses for its
+  // always-visible button geometry (Minecraft's crosshair technique).
+  static void applyTouchPreviewContrastBlend(ImDrawList const*, ImDrawCmd const*) {
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendFuncSeparate(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_COLOR, GL_ONE, GL_ZERO);
+  }
+
+  static void drawPreviewLabelWithOutline(ImDrawList* draw, ImVec2 pos, char const* text, ImU32 color, ImU32 outline) {
+    static ImVec2 const offsets[8] = {
+      {-1.0f, -1.0f}, {0.0f, -1.0f}, {1.0f, -1.0f},
+      {-1.0f,  0.0f},                {1.0f,  0.0f},
+      {-1.0f,  1.0f}, {0.0f,  1.0f}, {1.0f,  1.0f}
+    };
+    for (auto const& o : offsets)
+      draw->AddText(ImVec2(pos.x + o.x, pos.y + o.y), outline, text);
+    draw->AddText(pos, color, text);
+  }
+
+  void renderTouchElementPreview(LauncherState& state, ImDrawList* draw, ImVec2 canvasMin, ImVec2 canvasSize, int index, std::vector<PreviewLabel>& labels) {
     auto& element = state.touchElements[index];
     if (!element.enabled)
       return;
@@ -1828,10 +1854,22 @@ private:
     float baseRadius = std::min(canvasSize.x, canvasSize.y) * 0.075f * state.touchConfig.size;
     float radius = baseRadius * std::clamp(element.size, 0.45f, 2.4f);
     ImVec2 center(canvasMin.x + element.position[0] * canvasSize.x, canvasMin.y + element.position[1] * canvasSize.y);
-    ImU32 base = IM_COL32(255, 255, 255, (int)(210.0f * std::clamp(state.touchConfig.opacity, 0.0f, 1.0f)));
+
+    // Match the in-game overlay: opaque contrast colours (the inversion blend
+    // ignores alpha) with the opacity setting remapped to a contrast strength,
+    // and the configurable outline thickness.
+    float op = std::clamp(state.touchConfig.opacity, 0.0f, 1.0f);
+    auto contrast = [op](float c) { return 0.5f + (c - 0.5f) * op; };
+    auto contrastColor = [&contrast](float r, float g, float b) {
+      return IM_COL32((int)std::lround(contrast(r) * 255.0f),
+                      (int)std::lround(contrast(g) * 255.0f),
+                      (int)std::lround(contrast(b) * 255.0f), 255);
+    };
+    ImU32 base = contrastColor(1.0f, 1.0f, 1.0f);
     ImU32 fill = index == state.selectedTouchElement
-        ? IM_COL32(120, 190, 255, 120)
-        : IM_COL32(80, 160, 255, 70);
+        ? contrastColor(0.47f, 0.75f, 1.0f)
+        : contrastColor(0.31f, 0.63f, 1.0f);
+    float thickness = std::max(1.0f, state.touchConfig.outlineThickness);
 
     ImGui::SetCursorScreenPos(ImVec2(center.x - radius, center.y - radius));
     ImGui::PushID(element.id.utf8Ptr());
@@ -1849,15 +1887,15 @@ private:
       float arm = radius * 0.38f;
       draw->AddRectFilled(ImVec2(center.x - arm, center.y - radius), ImVec2(center.x + arm, center.y + radius), fill, arm * 0.2f);
       draw->AddRectFilled(ImVec2(center.x - radius, center.y - arm), ImVec2(center.x + radius, center.y + arm), fill, arm * 0.2f);
-      draw->AddRect(ImVec2(center.x - radius, center.y - radius), ImVec2(center.x + radius, center.y + radius), base, arm * 0.25f, 0, 3.0f);
-      draw->AddText(ImVec2(center.x - radius * 0.38f, center.y - radius * 0.18f), base, launcherText("touchElement.dpad", "D-PAD").utf8Ptr());
+      draw->AddRect(ImVec2(center.x - radius, center.y - radius), ImVec2(center.x + radius, center.y + radius), base, arm * 0.25f, 0, thickness);
+      labels.push_back({ImVec2(center.x - radius * 0.38f, center.y - radius * 0.18f), launcherText("touchElement.dpad", "D-PAD")});
     } else if (element.kind == MobileTouchElementKind::Joystick || element.kind == MobileTouchElementKind::AimJoystick) {
-      draw->AddCircle(center, radius, base, 48, 3.0f);
+      draw->AddCircle(center, radius, base, 48, thickness);
       draw->AddCircleFilled(center, radius * 0.34f, fill, 32);
     } else {
       draw->AddCircleFilled(center, radius * 0.55f, fill, 32);
-      draw->AddCircle(center, radius * 0.55f, base, 48, 3.0f);
-      draw->AddText(ImVec2(center.x - radius * 0.22f, center.y - radius * 0.18f), base, element.label.utf8Ptr());
+      draw->AddCircle(center, radius * 0.55f, base, 48, thickness);
+      labels.push_back({ImVec2(center.x - radius * 0.22f, center.y - radius * 0.18f), element.label});
     }
   }
 
@@ -1889,9 +1927,20 @@ private:
     ImGui::EndChild();
 
     // Register control drag hitboxes after the toolbar so overlapping controls
-    // can always be pulled out from underneath it.
+    // can always be pulled out from underneath it. Shapes are drawn with the
+    // same always-visible inversion blend as the in-game overlay; labels are
+    // drawn afterwards under the default blend with a contrast outline.
+    std::vector<PreviewLabel> labels;
+    draw->AddCallback(applyTouchPreviewContrastBlend, nullptr);
     for (int i = 0; i < (int)state.touchElements.size(); ++i)
-      renderTouchElementPreview(state, draw, min, displaySize, i);
+      renderTouchElementPreview(state, draw, min, displaySize, i, labels);
+    draw->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+
+    float op = std::clamp(state.touchConfig.opacity, 0.0f, 1.0f);
+    ImU32 labelColor = IM_COL32(255, 255, 255, (int)(230.0f * op));
+    ImU32 labelOutline = IM_COL32(0, 0, 0, (int)(210.0f * op));
+    for (auto const& label : labels)
+      drawPreviewLabelWithOutline(draw, label.pos, label.text.utf8Ptr(), labelColor, labelOutline);
 
     ImGui::End();
   }
@@ -1985,6 +2034,7 @@ private:
     }
     ImGui::SliderFloat(launcherText("touchManager.overlayOpacity", "Overlay opacity").utf8Ptr(), &state.touchConfig.opacity, 0.0f, 1.0f);
     ImGui::SliderFloat(launcherText("touchManager.globalControlSize", "Global control size").utf8Ptr(), &state.touchConfig.size, 0.6f, 1.8f);
+    ImGui::SliderFloat(launcherText("touchManager.outlineThickness", "Button outline thickness").utf8Ptr(), &state.touchConfig.outlineThickness, 1.0f, 5.0f);
     ImGui::SliderFloat(launcherText("touchManager.joystickDeadzone", "Joystick deadzone").utf8Ptr(), &state.touchConfig.deadzone, 0.0f, 0.6f);
     ImGui::BeginDisabled(!gyroAvailable);
     ImGui::SliderFloat(launcherText("touchManager.gyroSensitivity", "Gyro sensitivity").utf8Ptr(), &state.touchConfig.gyroSensitivity, 0.10f, 12.0f);
@@ -2821,6 +2871,7 @@ private:
         {"gyroEnabled", state.touchConfig.gyroEnabled},
         {"opacity", state.touchConfig.opacity},
         {"size", state.touchConfig.size},
+        {"outlineThickness", state.touchConfig.outlineThickness},
         {"deadzone", state.touchConfig.deadzone},
         {"gyroSensitivity", state.touchConfig.gyroSensitivity},
         {"gyroInvertX", state.touchConfig.gyroInvertX},
@@ -2904,6 +2955,7 @@ private:
             {"gyroEnabled", state.touchConfig.gyroEnabled},
             {"opacity", state.touchConfig.opacity},
             {"size", state.touchConfig.size},
+            {"outlineThickness", state.touchConfig.outlineThickness},
             {"deadzone", state.touchConfig.deadzone},
             {"gyroSensitivity", state.touchConfig.gyroSensitivity},
             {"gyroInvertX", state.touchConfig.gyroInvertX},
@@ -3043,6 +3095,7 @@ private:
           touch.gyroEnabled = false;
         touch.opacity = cfg.queryFloat("touch.opacity", 0.35f);
         touch.size = cfg.queryFloat("touch.size", 1.0f);
+        touch.outlineThickness = cfg.queryFloat("touch.outlineThickness", 1.5f);
         touch.deadzone = cfg.queryFloat("touch.deadzone", 0.15f);
         touch.gyroSensitivity = cfg.queryFloat("touch.gyroSensitivity", 1.0f);
         touch.gyroInvertX = cfg.queryBool("touch.gyroInvertX", false);

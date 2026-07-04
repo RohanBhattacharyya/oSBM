@@ -36,6 +36,7 @@ touchManager.enableGyroAim=Enable gyro aim
 touchManager.noGyroFound=No gyro found
 touchManager.overlayOpacity=Overlay opacity
 touchManager.globalControlSize=Global control size
+touchManager.outlineThickness=Button outline thickness
 touchManager.joystickDeadzone=Joystick deadzone
 touchManager.gyroSensitivity=Gyro sensitivity
 touchManager.invertGyroX=Invert gyro X axis

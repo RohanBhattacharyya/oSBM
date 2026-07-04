@@ -36,6 +36,7 @@ touchManager.enableGyroAim=启用陀螺仪瞄准
 touchManager.noGyroFound=未检测到陀螺仪
 touchManager.overlayOpacity=覆盖层透明度
 touchManager.globalControlSize=全局控件大小
+touchManager.outlineThickness=按钮轮廓粗细
 touchManager.joystickDeadzone=摇杆死区
 touchManager.gyroSensitivity=陀螺仪灵敏度
 touchManager.invertGyroX=反转陀螺仪 X 轴

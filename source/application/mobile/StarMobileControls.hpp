@@ -26,6 +26,7 @@ struct MobileTouchConfig {
   bool gyroEnabled = false;
   float opacity = 0.35f;
   float size = 1.0f;
+  float outlineThickness = 1.5f;
   float deadzone = 0.15f;
   float gyroSensitivity = 1.0f;
   bool gyroInvertX = false;

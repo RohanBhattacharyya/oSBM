@@ -707,8 +707,38 @@ public:
     };
 
     ImDrawList* draw = ImGui::GetForegroundDrawList();
-    ImU32 base = IM_COL32(255, 255, 255, (int)(180.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
-    ImU32 fill = IM_COL32(80, 160, 255, (int)(140.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
+
+    // Always-visible contrast, using Minecraft's crosshair technique: the button
+    // geometry is drawn with an inversion (difference) blend so each stroke shows
+    // as the photographic negative of whatever is behind it and can never wash
+    // out against a matching background. The opacity setting is remapped to a
+    // contrast "strength": at full strength the source is pure white (result =
+    // 1 - background); as it drops, the source fades toward mid-grey, where the
+    // inversion result approaches the background and the overlay fades away.
+    // (The inversion blend keys off source RGB, ignoring alpha coverage, so it
+    // suits solid shapes; text is handled separately with an outline below.)
+    float op = std::clamp(m_config.opacity, 0.0f, 1.0f);
+    auto contrast = [op](float c) { return 0.5f + (c - 0.5f) * op; };
+    auto contrastColor = [&contrast](float r, float g, float b) {
+      return IM_COL32((int)std::lround(contrast(r) * 255.0f),
+                      (int)std::lround(contrast(g) * 255.0f),
+                      (int)std::lround(contrast(b) * 255.0f), 255);
+    };
+    ImU32 base = contrastColor(1.0f, 1.0f, 1.0f);
+    ImU32 fill = contrastColor(0.31f, 0.63f, 1.0f);
+    float thickness = std::max(1.0f, m_config.outlineThickness);
+
+    // Text can't share the inversion blend (font coverage is stored in alpha, so
+    // inverting by RGB would flip whole glyph quads). Labels instead get a dark
+    // outline behind a light glyph so they stay legible on any background.
+    ImU32 labelColor = IM_COL32(255, 255, 255, (int)(230.0f * op));
+    ImU32 labelOutline = IM_COL32(0, 0, 0, (int)(210.0f * op));
+
+    std::vector<OverlayLabel> labels;
+
+    // Shape pass: switch to the inversion blend for the button geometry, then
+    // restore ImGui's default blend state afterwards.
+    draw->AddCallback(applyContrastBlendCallback, nullptr);
 
     for (auto const& element : m_elements) {
       if (!element.enabled)
@@ -719,21 +749,27 @@ public:
       float drawRadius = elementRadius / radiusScale;
 
       if (element.kind == MobileTouchElementKind::Joystick) {
-        draw->AddCircle(ip(center), drawRadius, base, 48, 3.0f);
+        draw->AddCircle(ip(center), drawRadius, base, 48, thickness);
         if (m_joystickActive && m_joystickElementId == element.id)
           draw->AddCircleFilled(ip(m_joystickCurrent), drawRadius * 0.45f, fill, 32);
       } else if (element.kind == MobileTouchElementKind::AimJoystick) {
-        draw->AddCircle(ip(center), drawRadius, base, 48, 3.0f);
+        draw->AddCircle(ip(center), drawRadius, base, 48, thickness);
         if (m_aimJoystickActive && m_aimJoystickElementId == element.id)
           draw->AddCircleFilled(ip(m_aimJoystickCurrent), drawRadius * 0.35f, fill, 32);
       } else if (element.kind == MobileTouchElementKind::DPad) {
-        drawDPad(draw, ip(center), drawRadius, element.id, base, fill);
+        drawDPad(draw, ip(center), drawRadius, element.id, base, fill, thickness, labels);
       } else {
         bool held = heldElement(element.id)
             || (element.action.kind == MobileTouchActionKind::GyroToggle && m_gyroAvailable && m_config.gyroEnabled && m_gyroRuntimeEnabled);
-        drawButton(draw, ip(center), drawRadius * 0.55f, held, element.label.utf8Ptr(), base, fill);
+        drawButton(draw, ip(center), drawRadius * 0.55f, held, element.label.utf8Ptr(), base, fill, thickness, labels);
       }
     }
+
+    // Restore the default alpha blend before drawing text on top of the shapes.
+    draw->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+
+    for (auto const& label : labels)
+      drawLabelWithOutline(draw, label.pos, label.text.utf8Ptr(), labelColor, labelOutline);
   }
 
   bool overlayEnabled() const {
@@ -1586,22 +1622,54 @@ private:
     m_generatedEvents.append(event);
   }
 
-  static void drawButton(ImDrawList* draw, ImVec2 center, float radius, bool held, char const* label, ImU32 base, ImU32 fill) {
-    draw->AddCircle(center, radius, base, 48, 3.0f);
-    if (held)
-      draw->AddCircleFilled(center, radius, fill, 32);
-    draw->AddText(ImVec2(center.x - radius * 0.2f, center.y - radius * 0.35f), base, label);
+  // A deferred label to be drawn (with a contrast outline) after the inversion
+  // blended shape pass has completed. Text can't use the inversion blend, so its
+  // draw commands must land under ImGui's default blend state.
+  struct OverlayLabel {
+    ImVec2 pos;
+    String text;
+  };
+
+  // ImGui render callback that switches OpenGL to the inversion (difference)
+  // blend used for the always-visible button geometry. This is the same blend
+  // Minecraft uses for its crosshair: result.rgb = src*(1-dst) + dst*(1-src),
+  // which for a white source yields 1-dst, the negative of the background.
+  static void applyContrastBlendCallback(ImDrawList const*, ImDrawCmd const*) {
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendFuncSeparate(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_COLOR, GL_ONE, GL_ZERO);
   }
 
-  void drawDPad(ImDrawList* draw, ImVec2 center, float radius, String const& id, ImU32 base, ImU32 fill) const {
+  // Draws text with a solid dark outline behind a light glyph so labels stay
+  // legible on any background (light glyph shows on dark scenery, dark outline
+  // shows on light scenery) — the touch-control analogue of Minecraft's
+  // drop-shadowed HUD text.
+  static void drawLabelWithOutline(ImDrawList* draw, ImVec2 pos, char const* text, ImU32 color, ImU32 outline) {
+    static ImVec2 const offsets[8] = {
+      {-1.0f, -1.0f}, {0.0f, -1.0f}, {1.0f, -1.0f},
+      {-1.0f,  0.0f},                {1.0f,  0.0f},
+      {-1.0f,  1.0f}, {0.0f,  1.0f}, {1.0f,  1.0f}
+    };
+    for (auto const& o : offsets)
+      draw->AddText(ImVec2(pos.x + o.x, pos.y + o.y), outline, text);
+    draw->AddText(pos, color, text);
+  }
+
+  static void drawButton(ImDrawList* draw, ImVec2 center, float radius, bool held, char const* label, ImU32 base, ImU32 fill, float thickness, std::vector<OverlayLabel>& labels) {
+    draw->AddCircle(center, radius, base, 48, thickness);
+    if (held)
+      draw->AddCircleFilled(center, radius, fill, 32);
+    labels.push_back({ImVec2(center.x - radius * 0.2f, center.y - radius * 0.35f), label});
+  }
+
+  void drawDPad(ImDrawList* draw, ImVec2 center, float radius, String const& id, ImU32 base, ImU32 fill, float thickness, std::vector<OverlayLabel>& labels) const {
     float arm = radius * 0.42f;
     auto drawArm = [&](char const* suffix, ImVec2 c, char const* label) {
       String heldId = id + ":" + suffix;
       bool held = m_dpadHeld.contains(heldId);
-      draw->AddRect(ImVec2(c.x - arm, c.y - arm), ImVec2(c.x + arm, c.y + arm), base, arm * 0.25f, 0, 3.0f);
+      draw->AddRect(ImVec2(c.x - arm, c.y - arm), ImVec2(c.x + arm, c.y + arm), base, arm * 0.25f, 0, thickness);
       if (held)
         draw->AddRectFilled(ImVec2(c.x - arm, c.y - arm), ImVec2(c.x + arm, c.y + arm), fill, arm * 0.25f);
-      draw->AddText(ImVec2(c.x - arm * 0.22f, c.y - arm * 0.38f), base, label);
+      labels.push_back({ImVec2(c.x - arm * 0.22f, c.y - arm * 0.38f), label});
     };
 
     drawArm("up", ImVec2(center.x, center.y - arm * 1.25f), launcherTextStatic("touchElement.dpadUp", "W").utf8Ptr());
