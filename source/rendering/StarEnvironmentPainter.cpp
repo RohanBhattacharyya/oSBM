@@ -267,7 +267,13 @@ void EnvironmentPainter::renderParallaxLayers(
 
   auto& primitives = m_renderer->immediatePrimitives();
 
+#ifdef STAR_SYSTEM_SWITCH
+  size_t layerIndex = (size_t)-1;
+#endif
   for (auto& layer : layers) {
+#ifdef STAR_SYSTEM_SWITCH
+    ++layerIndex;
+#endif
     if (layer.alpha == 0)
       continue;
 
@@ -355,6 +361,66 @@ void EnvironmentPainter::renderParallaxLayers(
       if (auto texture = m_textureGroup->tryTexture(withDirectives))
         resolvedTextures.append(std::move(texture));
     }
+
+#ifdef STAR_SYSTEM_SWITCH
+    // Retained path: x-repeating layers with no vertical clipping. The x tile
+    // grid is periodic (a one-tile safety ring covers any sub-tile pan); the
+    // y axis is either periodic too, or a single non-repeating row that just
+    // translates as a whole (horizon-anchored layers -- the common planet
+    // case).
+    if (parallaxRepeat[0] && !layer.tileLimitTop && !layer.tileLimitBottom
+        && !resolvedTextures.empty()) {
+      if (m_parallaxBuffers.size() <= layerIndex)
+        m_parallaxBuffers.resize(layerIndex + 1);
+      auto& plb = m_parallaxBuffers[layerIndex];
+      int cols = right - left;
+      int rows = parallaxRepeat[1] ? top - bottom : 0;
+      // Reference point: x is the (mod-tile, bounded) grid origin; y is the
+      // bounded grid origin for repeating layers, or the ABSOLUTE screen
+      // position of row 0 for single-row layers (delta may be large, which
+      // is fine -- the whole row just translates).
+      float refY = parallaxRepeat[1] ? pixelBottom : pixelBottom + (0 - bottom) * parallaxPixels[1];
+      bool matches = plb.valid && plb.rb
+          && plb.textures == resolvedTextures
+          && plb.color == drawColor
+          && plb.lightMapMultiplier == lightMapMultiplier
+          && plb.cols == cols && plb.rows == rows
+          && plb.tileSize == parallaxPixels;
+      if (!matches) {
+        List<RenderPrimitive> prims;
+        int yMin = parallaxRepeat[1] ? -1 : 0;
+        int yMax = parallaxRepeat[1] ? rows + 1 : 0;
+        for (int y = yMin; y <= yMax; ++y) {
+          for (int x = -1; x <= cols + 1; ++x) {
+            Vec2F anchorPoint(pixelLeft + x * parallaxPixels[0], refY + y * parallaxPixels[1]);
+            RectF subImage = RectF::withSize(Vec2F(), parallaxSize);
+            for (auto const& texture : resolvedTextures) {
+              RectF drawRect = RectF::withSize(anchorPoint, subImage.size() * camera.pixelRatio());
+              prims.emplace_back(std::in_place_type_t<RenderQuad>(), texture,
+                  RenderVertex{drawRect.min(), subImage.min(), drawColor, lightMapMultiplier},
+                  RenderVertex{{drawRect.xMax(), drawRect.yMin()}, {subImage.xMax(), subImage.yMin()}, drawColor, lightMapMultiplier},
+                  RenderVertex{drawRect.max(), subImage.max(), drawColor, lightMapMultiplier},
+                  RenderVertex{{drawRect.xMin(), drawRect.yMax()}, {subImage.xMin(), subImage.yMax()}, drawColor, lightMapMultiplier});
+            }
+          }
+        }
+        if (!plb.rb)
+          plb.rb = m_renderer->createRenderBuffer();
+        plb.rb->set(prims);
+        plb.textures = resolvedTextures;
+        plb.color = drawColor;
+        plb.lightMapMultiplier = lightMapMultiplier;
+        plb.cols = cols;
+        plb.rows = rows;
+        plb.tileSize = parallaxPixels;
+        plb.origin = Vec2F(pixelLeft, refY);
+        plb.valid = true;
+      }
+      Vec2F delta = Vec2F(pixelLeft, refY) - plb.origin;
+      m_renderer->renderBuffer(plb.rb, Mat3F::translation(delta));
+      continue;
+    }
+#endif
 
     for (int y = bottom; y <= top; ++y) {
       if (!(parallaxRepeat[1] || y == 0) || y > tileLimitTop || y + 1 < tileLimitBottom)

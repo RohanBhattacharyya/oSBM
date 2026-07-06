@@ -159,7 +159,7 @@ bool Entity::keepAlive() const {
   return m_keepAlive;
 }
 
-Maybe<String> Entity::uniqueId() const {
+Maybe<String> const& Entity::uniqueId() const {
   return m_uniqueId;
 }
 

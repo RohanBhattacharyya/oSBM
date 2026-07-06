@@ -478,7 +478,16 @@ void MovementController::tickMaster(float dt) {
   setTimestep(dt);
   auto geometry = world()->geometry();
 
+#ifdef STAR_SYSTEM_SWITCH
+  // World gravity varies only across dungeon regions; refreshing the cached
+  // value every 3rd tick trades a per-tick world query for a <=100ms delay
+  // when crossing a zero-g region boundary.
+  if (m_gravityQueryCounter++ % 3 == 0)
+    m_cachedWorldGravity = world()->gravity(position());
+  m_zeroG.set(!*m_parameters.gravityEnabled || *m_parameters.gravityMultiplier == 0 || m_cachedWorldGravity == 0);
+#else
   m_zeroG.set(!*m_parameters.gravityEnabled || *m_parameters.gravityMultiplier == 0 || world()->gravity(position()) == 0);
+#endif
 
   Maybe<PhysicsMovingCollision> surfaceCollision;
   if (auto movingCollisionId = m_surfaceMovingCollision.get()) {
@@ -553,11 +562,42 @@ void MovementController::tickMaster(float dt) {
           + *m_parameters.maximumPlatformCorrectionVelocityFactor * velocityMagnitude;
       Vec2F bodyCenter = body.center();
 
+#ifdef STAR_SYSTEM_SWITCH
+      // The collision query pad only has to cover the correction actually
+      // applied in a normal substep (a fraction of a tile) plus the movement
+      // envelope -- padding by the full maximumCorrection (3 tiles for
+      // actors) made the query region ~2x larger and the poly working set
+      // with it (measured 28 polys, ~750us/substep). A deeply-stuck body
+      // whose needed correction exceeds the pad still resolves, just over a
+      // few ticks instead of one.
+      RectF queryBounds = body.boundBox().padded(std::min(maximumCorrection, 1.25f));
+#else
       RectF queryBounds = body.boundBox().padded(maximumCorrection);
+#endif
       queryBounds.combine(queryBounds.translated(movement));
+#ifdef STAR_SYSTEM_SWITCH
+      // Substep cost breakdown ([perf-mm]), thread-local so the sim worker,
+      // server world thread and any other callers don't interleave.
+      static thread_local int64_t tl_mmSteps = 0, tl_mmQueryUs = 0, tl_mmMoveUs = 0, tl_mmPolys = 0;
+      int64_t mmStart = Time::monotonicMicroseconds();
+#endif
       queryCollisions(queryBounds);
+#ifdef STAR_SYSTEM_SWITCH
+      int64_t mmMid = Time::monotonicMicroseconds();
+      tl_mmQueryUs += mmMid - mmStart;
+      tl_mmPolys += (int64_t)m_workingCollisions.size();
+#endif
       auto result = collisionMove(m_workingCollisions, body, movement, ignorePlatforms, *m_parameters.enableSurfaceSlopeCorrection && !zeroG(),
           maximumCorrection, maximumPlatformCorrection, bodyCenter, dtSteps);
+#ifdef STAR_SYSTEM_SWITCH
+      tl_mmMoveUs += Time::monotonicMicroseconds() - mmMid;
+      if (++tl_mmSteps >= 8000) {
+        Logger::info("[perf-mm] per-substep us: query={} move={} avgPolys={} (over {} substeps)",
+            tl_mmQueryUs / tl_mmSteps, tl_mmMoveUs / tl_mmSteps, tl_mmPolys / tl_mmSteps, tl_mmSteps);
+        tl_mmSteps = 0;
+        tl_mmQueryUs = tl_mmMoveUs = tl_mmPolys = 0;
+      }
+#endif
 
       setPosition(position() + result.movement);
 
@@ -648,7 +688,11 @@ void MovementController::tickMaster(float dt) {
   // in the correct controlled movement.
   if (!zeroG() && !stickingDirection()) {
     float buoyancy = *m_parameters.liquidBuoyancy * m_liquidPercentage + *m_parameters.airBuoyancy * (1.0f - liquidPercentage());
+#ifdef STAR_SYSTEM_SWITCH
+    float gravity = m_cachedWorldGravity * *m_parameters.gravityMultiplier * (1.0f - buoyancy);
+#else
     float gravity = world()->gravity(position()) * *m_parameters.gravityMultiplier * (1.0f - buoyancy);
+#endif
     Vec2F environmentVelocity;
     environmentVelocity[1] -= gravity * dt;
 
@@ -802,6 +846,14 @@ void MovementController::updateForceRegions(float) {
 }
 
 void MovementController::updateLiquidPercentage() {
+#ifdef STAR_SYSTEM_SWITCH
+  // The body-box liquid query is a per-tick tile-region scan per entity;
+  // liquid immersion changes on wading/weather timescales, so refreshing it
+  // every 3rd tick (~100ms) is imperceptible and cuts a fixed world-query
+  // cost from every entity's movement tick.
+  if (++m_liquidQueryCounter % 3 != 1)
+    return;
+#endif
   auto pos = position();
   auto body = collisionBody();
   RectF boundBox = body.boundBox();

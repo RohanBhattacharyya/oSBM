@@ -9,6 +9,8 @@
 #include "StarAssetPath.hpp"
 #include "StarRefPtr.hpp"
 
+#include <atomic>
+
 namespace Star {
 
 STAR_CLASS(Font);
@@ -327,6 +329,11 @@ private:
   Settings m_settings;
 
   mutable Mutex m_assetsMutex;
+  // Bumped whenever asset CONTENT may have changed (hot reload / load
+  // scripts); invalidates the per-thread json() memoization. TTL eviction of
+  // the underlying cache does NOT bump this: Json values are immutable and
+  // shared, so handing out a previously-memoized one stays correct.
+  mutable std::atomic<uint64_t> m_jsonContentEpoch{0};
 
   mutable ConditionVariable m_assetsQueued;
   mutable OrderedHashMap<AssetId, QueuePriority, AssetIdHash> m_queue;

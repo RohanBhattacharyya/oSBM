@@ -104,6 +104,9 @@ public:
   bool switchEffectConfig(String const& name) override;
   bool switchFrameBuffer(String const& id) override;
   void blitFrameBufferToCurrent(String const& id) override;
+  void compositeFrameBufferToCurrent(String const& id) override;
+  void clearCurrentFrameBuffer() override;
+  void switchToDefaultFrameBuffer() override;
 
   bool beginPrimitiveRecording() override;
   List<RecordedSegment> endPrimitiveRecording() override;
@@ -285,6 +288,14 @@ private:
     // that skip re-rendering it). Content must be fully overdrawn whenever it
     // IS re-rendered.
     bool preserve = false;
+    // While this framebuffer is the render target, blending accumulates
+    // premultiplied color and correct coverage (blendFuncSeparate), so its
+    // contents can later be composited over another target as a translucent
+    // overlay (see compositeFrameBufferToCurrent). Implies an alpha-capable
+    // texture format (the default framebuffer format has NO alpha channel on
+    // most platforms, which would silently make the overlay fully opaque).
+    bool premultiplied = false;
+    GLenum textureFormat = 0; // set from premultiplied/platform default in ctor
 
     GlFrameBuffer(Json const& config);
     ~GlFrameBuffer();

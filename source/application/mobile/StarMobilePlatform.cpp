@@ -3408,6 +3408,18 @@ private:
 #endif
 
     while (!m_quitRequested && !m_softQuitRequested) {
+#ifdef STAR_SYSTEM_SWITCH
+      // Outer-loop phase breakdown, logged every ~150 frames; complements the
+      // in-render pipeline laps by accounting for events/update/GL frame
+      // bracketing/swap/sleep time that those cannot see.
+      static int64_t s_lpFrames = 0, s_lpEvents = 0, s_lpUpdate = 0, s_lpStart = 0, s_lpRender = 0, s_lpFinish = 0, s_lpSwap = 0, s_lpSleep = 0;
+      int64_t lpLapTime = Time::monotonicMicroseconds();
+      auto lpLap = [&lpLapTime](int64_t& acc) {
+        int64_t n = Time::monotonicMicroseconds();
+        acc += n - lpLapTime;
+        lpLapTime = n;
+      };
+#endif
 #ifdef STAR_SYSTEM_IOS
       SDL_PumpEvents();
       SDL_GL_MakeCurrent(m_window, m_glContext);
@@ -3443,6 +3455,9 @@ private:
       // frame-rate lever: it halves the per-frame update cost vs a 2-tick cap.
       updatesBehind = std::min<int>(updatesBehind, 1);
 #endif
+#ifdef STAR_SYSTEM_SWITCH
+      lpLap(s_lpEvents);
+#endif
       for (int i = 0; i < updatesBehind; ++i) {
         if (overlayEnabled) {
           // Keep ImGui frame state consistent when we catch up multiple updates.
@@ -3453,8 +3468,17 @@ private:
         m_application->update();
         m_updateRate = m_updateTicker.tick();
       }
+#ifdef STAR_SYSTEM_SWITCH
+      lpLap(s_lpUpdate);
+#endif
       m_renderer->startFrame();
+#ifdef STAR_SYSTEM_SWITCH
+      lpLap(s_lpStart);
+#endif
       m_application->render();
+#ifdef STAR_SYSTEM_SWITCH
+      lpLap(s_lpRender);
+#endif
 
       if (overlayEnabled) {
         m_touchAdapter->drawOverlay();
@@ -3463,9 +3487,15 @@ private:
       }
 
       m_renderer->finishFrame();
+#ifdef STAR_SYSTEM_SWITCH
+      lpLap(s_lpFinish);
+#endif
       if (overlayEnabled)
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
       SDL_GL_SwapWindow(m_window);
+#ifdef STAR_SYSTEM_SWITCH
+      lpLap(s_lpSwap);
+#endif
 
       m_renderRate = m_renderTicker.tick();
 
@@ -3475,6 +3505,17 @@ private:
       int64_t spare = round(m_updateTicker.spareTime() * 1000.0);
       if (spare > 0)
         Thread::sleepPrecise(spare);
+#ifdef STAR_SYSTEM_SWITCH
+      lpLap(s_lpSleep);
+      if (++s_lpFrames >= 150) {
+        Logger::info("[perf-loop] events={:.1f}ms update={:.1f} start={:.1f} render={:.1f} finish={:.1f} swap={:.1f} sleep={:.1f}",
+            s_lpEvents / 1e3 / s_lpFrames, s_lpUpdate / 1e3 / s_lpFrames,
+            s_lpStart / 1e3 / s_lpFrames, s_lpRender / 1e3 / s_lpFrames,
+            s_lpFinish / 1e3 / s_lpFrames, s_lpSwap / 1e3 / s_lpFrames, s_lpSleep / 1e3 / s_lpFrames);
+        s_lpFrames = 0;
+        s_lpEvents = s_lpUpdate = s_lpStart = s_lpRender = s_lpFinish = s_lpSwap = s_lpSleep = 0;
+      }
+#endif
     }
 
   }

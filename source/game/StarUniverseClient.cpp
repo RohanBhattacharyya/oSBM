@@ -233,6 +233,19 @@ void UniverseClient::update(float dt) {
   if (!isConnected())
     return;
 
+#ifdef STAR_SYSTEM_SWITCH
+  // Sim-tick breakdown, aggregated and logged every ~150 ticks. This runs on
+  // the sim worker thread; statics are safe because only one tick runs at a
+  // time (main joins before the next is scheduled).
+  static int64_t s_ucTicks = 0, s_ucPre = 0, s_ucWorld = 0, s_ucRest = 0;
+  int64_t ucLapTime = Time::monotonicMicroseconds();
+  auto ucLap = [&ucLapTime](int64_t& acc) {
+    int64_t n = Time::monotonicMicroseconds();
+    acc += n - ucLapTime;
+    ucLapTime = n;
+  };
+#endif
+
   if (!m_warping && !m_pendingWarp) {
     if (auto playerWarp = m_mainPlayer->pullPendingWarp())
       warpPlayer(parseWarpAction(playerWarp->action), (bool)playerWarp->animation, playerWarp->animation.value("default"), playerWarp->deploy);
@@ -269,6 +282,10 @@ void UniverseClient::update(float dt) {
   }
 
   m_connection->receive();
+#ifdef STAR_SYSTEM_SWITCH
+  static int64_t s_ucRecvOnly = 0, s_ucHandle = 0, s_ucStats = 0;
+  ucLap(s_ucRecvOnly);
+#endif
   try {
     handlePackets(m_connection->pull());
   }
@@ -281,16 +298,42 @@ void UniverseClient::update(float dt) {
   if (!isConnected())
     return;
 
+#ifdef STAR_SYSTEM_SWITCH
+  ucLap(s_ucHandle);
+#endif
   LogMap::set("universe_time_client", m_universeClock->time());
 
-  m_statistics->update();
+  // Statistics processes its queued stat events; running it every 4th tick
+  // batches that work with no observable difference beyond an achievement
+  // popup appearing ~100ms later.
+  static unsigned s_statisticsCounter = 0;
+  if (++s_statisticsCounter % 4 == 0)
+    m_statistics->update();
 
+#ifdef STAR_SYSTEM_SWITCH
+  ucLap(s_ucStats);
+  s_ucPre += s_ucRecvOnly + s_ucHandle + s_ucStats;
+#endif
   if (!m_pause) {
     m_worldClient->update(dt);
+#ifdef STAR_SYSTEM_SWITCH
+    ucLap(s_ucWorld);
+    static int64_t s_ucScripts = 0;
+#endif
     for (auto& p : m_scriptContexts)
       p.second->update();
+#ifdef STAR_SYSTEM_SWITCH
+    ucLap(s_ucScripts);
+    if (s_ucTicks == 0 && s_ucScripts > 0) {
+      Logger::info("[perf-uc2] scripts={:.2f}ms(avg last window)", s_ucScripts / 150e3);
+      s_ucScripts = 0;
+    }
+#endif
   }
   m_connection->push(m_worldClient->getOutgoingPackets());
+#ifdef STAR_SYSTEM_SWITCH
+  ucLap(s_ucWorld);
+#endif
 
   if (!m_pause)
     m_systemWorldClient->update(dt);
@@ -364,7 +407,12 @@ void UniverseClient::update(float dt) {
     }
   }
 
-  m_celestialDatabase->cleanup();
+  // TTL cache sweep -- scanning the chunk cache under its mutex every tick
+  // is pure overhead; sweeping ~once a second just expires entries slightly
+  // later.
+  static unsigned s_celestialCleanupCounter = 0;
+  if (++s_celestialCleanupCounter % 32 == 0)
+    m_celestialDatabase->cleanup();
 
   if (auto netStats = m_connection->incomingStats()) {
     LogMap::set("net_total_incoming", strf("{:4.3f} kB/s", netStats->bytesPerSecond / 1000.f));
@@ -374,6 +422,18 @@ void UniverseClient::update(float dt) {
     LogMap::set("net_total_outgoing", strf("{:4.3f} kB/s", netStats->bytesPerSecond / 1000.f));
     LogMap::set("net_worst_outgoing", strf("^cyan;{}^reset; ({:4.3f} kB/s)", PacketTypeNames.getRight(netStats->worstPacketType), (float)netStats->worstPacketSize / 1000.f));
   }
+
+#ifdef STAR_SYSTEM_SWITCH
+  ucLap(s_ucRest);
+  if (++s_ucTicks >= 150) {
+    Logger::info("[perf-uc] pre={:.1f}ms (recv={:.1f} handle={:.1f} stats={:.1f}) world={:.1f} rest={:.1f}",
+        s_ucPre / 1e3 / s_ucTicks, s_ucRecvOnly / 1e3 / s_ucTicks, s_ucHandle / 1e3 / s_ucTicks,
+        s_ucStats / 1e3 / s_ucTicks, s_ucWorld / 1e3 / s_ucTicks, s_ucRest / 1e3 / s_ucTicks);
+    s_ucTicks = 0;
+    s_ucPre = s_ucWorld = s_ucRest = 0;
+    s_ucRecvOnly = s_ucHandle = s_ucStats = 0;
+  }
+#endif
 }
 
 Maybe<BeamUpRule> UniverseClient::beamUpRule() const {

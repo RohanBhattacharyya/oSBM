@@ -883,6 +883,19 @@ Maybe<Json> Player::receiveMessage(ConnectionId fromConnection, String const& me
 }
 
 void Player::update(float dt, uint64_t) {
+#ifdef STAR_SYSTEM_SWITCH
+  // Master-path section breakdown ([perf-pu]) -- the player's update tick is
+  // the single most expensive entity update in the sim (measured ~11ms), so
+  // find out which subsystem owns it. Logged every ~150 ticks.
+  static int64_t s_puTicks = 0, s_puControls = 0, s_puQuest = 0, s_puComp = 0, s_puEquip = 0,
+      s_puMove = 0, s_puTech = 0, s_puStatus = 0, s_puMisc = 0, s_puTail = 0;
+  int64_t puLapTime = Time::monotonicMicroseconds();
+  auto puLap = [&puLapTime](int64_t& acc) {
+    int64_t n = Time::monotonicMicroseconds();
+    acc += n - puLapTime;
+    puLapTime = n;
+  };
+#endif
   m_movementController->setTimestep(dt);
 
   if (isMaster()) {
@@ -919,11 +932,31 @@ void Player::update(float dt, uint64_t) {
     }
 
     if (!isTeleporting()) {
+#ifdef STAR_SYSTEM_SWITCH
+      puLap(s_puMisc);
+#endif
       processControls();
+#ifdef STAR_SYSTEM_SWITCH
+      puLap(s_puControls);
+#endif
 
+#ifdef STAR_SYSTEM_SWITCH
+      // Quest scripts poll conditions; every 3rd tick with accumulated dt
+      // keeps their timers wall-clock correct at ~100ms polling granularity.
+      // Event-driven quest progress (messages) is unaffected.
+      if (++m_questUpdateCounter % 3 == 0)
+        m_questManager->update(dt * 3.0f);
+#else
       m_questManager->update(dt);
+#endif
+#ifdef STAR_SYSTEM_SWITCH
+      puLap(s_puQuest);
+#endif
       m_companions->update(dt);
       m_deployment->update(dt);
+#ifdef STAR_SYSTEM_SWITCH
+      puLap(s_puComp);
+#endif
 
       bool edgeTriggeredUse = take(m_edgeTriggeredUse);
 
@@ -975,14 +1008,23 @@ void Player::update(float dt, uint64_t) {
 
       m_tools->effects(*m_effectEmitter);
 
+#ifdef STAR_SYSTEM_SWITCH
+      puLap(s_puEquip);
+#endif
       auto aimRelative = world()->geometry().diff(m_aimPosition, position()); // dumb, but due to how things are ordered
       m_movementController->tickMaster(dt);
       m_aimPosition = position() + aimRelative;                               // it's gonna have to be like this for now
+#ifdef STAR_SYSTEM_SWITCH
+      puLap(s_puMove);
+#endif
 
       m_techController->tickMaster(dt);
 
       for (auto& p : m_genericScriptContexts)
         p.second->update(p.second->updateDt(dt));
+#ifdef STAR_SYSTEM_SWITCH
+      puLap(s_puTech);
+#endif
 
       if (edgeTriggeredUse) {
         auto anchor = as<LoungeAnchor>(m_movementController->entityAnchor());
@@ -1003,6 +1045,9 @@ void Player::update(float dt, uint64_t) {
 
       if (!isDead())
         m_statusController->tickMaster(dt);
+#ifdef STAR_SYSTEM_SWITCH
+      puLap(s_puStatus);
+#endif
 
       if (!modeConfig().hunger)
         m_statusController->resetResource("food");
@@ -1057,6 +1102,9 @@ void Player::update(float dt, uint64_t) {
     }
 
     m_interestingObjects = m_questManager->interestingObjects();
+#ifdef STAR_SYSTEM_SWITCH
+    puLap(s_puMisc);
+#endif
 
   } else {
     m_netGroup.tickNetInterpolation(dt);
@@ -1065,6 +1113,15 @@ void Player::update(float dt, uint64_t) {
     m_statusController->tickSlave(dt);
   }
 
+#ifdef STAR_SYSTEM_SWITCH
+  static int64_t s_ptTicks = 0, s_ptTools = 0, s_ptHumanoid = 0, s_ptAnimator = 0, s_ptState = 0, s_ptEmitter = 0, s_ptHead = 0;
+  int64_t ptLapTime = Time::monotonicMicroseconds();
+  auto ptLap = [&ptLapTime](int64_t& acc) {
+    int64_t n = Time::monotonicMicroseconds();
+    acc += n - ptLapTime;
+    ptLapTime = n;
+  };
+#endif
   humanoid()->setRotation(m_movementController->rotation());
 
   bool suppressedItems = !canUseTool();
@@ -1085,6 +1142,9 @@ void Player::update(float dt, uint64_t) {
 
   Direction facingDirection = m_movementController->facingDirection();
 
+#ifdef STAR_SYSTEM_SWITCH
+  ptLap(s_ptTools);
+#endif
   auto overrideFacingDirection = m_tools->setupHumanoidHandItems(*humanoid(), position(), aimPosition());
   if (!loungingIn() && overrideFacingDirection)
     m_movementController->controlFace(facingDirection = *overrideFacingDirection);
@@ -1093,6 +1153,12 @@ void Player::update(float dt, uint64_t) {
   humanoid()->setMovingBackwards(facingDirection != m_movementController->movingDirection());
 
   refreshHumanoid();
+#ifdef STAR_SYSTEM_SWITCH
+  ptLap(s_ptHumanoid);
+#endif
+#ifdef STAR_SYSTEM_SWITCH
+  ptLap(s_ptHumanoid);
+#endif
 
   auto scale = Mat3F::scaling(Vec2F(facingDirection == Direction::Right ? 1.f : -1.f, 1.f));
   m_effectsAnimator->setTransformationGroup("flip", scale);
@@ -1110,6 +1176,9 @@ void Player::update(float dt, uint64_t) {
   } else {
     m_effectsAnimator->update(dt, nullptr);
   }
+#ifdef STAR_SYSTEM_SWITCH
+  ptLap(s_ptAnimator);
+#endif
 
   if (!isTeleporting())
     processStateChanges(dt);
@@ -1121,21 +1190,33 @@ void Player::update(float dt, uint64_t) {
   }
 
   m_songbook->update(*entityMode(), world());
+#ifdef STAR_SYSTEM_SWITCH
+  ptLap(s_ptState);
+#endif
 
-  m_effectEmitter->setSourcePosition("normal", position());
-  m_effectEmitter->setSourcePosition("mouth", mouthOffset() + position());
-  m_effectEmitter->setSourcePosition("feet", feetOffset() + position());
-  m_effectEmitter->setSourcePosition("headArmor", headArmorOffset() + position());
-  m_effectEmitter->setSourcePosition("chestArmor", chestArmorOffset() + position());
-  m_effectEmitter->setSourcePosition("legsArmor", legsArmorOffset() + position());
-  m_effectEmitter->setSourcePosition("backArmor", backArmorOffset() + position());
+  // Nine string-keyed map writes plus humanoid offset math per tick, feeding
+  // only active effect sources -- skip the whole block while idle (the
+  // positions are refreshed the same tick a source becomes pending, before
+  // anything reads them at render).
+  if (m_effectEmitter->hasSources()) {
+    m_effectEmitter->setSourcePosition("normal", position());
+    m_effectEmitter->setSourcePosition("mouth", mouthOffset() + position());
+    m_effectEmitter->setSourcePosition("feet", feetOffset() + position());
+    m_effectEmitter->setSourcePosition("headArmor", headArmorOffset() + position());
+    m_effectEmitter->setSourcePosition("chestArmor", chestArmorOffset() + position());
+    m_effectEmitter->setSourcePosition("legsArmor", legsArmorOffset() + position());
+    m_effectEmitter->setSourcePosition("backArmor", backArmorOffset() + position());
 
-  m_effectEmitter->setSourcePosition("primary", handPosition(ToolHand::Primary) + position());
-  m_effectEmitter->setSourcePosition("alt", handPosition(ToolHand::Alt) + position());
+    m_effectEmitter->setSourcePosition("primary", handPosition(ToolHand::Primary) + position());
+    m_effectEmitter->setSourcePosition("alt", handPosition(ToolHand::Alt) + position());
+  }
 
   m_effectEmitter->setDirection(facingDirection);
 
   m_effectEmitter->tick(dt, *entityMode());
+#ifdef STAR_SYSTEM_SWITCH
+  ptLap(s_ptEmitter);
+#endif
 
   if (isClient) {
     bool calculateHeadRotation = isMaster();
@@ -1168,9 +1249,31 @@ void Player::update(float dt, uint64_t) {
   }
 
   m_pendingMoves.clear();
+#ifdef STAR_SYSTEM_SWITCH
+  ptLap(s_ptHead);
+  if (++s_ptTicks >= 150) {
+    Logger::info("[perf-pt] tools={:.2f}ms humanoid={:.2f} animator={:.2f} state={:.2f} emitter={:.2f} head={:.2f}",
+        s_ptTools / 1e3 / s_ptTicks, s_ptHumanoid / 1e3 / s_ptTicks, s_ptAnimator / 1e3 / s_ptTicks,
+        s_ptState / 1e3 / s_ptTicks, s_ptEmitter / 1e3 / s_ptTicks, s_ptHead / 1e3 / s_ptTicks);
+    s_ptTicks = 0;
+    s_ptTools = s_ptHumanoid = s_ptAnimator = s_ptState = s_ptEmitter = s_ptHead = 0;
+  }
+#endif
 
   if (isClient)
     SpatialLogger::logPoly("world", m_movementController->collisionBody(), isMaster() ? Color::Orange.toRgba() : Color::Yellow.toRgba());
+
+#ifdef STAR_SYSTEM_SWITCH
+  puLap(s_puTail);
+  if (++s_puTicks >= 150) {
+    Logger::info("[perf-pu] controls={:.2f}ms quest={:.2f} comp={:.2f} equip={:.2f} move={:.2f} tech={:.2f} status={:.2f} misc={:.2f} tail={:.2f}",
+        s_puControls / 1e3 / s_puTicks, s_puQuest / 1e3 / s_puTicks, s_puComp / 1e3 / s_puTicks,
+        s_puEquip / 1e3 / s_puTicks, s_puMove / 1e3 / s_puTicks, s_puTech / 1e3 / s_puTicks,
+        s_puStatus / 1e3 / s_puTicks, s_puMisc / 1e3 / s_puTicks, s_puTail / 1e3 / s_puTicks);
+    s_puTicks = 0;
+    s_puControls = s_puQuest = s_puComp = s_puEquip = s_puMove = s_puTech = s_puStatus = s_puMisc = s_puTail = 0;
+  }
+#endif
 }
 
 float Player::timeSinceLastGaveDamage() const {

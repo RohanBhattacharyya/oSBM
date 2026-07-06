@@ -484,6 +484,17 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
   bool deepLoad = frameGapUs > 75000;    // below ~12.5fps: throttle harder
   m_lastRenderTimeUs = nowUs;
 
+#ifdef STAR_SYSTEM_SWITCH
+  // Section + per-entity-type breakdown of the render snapshot ([perf-wcr]).
+  static int64_t s_wcrFrames = 0, s_wcrLights = 0, s_wcrEntities = 0, s_wcrTiles = 0, s_wcrRest = 0;
+  int64_t wcrLapTime = Time::monotonicMicroseconds();
+  auto wcrLap = [&wcrLapTime](int64_t& acc) {
+    int64_t n = Time::monotonicMicroseconds();
+    acc += n - wcrLapTime;
+    wcrLapTime = n;
+  };
+#endif
+
   // If we're dimming the world, then that takes priority
   m_worldDimTimer.tick();
   float dimRatio = m_worldDimTimer.percent();
@@ -553,6 +564,9 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
     else
       lightingCalc();
   }
+#ifdef STAR_SYSTEM_SWITCH
+  wcrLap(s_wcrLights);
+#endif
 
   static float const pulseAmount = Root::singleton().assets()->json("/highlights.config:interactivePulseAmount").toFloat();
   static float const pulseRate = Root::singleton().assets()->json("/highlights.config:interactivePulseRate").toFloat();
@@ -619,7 +633,7 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
       // already below 20fps.
       if (underLoad && entityType == EntityType::Player) {
         isPeripheral = true;
-        skipInterval = 2;
+        skipInterval = deepLoad ? 3 : 2;
       }
       // Plants are fully static apart from subtle wind sway; refresh them at
       // half the rate of other throttled types.
@@ -727,6 +741,9 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
         m_peripheralRenderCache.remove(id);
     }
   }
+#ifdef STAR_SYSTEM_SWITCH
+  wcrLap(s_wcrEntities);
+#endif
 
   m_tileArray->tileEachTo(renderData.tiles, tileRange, [&](RenderTile& renderTile, Vec2I const&, ClientTile const& clientTile) {
       renderTile.foreground = clientTile.foreground;
@@ -799,6 +816,9 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
     }
   }
 
+#ifdef STAR_SYSTEM_SWITCH
+  wcrLap(s_wcrTiles);
+#endif
   // Snapshot the particle list into a reused buffer: renderData must stay
   // valid while the sim tick (which mutates the live particle list) runs
   // concurrently with world painting on Switch.
@@ -876,6 +896,17 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
   renderData.isFullbright = m_fullBright;
   renderData.dimLevel = m_worldDimLevel;
   renderData.dimColor = m_worldDimColor;
+
+#ifdef STAR_SYSTEM_SWITCH
+  wcrLap(s_wcrRest);
+  if (++s_wcrFrames >= 150) {
+    Logger::info("[perf-wcr] lights={:.1f}ms entities={:.1f} tiles={:.1f} rest={:.1f}",
+        s_wcrLights / 1e3 / s_wcrFrames, s_wcrEntities / 1e3 / s_wcrFrames,
+        s_wcrTiles / 1e3 / s_wcrFrames, s_wcrRest / 1e3 / s_wcrFrames);
+    s_wcrFrames = 0;
+    s_wcrLights = s_wcrEntities = s_wcrTiles = s_wcrRest = 0;
+  }
+#endif
 }
 
 List<AudioInstancePtr> WorldClient::pullPendingAudio() {
@@ -1280,6 +1311,18 @@ void WorldClient::update(float dt) {
 
   auto assets = Root::singleton().assets();
 
+#ifdef STAR_SYSTEM_SWITCH
+  // Per-phase breakdown of the client world tick, logged every ~150 ticks.
+  // Runs on the sim worker thread; one tick at a time, so statics are fine.
+  static int64_t s_wcTicks = 0, s_wcEntities = 0, s_wcParticles = 0, s_wcNet = 0, s_wcRest = 0;
+  int64_t wcLapTime = Time::monotonicMicroseconds();
+  auto wcLap = [&wcLapTime](int64_t& acc) {
+    int64_t n = Time::monotonicMicroseconds();
+    acc += n - wcLapTime;
+    wcLapTime = n;
+  };
+#endif
+
   float expireTime = min(float(m_latency + 800), 2000.f);
   auto now = Time::monotonicMilliseconds();
   eraseWhere(m_predictedTiles, [&](auto& pair) {
@@ -1343,15 +1386,15 @@ void WorldClient::update(float dt) {
   m_lastUpdateTimeUs = updateNowUs;
   // dt is the fixed sim timestep, so a fixed multiplier equals accumulating
   // the skipped ticks' dt exactly; each slave runs 1-in-N ticks with N*dt.
-  unsigned slaveInterval = updateDeepLoad ? 3 : 2;
+  unsigned slaveInterval = updateDeepLoad ? 4 : 3;
   float slaveDt = dt * (float)slaveInterval;
   unsigned slaveBucket = (unsigned)(m_currentStep % slaveInterval);
 
-  m_entityMap->updateAllEntities([&](EntityPtr const& entity) {
+  m_entityMap->updateAllEntitiesConditional([&](EntityPtr const& entity) -> bool {
       float entityDt = dt;
       if (updateUnderLoad && !entity->isMaster() && entity->entityType() != EntityType::Projectile) {
         if (unsigned(entity->entityId()) % slaveInterval != slaveBucket)
-          return;
+          return false;
         entityDt = slaveDt;
       }
       try { entity->update(entityDt, m_currentStep); }
@@ -1374,12 +1417,16 @@ void WorldClient::update(float dt) {
         toRemove.append(entity->entityId());
       if (entity->isMaster() && entity->clientEntityMode() == ClientEntityMode::ClientPresenceMaster)
         clientPresenceEntities.append(entity->entityId());
+      return true;
     }, [](EntityPtr const& a, EntityPtr const& b) {
       return a->entityType() < b->entityType();
     });
   m_clientState.setPlayer(m_mainPlayer->entityId());
   m_clientState.setClientPresenceEntities(std::move(clientPresenceEntities));
 
+#ifdef STAR_SYSTEM_SWITCH
+  wcLap(s_wcEntities);
+#endif
   m_damageManager->update(dt);
   handleDamageNotifications();
 
@@ -1425,6 +1472,9 @@ void WorldClient::update(float dt) {
 
   m_particles->addParticles(m_weather.pullNewParticles());
   m_particles->update(dt, RectF(particleRegion), m_weather.wind());
+#ifdef STAR_SYSTEM_SWITCH
+  wcLap(s_wcParticles);
+#endif
 
   if (auto audioSample = m_ambientSounds.updateAmbient(currentAmbientNoises(), m_sky->isDayTime()))
     m_samples.append(audioSample);
@@ -1470,6 +1520,9 @@ void WorldClient::update(float dt) {
     removeEntity(entityId, true);
 
   queueUpdatePackets(m_entityUpdateTimer.wrapTick(dt));
+#ifdef STAR_SYSTEM_SWITCH
+  wcLap(s_wcNet);
+#endif
 
   if ((!m_clientState.netCompatibilityRules().isLegacy() && m_currentStep % 3 == 0) || m_pingTime.isNothing()) {
     m_pingTime = Time::monotonicMilliseconds();
@@ -1500,6 +1553,17 @@ void WorldClient::update(float dt) {
   LogMap::set("client_entities", m_entityMap->size());
   LogMap::set("client_sectors", toString(loadedSectors.size()));
   LogMap::set("client_lua_mem", m_luaRoot->luaMemoryUsage());
+
+#ifdef STAR_SYSTEM_SWITCH
+  wcLap(s_wcRest);
+  if (++s_wcTicks >= 150) {
+    Logger::info("[perf-wc] entities={:.1f}ms particles={:.1f} net={:.1f} rest={:.1f}",
+        s_wcEntities / 1e3 / s_wcTicks, s_wcParticles / 1e3 / s_wcTicks,
+        s_wcNet / 1e3 / s_wcTicks, s_wcRest / 1e3 / s_wcTicks);
+    s_wcTicks = 0;
+    s_wcEntities = s_wcParticles = s_wcNet = s_wcRest = 0;
+  }
+#endif
 }
 
 ConnectionId WorldClient::connection() const {
@@ -1694,7 +1758,16 @@ void WorldClient::queueUpdatePackets(bool sendEntityUpdates) {
   if (m_currentStep % m_worldClientStateUpdateDelta == 0)
     m_outgoingPackets.append(make_shared<WorldClientStateUpdatePacket>(m_clientState.writeDelta()));
 
+#ifdef STAR_SYSTEM_SWITCH
+  // The create-notification scan touches every loaded entity (hash lookup
+  // each) purely to catch entities the server doesn't know about yet; every
+  // 2nd tick means a newly client-created entity reaches the server one tick
+  // later at most.
+  if (m_currentStep % 2 == 0)
+    m_entityMap->forAllEntities([&](EntityPtr const& entity) { notifyEntityCreate(entity); });
+#else
   m_entityMap->forAllEntities([&](EntityPtr const& entity) { notifyEntityCreate(entity); });
+#endif
 
   if (sendEntityUpdates) {
     auto entityUpdateSet = make_shared<EntityUpdateSetPacket>();
@@ -2285,6 +2358,20 @@ void WorldClient::freshenCollision(RectI const& region) {
     return;
 
   RectI freshenRegion = RectI::null();
+#ifdef STAR_SYSTEM_SWITCH
+  // Read-only dirtiness scan via column-batched iteration: this scan runs on
+  // EVERY collision query (each movement substep of every entity) and the
+  // per-tile modifyTile form paid a full sector resolve per tile.
+  m_tileArray->tileEach(region, [&](Vec2I const& pos, auto const& tile) {
+      // Null-collision tiles never populate the collision cache (the block
+      // iteration emits nullBlock without touching it) -- this also excludes
+      // the default tile that tileEach substitutes for unloaded columns,
+      // whose dirty flag is meaninglessly true and could otherwise put
+      // unloaded space into the freshen region every query, forever.
+      if (tile.collisionCacheDirty && tile.getCollision() != CollisionKind::Null)
+        freshenRegion.combine(RectI(pos[0], pos[1], pos[0] + 1, pos[1] + 1));
+    });
+#else
   for (int x = region.xMin(); x < region.xMax(); ++x) {
     for (int y = region.yMin(); y < region.yMax(); ++y) {
       if (auto tile = m_tileArray->modifyTile({x, y})) {
@@ -2293,6 +2380,7 @@ void WorldClient::freshenCollision(RectI const& region) {
       }
     }
   }
+#endif
 
   if (!freshenRegion.isNull()) {
     for (int x = freshenRegion.xMin(); x < freshenRegion.xMax(); ++x) {

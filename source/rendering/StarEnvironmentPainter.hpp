@@ -29,6 +29,27 @@ public:
 
   void cleanup(int64_t textureTimeout);
 
+#ifdef STAR_SYSTEM_SWITCH
+  // Retained per-parallax-layer GPU buffers: a fully-repeating layer's tile
+  // grid is periodic, so a buffer built once (with a one-tile safety ring)
+  // redraws under any sub-tile camera translation as a single retained draw
+  // (renderBuffer + transform) instead of re-submitting every quad through
+  // the guest GL driver each refresh. Rebuilt when the layer's textures
+  // (animation frame), tint color, grid size, or tile size change.
+  struct ParallaxLayerBuffer {
+    RenderBufferPtr rb;
+    List<TexturePtr> textures;
+    Vec4B color;
+    float lightMapMultiplier = 0.0f;
+    Vec2F origin;
+    int cols = 0;
+    int rows = 0;
+    Vec2F tileSize;
+    bool valid = false;
+  };
+  List<ParallaxLayerBuffer> m_parallaxBuffers;
+#endif
+
 private:
   static float const SunriseTime;
   static float const SunsetTime;

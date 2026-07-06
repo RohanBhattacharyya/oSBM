@@ -608,6 +608,7 @@ void MainInterface::preUpdate(float) {
 void MainInterface::update(float dt) {
   m_paneManager.update(dt);
   m_cursor.update(dt);
+  m_cursorDraggingCached = (bool)m_client->mainPlayer()->inventory()->swapSlotItem();
 
   m_questLogInterface->pollDialog(&m_paneManager);
 
@@ -633,15 +634,28 @@ void MainInterface::update(float dt) {
   // update mouseover target
   EntityId newMouseOverTarget = NullEntityId;
   m_stickyTargetingTimer.tick(dt);
-  auto mouseoverEntities = m_client->worldClient()->query<DamageBarEntity>(RectF::withCenter(cursorWorldPos, Vec2F(1, 1)), [=](shared_ptr<DamageBarEntity> const& entity) {
-      return entity != player
-        && entity->damageBar() == DamageBarType::Default
-        && (entity->getTeam().type == TeamType::Enemy || entity->getTeam().type == TeamType::PVP)
-        && m_client->worldClient()->lightLevel(entity->position()) > 0;
-    });
-  sortByComputedValue(mouseoverEntities, [&](DamageBarEntityPtr const& a) {
-      return m_client->worldClient()->geometry().diff(a->position(), cursorWorldPos).magnitude();
-    });
+  // The cursor mouseover scan is a spatial entity query plus a lightLevel
+  // evaluation per candidate, every frame, almost always finding nothing.
+  // Scanning every 3rd frame just means a monster health bar appears up to
+  // ~100ms after the cursor touches the monster.
+  static uint64_t s_mouseoverScanCounter = 0;
+  List<DamageBarEntityPtr> mouseoverEntities;
+  if (++s_mouseoverScanCounter % 3 == 0) {
+    mouseoverEntities = m_client->worldClient()->query<DamageBarEntity>(RectF::withCenter(cursorWorldPos, Vec2F(1, 1)), [=](shared_ptr<DamageBarEntity> const& entity) {
+        return entity != player
+          && entity->damageBar() == DamageBarType::Default
+          && (entity->getTeam().type == TeamType::Enemy || entity->getTeam().type == TeamType::PVP)
+          && m_client->worldClient()->lightLevel(entity->position()) > 0;
+      });
+    sortByComputedValue(mouseoverEntities, [&](DamageBarEntityPtr const& a) {
+        return m_client->worldClient()->geometry().diff(a->position(), cursorWorldPos).magnitude();
+      });
+  } else if (m_lastMouseoverTarget != NullEntityId) {
+    // Keep the current target alive between scans so an active health bar
+    // doesn't flicker.
+    if (auto current = as<DamageBarEntity>(m_client->worldClient()->entity(m_lastMouseoverTarget)))
+      mouseoverEntities.append(std::move(current));
+  }
   if (mouseoverEntities.size() > 0) {
     newMouseOverTarget = mouseoverEntities[0]->entityId();
   } else if (m_lastMouseoverTarget == NullEntityId && player->lastDamagedTarget() != NullEntityId && player->timeSinceLastGaveDamage() < m_stickyTargetingTimer.time / 2) {
@@ -878,8 +892,25 @@ void MainInterface::update(float dt) {
 
   updateCursor();
 
+#ifdef STAR_SYSTEM_SWITCH
+  // Nameplate/quest-indicator refresh is a spatial world query plus spring
+  // stepping per frame; under load run it every 2nd frame with accumulated
+  // dt (spring positions stay wall-clock correct, at half granularity).
+  {
+    int64_t nowUs = Time::monotonicMicroseconds();
+    bool miUnderLoad = m_lastPainterUpdateTimeUs != 0 && (nowUs - m_lastPainterUpdateTimeUs) > 50000;
+    m_lastPainterUpdateTimeUs = nowUs;
+    m_pendingPainterDt += dt;
+    if (!miUnderLoad || (++m_painterUpdateCounter % 2 == 0)) {
+      m_nameplatePainter->update(m_pendingPainterDt, m_client->worldClient(), m_worldPainter->camera(), m_client->worldClient()->interactiveHighlightMode());
+      m_questIndicatorPainter->update(m_pendingPainterDt, m_client->worldClient(), m_worldPainter->camera());
+      m_pendingPainterDt = 0.0f;
+    }
+  }
+#else
   m_nameplatePainter->update(dt, m_client->worldClient(), m_worldPainter->camera(), m_client->worldClient()->interactiveHighlightMode());
   m_questIndicatorPainter->update(dt, m_client->worldClient(), m_worldPainter->camera());
+#endif
 
   m_chatBubbleManager->setCamera(m_worldPainter->camera());
   if (auto worldClient = m_client->worldClient()) {
@@ -940,10 +971,44 @@ void MainInterface::renderInWorldElements() {
   m_chatBubbleManager->render();
 }
 
+bool MainInterface::hudSafeToReplay() const {
+  return !m_disableHud
+      && !m_actionWheelActive
+      && !m_cursorDraggingCached
+      && !m_clientCommandProcessor->debugDisplayEnabled()
+      && m_paneManager.displayedPanesVersion() == m_hudRenderedPanesVersion;
+}
+
+void MainInterface::setHudForceReplay(bool force) {
+  m_hudForceReplay = force;
+  m_paneManager.setForceReplay(force);
+}
+
+void MainInterface::setCursorDrawnSeparately(bool separate) {
+  m_cursorDrawnSeparately = separate;
+}
+
+void MainInterface::renderCursorOverlay() {
+  if (m_disableHud)
+    return;
+  renderCursor();
+  m_guiContext->clearTextStyle();
+}
+
 void MainInterface::render() {
   if (m_disableHud)
     return;
 
+#ifdef STAR_SYSTEM_SWITCH
+  // HUD-phase breakdown ([perf-mi]), logged every ~150 frames.
+  static int64_t s_miFrames = 0, s_miBars = 0, s_miCanvases = 0, s_miWindows = 0, s_miRest = 0;
+  int64_t miLapTime = Time::monotonicMicroseconds();
+  auto miLap = [&miLapTime](int64_t& acc) {
+    int64_t n = Time::monotonicMicroseconds();
+    acc += n - miLapTime;
+    miLapTime = n;
+  };
+#endif
   m_guiContext->clearTextStyle();
   // Same under-load replay pattern as PaneManager's pane cache: the HUD bar
   // group is an immediate-mode rebuild costing ~4-5ms/frame; when this run is
@@ -958,7 +1023,8 @@ void MainInterface::render() {
     m_lastBarsRenderTimeUs = nowUs;
     auto const& renderer = m_guiContext->renderer();
     bool replayed = false;
-    if (underLoad && !m_barsRecording.empty() && m_barsRenderFrame - m_barsRecordingFrame < replayInterval) {
+    if (!m_barsRecording.empty()
+        && (m_hudForceReplay || (underLoad && m_barsRenderFrame - m_barsRecordingFrame < replayInterval))) {
       renderer->playPrimitiveRecording(m_barsRecording);
       replayed = true;
     }
@@ -969,21 +1035,45 @@ void MainInterface::render() {
       renderMonsterHealthBar();
       renderSpecialDamageBar();
       renderMainBar();
+      // Standalone canvases are recorded with the bar group: canvas draw ops
+      // are written by Lua scripts that execute inside the sim tick, so the
+      // pure-replay frames (which may overlap that tick) must not iterate
+      // them -- they replay the recording made here instead.
+      RectI canvasScreenRect = RectI::withSize(Vec2I(), Vec2I(m_guiContext->windowSize()));
+      for (auto& pair : m_canvases)
+        pair.second->render(canvasScreenRect);
       if (recording) {
         m_barsRecording = renderer->endPrimitiveRecording();
         m_barsRecordingFrame = m_barsRenderFrame;
       }
     }
   }
+#ifdef STAR_SYSTEM_SWITCH
+  miLap(s_miBars);
+#endif
   renderDebug();
 
-  RectI screenRect = RectI::withSize(Vec2I(), Vec2I(m_guiContext->windowSize()));
-  for (auto& pair : m_canvases)
-    pair.second->render(screenRect);
-
+#ifdef STAR_SYSTEM_SWITCH
+  miLap(s_miCanvases);
+#endif
   renderWindows();
+#ifdef STAR_SYSTEM_SWITCH
+  miLap(s_miWindows);
+#endif
   renderActionWheel();
-  renderCursor();
+  if (!m_cursorDrawnSeparately)
+    renderCursor();
+  m_hudRenderedPanesVersion = m_paneManager.displayedPanesVersion();
+#ifdef STAR_SYSTEM_SWITCH
+  miLap(s_miRest);
+  if (++s_miFrames >= 150) {
+    Logger::info("[perf-mi] bars={:.1f}ms canvases={:.1f} windows={:.1f} rest={:.1f}",
+        s_miBars / 1e3 / s_miFrames, s_miCanvases / 1e3 / s_miFrames,
+        s_miWindows / 1e3 / s_miFrames, s_miRest / 1e3 / s_miFrames);
+    s_miFrames = 0;
+    s_miBars = s_miCanvases = s_miWindows = s_miRest = 0;
+  }
+#endif
 }
 
 Vec2F MainInterface::cursorWorldPosition() const {
@@ -1832,6 +1922,11 @@ void MainInterface::renderCursor() {
   // scissor rect for it, and a scissor change flushes every pending UI
   // primitive to the GPU mid-batch -- measured at ~3ms/frame of pure flush
   // overhead on mobile GPU drivers, for a widget drawing nothing.
+  // On pure-replay frames the sim tick may be mutating the inventory right
+  // now; hudSafeToReplay() already guaranteed no drag was in progress at
+  // update time, so skip the live swap-slot read entirely.
+  if (m_hudForceReplay)
+    return;
   if (auto swapItem = m_client->mainPlayer()->inventory()->swapSlotItem()) {
     m_cursorItem->setItem(swapItem);
     m_cursorItem->render(RectI::withSize({}, {(int)windowWidth(), (int)windowHeight()}));

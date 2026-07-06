@@ -1,0 +1,6 @@
+{
+  // See default_movement.config.patch: halves collision substep count for
+  // fast movers. Actors (players/NPCs/monsters) take their movement defaults
+  // from THIS config, which would otherwise override the base patch.
+  "maxMovementPerStep" : 0.7
+}

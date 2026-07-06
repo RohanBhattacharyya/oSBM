@@ -135,8 +135,12 @@ private:
   bool m_simRunning = false;
   bool m_simShutdown = false;
   bool m_simTickPending = false;
+  bool m_simTickInFlight = false;
+  int64_t m_hudSyncCounter = 0;
+  bool m_hudFbValid = false;
   float m_simTickDt = 0.0f;
   std::exception_ptr m_simException;
+  int64_t m_simLastTickUs = 0; // written by worker, read after join
 #endif
   
   StringMap<PostProcessGroup> m_postProcessGroups;

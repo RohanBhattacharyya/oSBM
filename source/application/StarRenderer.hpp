@@ -156,6 +156,17 @@ public:
   // Stretch-blit a named framebuffer's contents over the currently bound
   // framebuffer (no blending, linear filtered when sizes differ).
   virtual void blitFrameBufferToCurrent(String const& id) {}
+  // Alpha-composite a named framebuffer over the current render target as a
+  // premultiplied-alpha overlay quad. The source framebuffer must have been
+  // rendered with the "premultiplied" config flag (its blend accumulates
+  // premultiplied color + correct coverage) over a transparent clear.
+  virtual void compositeFrameBufferToCurrent(String const& id) {}
+  // Clear the currently bound framebuffer to transparent black immediately
+  // (independent of the startFrame clears, e.g. for "preserve" buffers that
+  // are explicitly refreshed).
+  virtual void clearCurrentFrameBuffer() {}
+  // Rebind the default (screen) render target after switchFrameBuffer.
+  virtual void switchToDefaultFrameBuffer() {}
 
   // Any further rendering will be scissored based on this rect, specified in
   // pixels

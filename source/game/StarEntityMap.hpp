@@ -46,6 +46,14 @@ public:
   // the spatial information for each entity along the way.
   void updateAllEntities(EntityCallback const& callback = {}, function<bool(EntityPtr const&, EntityPtr const&)> sortOrder = {});
 
+  // Like updateAllEntities, but the callback returns whether it actually
+  // ticked the entity. Spatial and unique-id re-indexing is skipped for
+  // entities that were not ticked: an entity's position/bounds only change
+  // inside its update, so a skipped entity's indexed info is still valid.
+  // Lets a caller that throttles per-entity updates (WorldClient under load)
+  // skip the per-entity bookkeeping cost for the skipped majority too.
+  void updateAllEntitiesConditional(function<bool(EntityPtr const&)> const& callback, function<bool(EntityPtr const&, EntityPtr const&)> sortOrder = {});
+
   // If the given unique entity is in this map, then return its entity id
   EntityId uniqueEntityId(String const& uniqueId) const;
 
@@ -128,6 +136,14 @@ private:
   EntityId m_endIdSpace;
 
   List<SpatialMap::Entry const*> m_entrySortBuffer;
+  // Set by updateAllEntitiesConditional's wrapper when the just-called
+  // callback skipped its entity; consumed by updateEntityInfo.
+  bool m_skipInfoUpdate = false;
+#ifdef STAR_SYSTEM_SWITCH
+  // Last-seen position + tick counter per entity for the position-gated
+  // spatial info update (see updateAllEntities).
+  HashMap<EntityId, pair<Vec2F, uint8_t>> m_infoUpdateGate;
+#endif
 };
 
 template <typename EntityT>

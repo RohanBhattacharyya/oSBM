@@ -52,12 +52,25 @@ void WorldPainter::update(float dt) {
 }
 
 void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWaiter) {
+#ifdef STAR_SYSTEM_SWITCH
+  // Paint-phase breakdown ([perf-wp]), logged every ~150 frames.
+  static int64_t s_wpFrames = 0, s_wpSetup = 0, s_wpEnv = 0, s_wpLight = 0, s_wpWorld = 0, s_wpCleanup = 0;
+  int64_t wpLapTime = Time::monotonicMicroseconds();
+  auto wpLap = [&wpLapTime](int64_t& acc) {
+    int64_t n = Time::monotonicMicroseconds();
+    acc += n - wpLapTime;
+    wpLapTime = n;
+  };
+#endif
   m_camera.setScreenSize(m_renderer->screenSize());
   m_camera.setTargetPixelRatio(Root::singleton().configuration()->get("zoomLevel").toFloat());
 
   m_assets = Root::singleton().assets();
 
   m_tilePainter->setup(m_camera, renderData);
+#ifdef STAR_SYSTEM_SWITCH
+  wpLap(s_wpSetup);
+#endif
 
   // Stars, Debris Fields, Sky, and Orbiters
 
@@ -83,7 +96,7 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
     int64_t nowUs = Time::monotonicMicroseconds();
     int64_t gapUs = m_bgLastRenderTimeUs != 0 ? nowUs - m_bgLastRenderTimeUs : 0;
     bool wpUnderLoad = gapUs > 50000;
-    int64_t bgInterval = gapUs > 75000 ? 3 : 2;
+    int64_t bgInterval = gapUs > 75000 ? 4 : 3;
     m_bgLastRenderTimeUs = nowUs;
     ++m_bgFrameCounter;
     Vec2U screenSize = m_renderer->screenSize();
@@ -147,6 +160,9 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   }
 #endif
 
+#ifdef STAR_SYSTEM_SWITCH
+  wpLap(s_wpEnv);
+#endif
   bool lightMapUpdated = lightWaiter ? lightWaiter() : false;
 
   m_renderer->setEffectParameter("lightMapEnabled", !renderData.isFullbright);
@@ -166,6 +182,9 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
     m_renderer->setEffectParameter("lightMapOffset", m_camera.worldToScreen(Vec2F(renderData.lightMinPosition)));
   }
 
+#ifdef STAR_SYSTEM_SWITCH
+  wpLap(s_wpLight);
+#endif
   // Parallax layers (unless already drawn into the scaled background buffer)
 
   if (!parallaxRendered && renderData.parallaxLayers && !renderData.parallaxLayers->empty())
@@ -224,11 +243,24 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   if (dimLevel != 0)
     m_renderer->render(renderFlatRect(RectF::withSize({}, Vec2F(m_camera.screenSize())), Vec4B(renderData.dimColor, dimLevel), 0.0f));
 
+#ifdef STAR_SYSTEM_SWITCH
+  wpLap(s_wpWorld);
+#endif
   static int64_t const textureTimeout = m_assets->json("/rendering.config:textureTimeout").toInt();
   m_textPainter->cleanup(textureTimeout);
   m_drawablePainter->cleanup(textureTimeout);
   m_environmentPainter->cleanup(textureTimeout);
   m_tilePainter->cleanup();
+#ifdef STAR_SYSTEM_SWITCH
+  wpLap(s_wpCleanup);
+  if (++s_wpFrames >= 150) {
+    Logger::info("[perf-wp] setup={:.1f}ms env={:.1f} light={:.1f} world={:.1f} cleanup={:.1f}",
+        s_wpSetup / 1e3 / s_wpFrames, s_wpEnv / 1e3 / s_wpFrames, s_wpLight / 1e3 / s_wpFrames,
+        s_wpWorld / 1e3 / s_wpFrames, s_wpCleanup / 1e3 / s_wpFrames);
+    s_wpFrames = 0;
+    s_wpSetup = s_wpEnv = s_wpLight = s_wpWorld = s_wpCleanup = 0;
+  }
+#endif
 }
 
 void WorldPainter::adjustLighting(WorldRenderData& renderData) {

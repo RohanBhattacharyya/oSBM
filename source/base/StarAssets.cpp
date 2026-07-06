@@ -410,6 +410,7 @@ Assets::Assets(Settings settings, StringList assetSources) {
     // clear any caching that may have been trigered by load scripts as they may no longer be valid
     m_framesSpecifications.clear();
     m_assetsCache.clear();
+    m_jsonContentEpoch.fetch_add(1, std::memory_order_release);
   };
 
   List<pair<String, AssetSourcePtr>> sources;
@@ -515,6 +516,7 @@ void Assets::hotReload() const {
   m_assetsCache.clear();
   m_queue.clear();
   m_framesSpecifications.clear();
+  m_jsonContentEpoch.fetch_add(1, std::memory_order_release);
 }
 
 StringList Assets::assetSources() const {
@@ -597,10 +599,37 @@ CaseInsensitiveStringSet const& Assets::scanExtension(String const& extension) c
 }
 
 Json Assets::json(String const& path) const {
+#ifdef STAR_SYSTEM_SWITCH
+  // Per-thread memoization of json lookups. The sim worker, server world
+  // thread and main thread all funnel frequent, highly repetitive config
+  // lookups through here; each one otherwise takes the exclusive assets
+  // mutex, whose lock/unlock is an emulated futex syscall under Ryujinx and
+  // measurably convoys all three threads. Json values are immutable and
+  // refcounted, so caching them per-thread with an epoch check is safe.
+  struct TlJsonCache {
+    uint64_t epoch = uint64_t(-1);
+    HashMap<String, Json> entries;
+  };
+  static thread_local TlJsonCache tlJsonCache;
+  uint64_t contentEpoch = m_jsonContentEpoch.load(std::memory_order_acquire);
+  if (tlJsonCache.epoch != contentEpoch) {
+    tlJsonCache.entries.clear();
+    tlJsonCache.epoch = contentEpoch;
+  }
+  if (auto cached = tlJsonCache.entries.ptr(path))
+    return *cached;
+#endif
+
   auto components = AssetPath::split(path);
   validatePath(components, true, false);
 
-  return as<JsonData>(getAsset(AssetId{AssetType::Json, std::move(components)}))->json;
+  Json result = as<JsonData>(getAsset(AssetId{AssetType::Json, std::move(components)}))->json;
+#ifdef STAR_SYSTEM_SWITCH
+  if (tlJsonCache.entries.size() >= 8192)
+    tlJsonCache.entries.clear();
+  tlJsonCache.entries[path] = result;
+#endif
+  return result;
 }
 
 Json Assets::fetchJson(Json const& v, String const& dir) const {
@@ -920,7 +949,22 @@ shared_ptr<Assets::AssetData> Assets::tryAsset(AssetId const& id) const {
 }
 
 shared_ptr<Assets::AssetData> Assets::getAsset(AssetId const& id) const {
+#ifdef STAR_SYSTEM_SWITCH
+  // Contention probe: the assets cache is guarded by one exclusive mutex hit
+  // from the sim worker, server world thread, lighting thread and main; if
+  // waits here are significant they inflate every phase measurement.
+  static std::atomic<int64_t> s_lockWaitUs{0};
+  static std::atomic<int64_t> s_lockCount{0};
+  int64_t lockStart = Time::monotonicMicroseconds();
+#endif
   MutexLocker assetsLocker(m_assetsMutex);
+#ifdef STAR_SYSTEM_SWITCH
+  s_lockWaitUs += Time::monotonicMicroseconds() - lockStart;
+  int64_t count = ++s_lockCount;
+  if (count % 20000 == 0) {
+    Logger::info("[perf-assets] {} getAsset calls, total lock wait {:.1f}ms", count, s_lockWaitUs.load() / 1e3);
+  }
+#endif
 
   while (true) {
     auto j = m_assetsCache.find(id);

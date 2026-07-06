@@ -180,7 +180,7 @@ public:
   // If set, then the entity will be discoverable by its unique id and will be
   // indexed in the stored world.  Unique ids must be different across all
   // entities in a single world.
-  Maybe<String> uniqueId() const;
+  Maybe<String> const& uniqueId() const;
 
   // EntityMode will only be set if the entity is initialized, if the entity is
   // uninitialized then isMaster and isSlave will both return false.

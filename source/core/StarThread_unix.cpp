@@ -65,7 +65,8 @@ static bool switchThreadWantsOwnCore(String const& name) {
 }
 
 static void switchDistributeCurrentThread(String const& name) {
-  if (!switchThreadWantsOwnCore(name))
+  bool isSimTick = name == "ClientApplication::simTick";
+  if (!isSimTick && !switchThreadWantsOwnCore(name))
     return;
 
   static std::atomic<unsigned> threadCounter{0};
@@ -81,17 +82,30 @@ static void switchDistributeCurrentThread(String const& name) {
       allowedCores[allowedCount++] = core;
   }
 
+  static std::atomic<bool> maskLogged{false};
+  if (!maskLogged.exchange(true))
+    Logger::info("Switch thread placement: allowed core mask {:#x} ({} cores)", coreMask, allowedCount);
+
   // Nothing to distribute across (single permitted core); leave it alone.
   if (allowedCount <= 1)
     return;
 
-  // Reserve allowedCores[0] for the main thread (game loop = client update +
-  // render); it is explicitly pinned there in switchPlatformInit. Spread the
-  // heavy gameplay threads round-robin over the remaining cores so they run in
-  // parallel with rendering instead of fighting it.
-  int spreadBase = 1;
-  int spreadCount = allowedCount - spreadBase;
-  int preferred = allowedCores[spreadBase + (threadCounter.fetch_add(1) % spreadCount)];
+  // Reserve allowedCores[0] for the main thread (game loop = GL render +
+  // interface); it is explicitly pinned there in switchPlatformInit.
+  //
+  // The client sim worker runs concurrently with the main thread's paint
+  // every frame and is frame-critical, so it gets allowedCores[1] to itself;
+  // the remaining heavy gameplay threads (lighting, universe/world server)
+  // spread round-robin over whatever is left so they don't time-slice with
+  // the sim tick.
+  int preferred;
+  if (isSimTick) {
+    preferred = allowedCores[1];
+  } else {
+    int spreadBase = allowedCount > 2 ? 2 : 1;
+    int spreadCount = allowedCount - spreadBase;
+    preferred = allowedCores[spreadBase + (threadCounter.fetch_add(1) % spreadCount)];
+  }
   svcSetThreadCoreMask(CUR_THREAD_HANDLE, preferred, coreMask);
 }
 #endif

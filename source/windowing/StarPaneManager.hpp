@@ -82,6 +82,18 @@ public:
   void render();
   void update(float dt);
 
+  // Sim-overlap support (Switch): when force-replay is set, render() replays
+  // every displayed pane's recorded primitives regardless of age -- no fresh
+  // pane renders, so no pane reads live game state and the frame's UI phase
+  // can safely overlap the concurrently-running sim tick.
+  // allDisplayedReplayable() reports whether every active displayed pane has
+  // a recording to replay (a pane opened this frame does not).
+  void setForceReplay(bool forceReplay);
+  bool allDisplayedReplayable() const;
+  // Incremented whenever a pane is displayed or dismissed; lets the retained
+  // HUD overlay detect that its captured frame no longer matches the pane set.
+  uint64_t displayedPanesVersion() const;
+
 private:
   struct UiNavigationCandidate {
     Widget const* widget;
@@ -123,6 +135,8 @@ private:
   };
   HashMap<Pane*, PaneRenderRecording> m_paneRenderCache;
   int64_t m_paneRenderFrame = 0;
+  bool m_forceReplay = false;
+  uint64_t m_displayedPanesVersion = 0;
   int64_t m_lastRenderTimeUs = 0;
 
   // Under-load pane update() throttle state (see update()).

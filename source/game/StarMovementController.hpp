@@ -290,6 +290,13 @@ private:
 
   bool m_resting;
   int m_restTicks;
+#ifdef STAR_SYSTEM_SWITCH
+  // See updateLiquidPercentage / tickMaster: fixed-cost world queries
+  // (liquid immersion, region gravity) refreshed every 3rd tick.
+  unsigned m_liquidQueryCounter = 0;
+  unsigned m_gravityQueryCounter = 0;
+  float m_cachedWorldGravity = 0.0f;
+#endif
   float m_timeStep;
 
   List<CollisionPoly> m_workingCollisions;

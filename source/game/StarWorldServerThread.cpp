@@ -305,8 +305,24 @@ void WorldServerThread::update(WorldServerFidelity fidelity) {
 
   float dt = ServerGlobalTimestep * GlobalTimescale;
   m_worldServer->setFidelity(fidelity);
-  if (dt > 0.0f && (!m_pause || *m_pause == false))
+  if (dt > 0.0f && (!m_pause || *m_pause == false)) {
+#ifdef STAR_SYSTEM_SWITCH
+    // Server tick duration probe: if this exceeds the tick budget the server
+    // falls behind realtime and the whole world runs slow-motion, no matter
+    // what the client's frame rate is.
+    static int64_t s_wsTicks = 0, s_wsUs = 0;
+    int64_t wsStart = Time::monotonicMicroseconds();
+#endif
     m_worldServer->update(dt);
+#ifdef STAR_SYSTEM_SWITCH
+    s_wsUs += Time::monotonicMicroseconds() - wsStart;
+    if (++s_wsTicks >= 150) {
+      Logger::info("[perf-ws] server tick avg {:.1f}ms", s_wsUs / 1e3 / s_wsTicks);
+      s_wsTicks = 0;
+      s_wsUs = 0;
+    }
+#endif
+  }
 
   List<Message> messages;
   {

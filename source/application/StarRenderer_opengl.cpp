@@ -330,13 +330,22 @@ OpenGlRenderer::GlFrameBuffer::GlFrameBuffer(Json const& fbConfig) : config(fbCo
   sizeDiv = config.getUInt("sizeDiv", 1);
   sizeMul = config.getFloat("sizeMul", 1.0f);
   preserve = config.getBool("preserve", false);
+  premultiplied = config.getBool("premultiplied", false);
+  // A premultiplied overlay buffer must carry real destination alpha
+  // (coverage); the platform default framebuffer format may be GL_RGB.
+  textureFormat = premultiplied ? GL_RGBA : FrameBufferTextureFormat;
   Vec2U size = framebufferTextureSize(jsonToVec2U(config.getArray("size", { 256, 256 })), sizeDiv, sizeMul);
 
   if (multisample)
     glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, GL_RGBA8, size[0], size[1], GL_TRUE);
   else {
-    glTexImage2D(GL_TEXTURE_2D, 0, FrameBufferTextureFormat, size[0], size[1], 0, FrameBufferTextureFormat, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, textureFormat, size[0], size[1], 0, textureFormat, GL_UNSIGNED_BYTE, NULL);
   }
+  // Track the allocated size on the texture object: a framebuffer texture
+  // drawn as an ordinary textured quad (e.g. compositeFrameBufferToCurrent)
+  // derives its UV extents from texture->size(), which was left at (0,0) --
+  // making any such draw sample a single corner texel.
+  texture->textureSize = size;
   auto addressing = TextureAddressingNames.getLeft(config.getString("textureAddressing", "clamp"));
   auto filtering = TextureFilteringNames.getLeft(config.getString("textureFiltering", "nearest"));
   if (addressing == TextureAddressing::Clamp) {
@@ -664,6 +673,13 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
 
   if (auto blitFrameBufferId = effect.config.optString("blitFrameBuffer"))
     blitGlFrameBuffer(getGlFrameBuffer(*blitFrameBufferId));
+#ifdef STAR_SYSTEM_SWITCH
+  else {
+    static int64_t s_noBlitSwitches = 0;
+    if (++s_noBlitSwitches % 300 == 0)
+      Logger::info("[blit] {} effect switches without blitFrameBuffer (to '{}')", s_noBlitSwitches, name);
+  }
+#endif
 
   auto effectScreenSize = m_screenSize;
   if (auto frameBufferId = effect.config.optString("frameBuffer")) {
@@ -741,6 +757,39 @@ void OpenGlRenderer::blitFrameBufferToCurrent(String const& id) {
     0, 0, dstSize[0], dstSize[1],
     GL_COLOR_BUFFER_BIT, srcSize == dstSize ? GL_NEAREST : GL_LINEAR
   );
+}
+
+void OpenGlRenderer::compositeFrameBufferToCurrent(String const& id) {
+  auto ptr = m_frameBuffers.ptr(id);
+  if (!ptr)
+    return;
+  flushImmediatePrimitives();
+  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+  render(renderTexturedRect(TexturePtr((*ptr)->texture), RectF::withSize({}, Vec2F(m_screenSize))));
+  flushImmediatePrimitives();
+  if (m_currentFrameBuffer && m_currentFrameBuffer->premultiplied)
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+  else
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
+void OpenGlRenderer::clearCurrentFrameBuffer() {
+  flushImmediatePrimitives();
+  if (m_scissorRect)
+    glDisable(GL_SCISSOR_TEST);
+  glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+  if (m_scissorRect)
+    glEnable(GL_SCISSOR_TEST);
+}
+
+void OpenGlRenderer::switchToDefaultFrameBuffer() {
+  flushImmediatePrimitives();
+  m_currentFrameBuffer.reset();
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
+  glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 void OpenGlRenderer::setScissorRect(Maybe<RectI> const& scissorRect) {
@@ -863,7 +912,9 @@ void OpenGlRenderer::setScreenSize(Vec2U screenSize) {
       glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, GL_RGBA8, textureSize[0], textureSize[1], GL_TRUE);
     } else {
       glBindTexture(GL_TEXTURE_2D, frameBuffer.second->texture->glTextureId());
-      glTexImage2D(GL_TEXTURE_2D, 0, FrameBufferTextureFormat, textureSize[0], textureSize[1], 0, FrameBufferTextureFormat, GL_UNSIGNED_BYTE, NULL);
+      GLenum fbFormat = frameBuffer.second->textureFormat ? frameBuffer.second->textureFormat : FrameBufferTextureFormat;
+      glTexImage2D(GL_TEXTURE_2D, 0, fbFormat, textureSize[0], textureSize[1], 0, fbFormat, GL_UNSIGNED_BYTE, NULL);
+      frameBuffer.second->texture->textureSize = textureSize;
     }
   }
 }
@@ -897,6 +948,43 @@ void OpenGlRenderer::startFrame() {
 
 void OpenGlRenderer::finishFrame() {
   flushImmediatePrimitives();
+
+#ifdef STAR_SYSTEM_SWITCH
+  // Diagnostic self-screenshot of the fully composed frame (world + HUD):
+  // host-side captures of the emulator window can be black under Wayland
+  // direct scanout, so this is the reliable way to verify visual output.
+  // Ryujinx's glReadPixels row pitch is buggy (only ~width/4 of each row is
+  // valid) but colors and shapes remain judgeable.
+  {
+    static uint64_t s_ssCheckCounter = 0;
+    if (++s_ssCheckCounter % 60 == 0 && File::isFile("/switch/oSBM/screenshot.flag")) {
+      Vec2U wsize = m_screenSize;
+      Image img(wsize, PixelFormat::RGBA32);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, m_screenFbo);
+      glPixelStorei(GL_PACK_ALIGNMENT, 1);
+      glReadPixels(0, 0, wsize[0], wsize[1], GL_RGBA, GL_UNSIGNED_BYTE, img.data());
+      try {
+        img.writePng(File::open("/switch/oSBM/screenshot.png", IOMode::Write));
+        // Also dump the named intermediate framebuffers, to localize which
+        // stage lost its content if the composed frame looks wrong.
+        for (auto const& fbName : {String("main"), String("hud"), String("background")}) {
+          if (auto fb = m_frameBuffers.ptr(fbName)) {
+            Vec2U fbSize = framebufferTextureSize(m_screenSize, (*fb)->sizeDiv, (*fb)->sizeMul);
+            Image fbImg(fbSize, PixelFormat::RGBA32);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, (*fb)->id);
+            glReadPixels(0, 0, fbSize[0], fbSize[1], GL_RGBA, GL_UNSIGNED_BYTE, fbImg.data());
+            fbImg.writePng(File::open(strf("/switch/oSBM/screenshot_{}.png", fbName), IOMode::Write));
+          }
+        }
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, m_screenFbo);
+        File::remove("/switch/oSBM/screenshot.flag");
+        Logger::info("Diagnostic screenshot written ({}x{})", wsize[0], wsize[1]);
+      } catch (std::exception const& e) {
+        Logger::error("Diagnostic screenshot failed: {}", e.what());
+      }
+    }
+  }
+#endif
 
   // Atlas compression is pure memory housekeeping (defragmenting atlas
   // pages), but each pass SCANS every texture in the group -- measured at
@@ -1459,6 +1547,16 @@ RefPtr<OpenGlRenderer::GlFrameBuffer> OpenGlRenderer::getGlFrameBuffer(String co
 }
 
 void OpenGlRenderer::blitGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer) {
+#ifdef STAR_SYSTEM_SWITCH
+  static int64_t s_blitRan = 0, s_blitSkipped = 0;
+  if (frameBuffer->blitted)
+    ++s_blitSkipped;
+  else
+    ++s_blitRan;
+  if ((s_blitRan + s_blitSkipped) % 300 == 0)
+    Logger::info("[blit] ran={} skipped={} draw-fbo-target={} screenViewport={}x{} offset={},{}",
+        s_blitRan, s_blitSkipped, m_screenFbo, m_screenViewportSize[0], m_screenViewportSize[1], m_screenOffset[0], m_screenOffset[1]);
+#endif
   if (frameBuffer->blitted)
     return;
 
@@ -1486,6 +1584,12 @@ void OpenGlRenderer::switchGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffe
     return;
 
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer->id);
+  // Premultiplied overlay targets accumulate premultiplied color plus correct
+  // coverage in alpha; everything else uses the standard blend.
+  if (frameBuffer->premultiplied)
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+  else
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   m_currentFrameBuffer = frameBuffer;
 }
 

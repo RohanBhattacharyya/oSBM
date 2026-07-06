@@ -74,6 +74,9 @@ void EntityMap::addEntity(EntityPtr entity) {
 }
 
 EntityPtr EntityMap::removeEntity(EntityId entityId) {
+#ifdef STAR_SYSTEM_SWITCH
+  m_infoUpdateGate.remove(entityId);
+#endif
   if (auto entity = m_spatialMap.remove(entityId)) {
     m_uniqueMap.removeRight(entityId);
     return entity.take();
@@ -91,7 +94,27 @@ List<EntityId> EntityMap::entityIds() const {
 
 void EntityMap::updateAllEntities(EntityCallback const& callback, function<bool(EntityPtr const&, EntityPtr const&)> sortOrder) {
   auto updateEntityInfo = [&](SpatialMap::Entry const& entry) {
+    if (m_skipInfoUpdate) {
+      m_skipInfoUpdate = false;
+      return;
+    }
     auto const& entity = entry.value;
+#ifdef STAR_SYSTEM_SWITCH
+    // Position-gated re-index: the full info update (metaBoundBox, rect
+    // splitting/compare, unique-id map maintenance) costs ~100+us per entity
+    // per tick under emulation and is almost always a no-op. If the entity
+    // has not moved, run it only every 4th tick -- bound-box growth without
+    // movement (animation) and unique-id changes still land within ~130ms,
+    // and spatial queries are padded well beyond that staleness.
+    {
+      auto position = entity->position();
+      auto& gate = m_infoUpdateGate[entity->entityId()];
+      if (position == gate.first && (++gate.second % 4) != 0)
+        return;
+      gate.first = position;
+      gate.second = 0;
+    }
+#endif
 
     auto position = entity->position();
     auto boundBox = entity->metaBoundBox();
@@ -140,6 +163,13 @@ void EntityMap::updateAllEntities(EntityCallback const& callback, function<bool(
       callback(entry->value);
     updateEntityInfo(*entry);
   }
+}
+
+void EntityMap::updateAllEntitiesConditional(function<bool(EntityPtr const&)> const& callback, function<bool(EntityPtr const&, EntityPtr const&)> sortOrder) {
+  updateAllEntities([&](EntityPtr const& entity) {
+      if (!callback(entity))
+        m_skipInfoUpdate = true;
+    }, std::move(sortOrder));
 }
 
 EntityId EntityMap::uniqueEntityId(String const& uniqueId) const {

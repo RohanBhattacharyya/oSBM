@@ -558,6 +558,9 @@ private:
   ClientContextPtr m_clientContext;
   StatisticsPtr m_statistics;
   QuestManagerPtr m_questManager;
+#ifdef STAR_SYSTEM_SWITCH
+  uint64_t m_questUpdateCounter = 0;
+#endif
 
   PlayerInventoryPtr m_inventory;
   PlayerBlueprintsPtr m_blueprints;

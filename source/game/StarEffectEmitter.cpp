@@ -22,6 +22,10 @@ void EffectEmitter::setSourcePosition(String name, Vec2F const& position) {
   m_positions[std::move(name)] = position;
 }
 
+bool EffectEmitter::hasSources() const {
+  return !m_sources.empty() || !m_activeSources.get().empty() || !m_newSources.empty();
+}
+
 void EffectEmitter::setDirection(Direction direction) {
   m_direction = direction;
 }

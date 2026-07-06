@@ -16,6 +16,10 @@ public:
   void addEffectSources(String const& position, StringSet effectSources);
   void setSourcePosition(String name, Vec2F const& position);
   void setDirection(Direction direction);
+  // True when any effect source is active or pending; lets callers skip the
+  // per-tick source-position bookkeeping entirely in the (overwhelmingly
+  // common) idle case.
+  bool hasSources() const;
   void setBaseVelocity(Vec2F const& velocity);
 
   void tick(float dt, EntityMode mode);

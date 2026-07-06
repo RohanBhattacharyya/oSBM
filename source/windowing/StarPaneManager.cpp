@@ -33,6 +33,7 @@ PaneManager::PaneManager()
 void PaneManager::displayPane(PaneLayer paneLayer, PanePtr const& pane, DismissCallback onDismiss) {
   if (!m_displayedPanes[paneLayer].insertFront(pane, std::move(onDismiss)).second)
     throw GuiException("Pane displayed twice in PaneManager::displayPane");
+  ++m_displayedPanesVersion;
 
   if (!pane->hasDisplayed() && pane->anchor() == PaneAnchor::None)
     pane->setPosition(Vec2I((windowSize() - pane->size()) / 2) + pane->centerOffset()); // center it
@@ -293,6 +294,24 @@ bool PaneManager::sendInputEvent(InputEvent const& event) {
   return false;
 }
 
+void PaneManager::setForceReplay(bool forceReplay) {
+  m_forceReplay = forceReplay;
+}
+
+uint64_t PaneManager::displayedPanesVersion() const {
+  return m_displayedPanesVersion;
+}
+
+bool PaneManager::allDisplayedReplayable() const {
+  for (auto const& layerPair : m_displayedPanes) {
+    for (auto const& panePair : layerPair.second) {
+      if (panePair.first->active() && !m_paneRenderCache.contains(panePair.first.get()))
+        return false;
+    }
+  }
+  return true;
+}
+
 void PaneManager::render() {
   if (m_backgroundWidget) {
     auto size = m_backgroundWidget->size();
@@ -310,11 +329,19 @@ void PaneManager::render() {
   bool underLoad = gapUs > 50000;
   int64_t replayInterval = gapUs > 75000 ? 4 : 3;
   m_lastRenderTimeUs = nowUs;
-  // Periodic sweep so recordings for dismissed panes don't accumulate.
-  if (m_paneRenderFrame % 300 == 0)
+  // Periodic sweep so recordings for dismissed panes don't accumulate. Never
+  // on a force-replay frame: the caller was promised every displayed pane
+  // can replay, and clearing here would force a fresh render mid-frame.
+  if (m_paneRenderFrame % 300 == 0 && !m_forceReplay)
     m_paneRenderCache.clear();
   auto const& renderer = m_context->renderer();
 
+#ifdef STAR_SYSTEM_SWITCH
+  // Per-pane render cost ([perf-pm]): identifies which panes own the pane
+  // layer's frame cost (fresh renders vs replays). Logged every ~150 frames.
+  static int64_t s_pmFrames = 0, s_pmReplayUs = 0;
+  static StringMap<int64_t> s_pmFreshUs;
+#endif
   for (auto const& layerPair : reverseIterate(m_displayedPanes)) {
     for (auto const& panePair : reverseIterate(layerPair.second)) {
       if (panePair.first->active()) {
@@ -324,10 +351,13 @@ void PaneManager::render() {
 
         panePair.first->setDrawingOffset(calculatePaneOffset(panePair.first));
         bool replayed = false;
-        if (underLoad) {
+#ifdef STAR_SYSTEM_SWITCH
+        int64_t paneStart = Time::monotonicMicroseconds();
+#endif
+        if (underLoad || m_forceReplay) {
           Pane* paneKey = panePair.first.get();
           if (auto cached = m_paneRenderCache.ptr(paneKey)) {
-            if (m_paneRenderFrame - cached->frame < replayInterval) {
+            if (m_forceReplay || m_paneRenderFrame - cached->frame < replayInterval) {
               renderer->playPrimitiveRecording(cached->segments);
               replayed = true;
             }
@@ -341,9 +371,27 @@ void PaneManager::render() {
         } else {
           panePair.first->render(RectI(Vec2I(), windowSize()));
         }
+#ifdef STAR_SYSTEM_SWITCH
+        int64_t paneUs = Time::monotonicMicroseconds() - paneStart;
+        if (replayed)
+          s_pmReplayUs += paneUs;
+        else
+          s_pmFreshUs[panePair.first->title().empty() ? String(typeid(*panePair.first).name()) : panePair.first->title()] += paneUs;
+#endif
       }
     }
   }
+#ifdef STAR_SYSTEM_SWITCH
+  if (++s_pmFrames >= 150) {
+    String breakdown;
+    for (auto const& p : s_pmFreshUs)
+      breakdown += strf(" {}={}us", p.first, p.second / s_pmFrames);
+    Logger::info("[perf-pm] replay={:.1f}ms fresh:{}", s_pmReplayUs / 1e3 / s_pmFrames, breakdown);
+    s_pmFrames = 0;
+    s_pmReplayUs = 0;
+    s_pmFreshUs.clear();
+  }
+#endif
 
   m_context->resetInterfaceScissorRect();
   drawUiSelection();
@@ -697,6 +745,7 @@ bool PaneManager::dismiss(PanePtr const& pane) {
   for (auto& layerPair : m_displayedPanes) {
     if (auto panePair = layerPair.second.maybeTake(pane)) {
       dismissed = true;
+      ++m_displayedPanesVersion;
       panePair->first->dismissed();
       if (panePair->second)
         panePair->second(pane);

@@ -98,6 +98,19 @@ public:
   void renderInWorldElements();
   void render();
 
+  // Sim-overlap support (Switch): true when the whole HUD can render this
+  // frame purely from recorded primitives and update-time cached state --
+  // i.e. without reading any live game state -- so it may safely run while
+  // the sim tick is still executing on the worker thread. setHudForceReplay
+  // arms that pure-replay mode for the current frame's render() calls.
+  bool hudSafeToReplay() const;
+  void setHudForceReplay(bool force);
+  // Retained-HUD support: when the cursor is drawn separately (live, outside
+  // the HUD overlay buffer so it never lags), render() skips it and the host
+  // calls renderCursorOverlay() after compositing the overlay.
+  void setCursorDrawnSeparately(bool separate);
+  void renderCursorOverlay();
+
   Vec2F cursorWorldPosition() const;
 
   bool isDebugDisplayed();
@@ -239,6 +252,20 @@ private:
 
   // Frame counter for the every-Nth-frame special-damage-bar entity scan.
   uint64_t m_specialBarScanCounter = 0;
+
+  bool m_hudForceReplay = false;
+  // Under-load throttle state for the in-world painter updates (see update()).
+  int64_t m_lastPainterUpdateTimeUs = 0;
+  uint64_t m_painterUpdateCounter = 0;
+  float m_pendingPainterDt = 0.0f;
+  bool m_cursorDrawnSeparately = false;
+  // paneManager version captured by the last full HUD render, to detect a
+  // pane set change that would make a composited stale HUD frame show a
+  // closed pane (or miss a new one).
+  uint64_t m_hudRenderedPanesVersion = 0;
+  // Whether an inventory drag is in progress, cached during update() so the
+  // pure-replay render path can decide without touching the live inventory.
+  bool m_cursorDraggingCached = false;
 
   // Under-load replay cache for the HUD bar group (see render()).
   List<Renderer::RecordedSegment> m_barsRecording;

@@ -227,16 +227,19 @@ void ClientApplication::startSimTick() {
     m_simThread = Thread::invoke("ClientApplication::simTick", [this]() {
         MutexLocker locker(m_simMutex);
         while (true) {
-          m_simCond.wait(m_simMutex, [this]() { return m_simRunRequested || m_simShutdown; });
+          while (!m_simRunRequested && !m_simShutdown)
+            m_simCond.wait(m_simMutex);
           if (m_simShutdown)
             return;
           m_simRunRequested = false;
           locker.unlock();
+          int64_t tickStart = Time::monotonicMicroseconds();
           try {
             m_universeClient->update(m_simTickDt);
           } catch (...) {
             m_simException = std::current_exception();
           }
+          m_simLastTickUs = Time::monotonicMicroseconds() - tickStart;
           locker.lock();
           m_simRunning = false;
           m_simCond.broadcast();
@@ -245,6 +248,7 @@ void ClientApplication::startSimTick() {
   }
   m_simRunning = true;
   m_simRunRequested = true;
+  m_simTickInFlight = true;
   m_simCond.broadcast();
 }
 
@@ -256,8 +260,10 @@ void ClientApplication::joinSimTick() {
     m_universeClient->update(m_simTickDt);
     return;
   }
+  m_simTickInFlight = false;
   MutexLocker locker(m_simMutex);
-  m_simCond.wait(m_simMutex, [this]() { return !m_simRunning; });
+  while (m_simRunning)
+    m_simCond.wait(m_simMutex);
   if (m_simException) {
     auto e = m_simException;
     m_simException = nullptr;
@@ -270,7 +276,8 @@ void ClientApplication::stopSimThread() {
     MutexLocker locker(m_simMutex);
     if (!m_simThread)
       return;
-    m_simCond.wait(m_simMutex, [this]() { return !m_simRunning; });
+    while (m_simRunning)
+      m_simCond.wait(m_simMutex);
     m_simShutdown = true;
     m_simCond.broadcast();
   }
@@ -642,6 +649,22 @@ void ClientApplication::render() {
     m_cinematicOverlay->render();
 
   } else if (m_state > MainAppState::Title) {
+#ifdef STAR_SYSTEM_SWITCH
+    // Pipeline profiling: frame interval plus the phase laps that matter for
+    // the overlapped sim/paint schedule. One aggregated log line per ~5s.
+    static int64_t s_frames = 0, s_lastFrameStart = 0;
+    static int64_t s_frameUs = 0, s_snapUs = 0, s_paintUs = 0, s_joinUs = 0, s_ifaceUs = 0, s_simUs = 0;
+    int64_t perfNow = Time::monotonicMicroseconds();
+    if (s_lastFrameStart)
+      s_frameUs += perfNow - s_lastFrameStart;
+    s_lastFrameStart = perfNow;
+    int64_t perfLap = perfNow;
+    auto lap = [&perfLap](int64_t& acc) {
+      int64_t n = Time::monotonicMicroseconds();
+      acc += n - perfLap;
+      perfLap = n;
+    };
+#endif
     WorldClientPtr worldClient = m_universeClient->worldClient();
     if (worldClient) {
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
@@ -652,6 +675,9 @@ void ClientApplication::render() {
       auto clientStart = totalStart;
 #endif
       worldClient->render(m_renderData, TilePainter::BorderTileSize);
+#ifdef STAR_SYSTEM_SWITCH
+      lap(s_snapUs);
+#endif
 #ifdef STAR_SYSTEM_SWITCH
       // renderData is now a self-contained snapshot (copied tiles/sky/
       // particles, shared-immutable entity drawables), so the deferred sim
@@ -686,21 +712,81 @@ void ClientApplication::render() {
           }
         }
       }
+#ifdef STAR_SYSTEM_SWITCH
+      lap(s_paintUs);
+#endif
     }
 #ifdef STAR_SYSTEM_SWITCH
-    // The UI below reads live game state (player health, quest state, ...),
-    // so the sim tick must be complete before it renders. If the world path
-    // was skipped this frame (e.g. state changed between update and render),
-    // this also runs the still-pending tick synchronously so it never drops.
-    joinSimTick();
+    // Sync-frame HUD scheme: fresh HUD renders read live game state, so they
+    // require the sim tick to be complete -- but a HUD frame that is a pure
+    // REPLAY of recorded primitives (panes, bar group, cached in-world
+    // painters) reads none, and can safely run while the sim tick is still
+    // executing. Every 3rd frame is a sync frame (join now, render fresh,
+    // re-record); in between, if the whole HUD can replay, defer the join to
+    // after the UI phase, extending the sim tick's overlap window from just
+    // the world paint to nearly the entire frame.
+    bool hudReplay = false;
+    if (m_simTickInFlight && m_mainInterface) {
+      ++m_hudSyncCounter;
+      hudReplay = (m_hudSyncCounter % 3 != 0)
+          && m_hudFbValid
+          && m_cinematicOverlay->completed()
+          && m_errorScreen->accepted()
+          && m_mainInterface->hudSafeToReplay();
+    }
+    if (!hudReplay)
+      joinSimTick();
+    lap(s_joinUs);
+    if (m_mainInterface)
+      m_mainInterface->setHudForceReplay(hudReplay);
 #endif
     renderer->switchEffectConfig("interface");
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     auto start = Time::monotonicMicroseconds();
 #endif
     m_mainInterface->renderInWorldElements();
+#ifdef STAR_SYSTEM_SWITCH
+    // HUD framebuffer path: sync frames render the interface fresh into the
+    // preserved "hud" overlay buffer and composite it; the frames in between
+    // just composite the previous contents (one textured quad) with only the
+    // cursor drawn live on top. Falls back to plain rendering if the buffer
+    // is unavailable.
+    if (hudReplay) {
+      renderer->compositeFrameBufferToCurrent("hud");
+      m_mainInterface->renderCursorOverlay();
+    } else if (worldClient && renderer->switchFrameBuffer("hud")) {
+      renderer->clearCurrentFrameBuffer();
+      m_mainInterface->setCursorDrawnSeparately(true);
+      m_mainInterface->render();
+      renderer->switchToDefaultFrameBuffer();
+      renderer->compositeFrameBufferToCurrent("hud");
+      m_mainInterface->renderCursorOverlay();
+      m_hudFbValid = true;
+    } else {
+      m_mainInterface->setCursorDrawnSeparately(false);
+      m_mainInterface->render();
+    }
+#else
     m_mainInterface->render();
+#endif
     m_cinematicOverlay->render();
+#ifdef STAR_SYSTEM_SWITCH
+    lap(s_ifaceUs);
+    joinSimTick();
+    lap(s_joinUs);
+    s_simUs += m_simLastTickUs;
+    m_simLastTickUs = 0;
+    if (++s_frames >= 150) {
+      Logger::info("[perf] fps={:.1f} frame={:.1f}ms snap={:.1f} paint={:.1f} join={:.1f} iface={:.1f} sim={:.1f} other={:.1f}",
+          1e6 * s_frames / std::max<int64_t>(s_frameUs, 1),
+          s_frameUs / 1e3 / s_frames, s_snapUs / 1e3 / s_frames,
+          s_paintUs / 1e3 / s_frames, s_joinUs / 1e3 / s_frames,
+          s_ifaceUs / 1e3 / s_frames, s_simUs / 1e3 / s_frames,
+          (s_frameUs - s_snapUs - s_paintUs - s_joinUs - s_ifaceUs) / 1e3 / s_frames);
+      s_frames = 0;
+      s_frameUs = s_snapUs = s_paintUs = s_joinUs = s_ifaceUs = s_simUs = 0;
+    }
+#endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     LogMap::set("client_render_interface", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - start));
 #endif
@@ -770,6 +856,16 @@ void ClientApplication::renderReload() {
     // survive across frames (it's fully overdrawn by the sky on refresh).
     auto frameBuffers = openglConfig.get("frameBuffers").set("background",
         JsonObject{{"sizeMul", Json(0.5)}, {"preserve", Json(true)}});
+#ifdef STAR_SYSTEM_SWITCH
+    // Retained HUD overlay buffer: the full interface is rendered into this
+    // buffer only on sync frames (when the sim tick has been joined and live
+    // game state reads are safe) and alpha-composited over the scene on every
+    // frame in between -- replacing the per-frame re-submission of all UI
+    // primitives through the (translated, expensive) guest GL driver with a
+    // single textured quad.
+    frameBuffers = frameBuffers.set("hud",
+        JsonObject{{"preserve", Json(true)}, {"premultiplied", Json(true)}});
+#endif
     openglConfig = openglConfig.set("frameBuffers", frameBuffers);
   }
 #endif
@@ -1648,12 +1744,38 @@ void ClientApplication::updateRunning(float dt) {
       }
       worldClient->setInteractiveHighlightMode(isActionTaken(InterfaceAction::ShowLabels));
     }
+#ifdef STAR_SYSTEM_SWITCH
+    static int64_t s_urrTicks = 0, s_urrPre = 0, s_urrCamera = 0, s_urrIface = 0, s_urrMixer = 0;
+    int64_t urrLapTime = Time::monotonicMicroseconds();
+    auto urrLap = [&urrLapTime](int64_t& acc) {
+      int64_t n = Time::monotonicMicroseconds();
+      acc += n - urrLapTime;
+      urrLapTime = n;
+    };
+    s_urrPre += urrLapTime; // marker reused below; replaced by lap semantics
+    s_urrPre -= urrLapTime;
+#endif
     updateCamera(dt);
+#ifdef STAR_SYSTEM_SWITCH
+    urrLap(s_urrCamera);
+#endif
 
     m_cinematicOverlay->update(dt);
     m_mainInterface->update(dt);
+#ifdef STAR_SYSTEM_SWITCH
+    urrLap(s_urrIface);
+#endif
     m_mainMixer->update(dt, m_cinematicOverlay->muteSfx(), m_cinematicOverlay->muteMusic());
     m_mainMixer->setSpeed(GlobalTimescale);
+#ifdef STAR_SYSTEM_SWITCH
+    urrLap(s_urrMixer);
+    if (++s_urrTicks >= 150) {
+      Logger::info("[perf-urr] camera={:.2f}ms iface={:.2f} mixer={:.2f}",
+          s_urrCamera / 1e3 / s_urrTicks, s_urrIface / 1e3 / s_urrTicks, s_urrMixer / 1e3 / s_urrTicks);
+      s_urrTicks = 0;
+      s_urrCamera = s_urrIface = s_urrMixer = 0;
+    }
+#endif
 
     bool inputActive = m_mainInterface->textInputActive();
     if (m_input)

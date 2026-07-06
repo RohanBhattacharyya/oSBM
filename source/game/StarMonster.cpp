@@ -452,6 +452,17 @@ void Monster::update(float dt, uint64_t) {
   m_movementController->setTimestep(dt);
 
   if (isMaster()) {
+#ifdef STAR_SYSTEM_SWITCH
+    // Master-path section costs aggregated across ALL monsters ([perf-mon]):
+    // the server's monster population is its single largest tick cost.
+    static int64_t s_monCalls = 0, s_monScript = 0, s_monMove = 0, s_monStatus = 0;
+    int64_t monLapTime = Time::monotonicMicroseconds();
+    auto monLap = [&monLapTime](int64_t& acc) {
+      int64_t n = Time::monotonicMicroseconds();
+      acc += n - monLapTime;
+      monLapTime = n;
+    };
+#endif
     m_networkedAnimator.setFlipped((m_movementController->facingDirection() == Direction::Left) != m_monsterVariant.reversed);
 
     if (m_knockedOut) {
@@ -464,11 +475,26 @@ void Monster::update(float dt, uint64_t) {
       if (shouldDie())
         knockout();
     }
+#ifdef STAR_SYSTEM_SWITCH
+    monLap(s_monScript);
+#endif
 
     m_movementController->tickMaster(dt);
+#ifdef STAR_SYSTEM_SWITCH
+    monLap(s_monMove);
+#endif
 
     m_statusController->tickMaster(dt);
     updateStatus(dt);
+#ifdef STAR_SYSTEM_SWITCH
+    monLap(s_monStatus);
+    if (++s_monCalls >= 2000) {
+      Logger::info("[perf-mon] per-call us: script={} move={} status={} (over {} calls)",
+          s_monScript / s_monCalls, s_monMove / s_monCalls, s_monStatus / s_monCalls, s_monCalls);
+      s_monCalls = 0;
+      s_monScript = s_monMove = s_monStatus = 0;
+    }
+#endif
   } else {
     m_netGroup.tickNetInterpolation(dt);
 

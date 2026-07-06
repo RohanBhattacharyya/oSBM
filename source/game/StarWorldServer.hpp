@@ -391,6 +391,11 @@ private:
   WorldGeometry m_geometry;
   double m_currentTime;
   uint64_t m_currentStep;
+#ifdef STAR_SYSTEM_SWITCH
+  // Wall time of the previous update() call, for the self-measured
+  // entity-tick-spreading load heuristic.
+  int64_t m_lastUpdateTimeUs = 0;
+#endif
   mutable CellularLightIntensityCalculator m_lightIntensityCalculator;
   SkyPtr m_sky;
 

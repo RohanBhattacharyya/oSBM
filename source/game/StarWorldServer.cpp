@@ -612,6 +612,17 @@ float WorldServer::expiryTime() {
 }
 
 void WorldServer::update(float dt) {
+#ifdef STAR_SYSTEM_SWITCH
+  // Server tick phase breakdown ([perf-wsu]), logged every ~150 ticks.
+  static int64_t s_wsuTicks = 0, s_wsuEntities = 0, s_wsuLiquid = 0, s_wsuStorage = 0, s_wsuNet = 0, s_wsuRest = 0;
+  static int64_t s_wsuEntityCount = 0;
+  int64_t wsuLapTime = Time::monotonicMicroseconds();
+  auto wsuLap = [&wsuLapTime](int64_t& acc) {
+    int64_t n = Time::monotonicMicroseconds();
+    acc += n - wsuLapTime;
+    wsuLapTime = n;
+  };
+#endif
   m_currentTime += dt;
   ++m_currentStep;
   for (auto const& pair : m_clientInfo)
@@ -635,6 +646,88 @@ void WorldServer::update(float dt) {
     m_needsGlobalBreakCheck = false;
 
   List<EntityId> toRemove;
+#ifdef STAR_SYSTEM_SWITCH
+  // Server-side entity tick spreading, self-measured like the client's: when
+  // the server tick is over budget (the world would otherwise fall behind
+  // realtime and run in slow motion), the passive entity types tick every
+  // 2nd/3rd step with the accumulated dt. Net movement and script-visible
+  // elapsed time are identical (dt-compensated); AI/animation granularity
+  // coarsens exactly as much as the slow server ticks were already coarsening
+  // it -- but the world clock stays at real time. Projectiles (fast, tunnel
+  // risk), players, and vehicles always tick every step.
+  int64_t wsuNowUs = Time::monotonicMicroseconds();
+  int64_t wsuGapUs = m_lastUpdateTimeUs != 0 ? wsuNowUs - m_lastUpdateTimeUs : 0;
+  m_lastUpdateTimeUs = wsuNowUs;
+  unsigned serverSpread = wsuGapUs > 70000 ? 3 : (wsuGapUs > 40000 ? 2 : 1);
+  // Distance tiering: entities near a player get the gentle spread; entities
+  // far outside any player's view tick at a quarter rate under load. The far
+  // tier is where most of the loaded-sector population lives (underground
+  // spawns, distant village NPCs) and nothing there is observable directly.
+  List<Vec2F> playerPositions;
+  for (auto const& pair : m_clientInfo) {
+    if (auto player = get<Player>(pair.second->clientState.playerId()))
+      playerPositions.append(player->position());
+  }
+  auto nearAnyPlayer = [&](Vec2F const& pos) {
+    for (auto const& p : playerPositions) {
+      auto diff = m_geometry.diff(pos, p);
+      if (fabsf(diff[0]) < 80.0f && fabsf(diff[1]) < 60.0f)
+        return true;
+    }
+    return false;
+  };
+  unsigned farSpread = serverSpread > 1 ? 4 : 1;
+  float spreadDt = dt * (float)serverSpread;
+  static int64_t s_wseType[10] = {};
+  m_entityMap->updateAllEntitiesConditional([&](EntityPtr const& entity) -> bool {
+      float entityDt = dt;
+      if (serverSpread > 1) {
+        EntityType t = entity->entityType();
+        if (t != EntityType::Projectile && t != EntityType::Player && t != EntityType::Vehicle) {
+          if (nearAnyPlayer(entity->position())) {
+            if (unsigned(entity->entityId()) % serverSpread != (unsigned)(m_currentStep % serverSpread))
+              return false;
+            entityDt = spreadDt;
+          } else {
+            if (unsigned(entity->entityId()) % farSpread != (unsigned)(m_currentStep % farSpread))
+              return false;
+            // Plain dt, NOT accumulated: movement cost scales with the dt it
+            // integrates (substep subdivision by distance), so an accumulated
+            // dt would do the same total work. Far entities instead simply
+            // experience time at quarter rate -- unobservable from 80+ tiles
+            // away, and a graduated version of what sector unloading already
+            // does to entities slightly further out.
+            entityDt = dt;
+          }
+        }
+      }
+      int64_t entStart = Time::monotonicMicroseconds();
+      entity->update(entityDt, m_currentStep);
+      s_wseType[std::min<size_t>((size_t)entity->entityType(), 9)] += Time::monotonicMicroseconds() - entStart;
+
+      if (auto tileEntity = as<TileEntity>(entity)) {
+        // Only do break checks on objects if all sectors the object touches
+        // *and surrounding sectors* are active.  Objects that this object
+        // rests on can be up to an entire sector large in any direction.
+        if (doBreakChecks && regionActive(RectI::integral(tileEntity->metaBoundBox().translated(tileEntity->position())).padded(WorldSectorSize)))
+          tileEntity->checkBroken();
+        // Plants never change their material spaces after placement, but the
+        // per-tick change check still copies + compares two space lists per
+        // plant. Every 8th tick catches the rare structural change (damage)
+        // within ~270ms; the surrounding damage path also dirties tiles
+        // directly, so gameplay collision is unaffected.
+        if (entity->entityType() != EntityType::Plant || (unsigned(entity->entityId()) + m_currentStep) % 8 == 0)
+          updateTileEntityTiles(tileEntity);
+      }
+
+      if (entity->shouldDestroy() && entity->entityMode() == EntityMode::Master)
+        toRemove.append(entity->entityId());
+      ++s_wsuEntityCount;
+      return true;
+    }, [](EntityPtr const& a, EntityPtr const& b) {
+      return a->entityType() < b->entityType();
+    });
+#else
   m_entityMap->updateAllEntities([&](EntityPtr const& entity) {
       entity->update(dt, m_currentStep);
 
@@ -652,6 +745,10 @@ void WorldServer::update(float dt) {
     }, [](EntityPtr const& a, EntityPtr const& b) {
       return a->entityType() < b->entityType();
     });
+#endif
+#ifdef STAR_SYSTEM_SWITCH
+  wsuLap(s_wsuEntities);
+#endif
 
   for (auto& pair : m_scriptContexts)
     pair.second->update(pair.second->updateDt(dt));
@@ -680,6 +777,9 @@ void WorldServer::update(float dt) {
     m_liquidEngine->setNoProcessingLimitRegions(clientMonitoringRegions);
     m_liquidEngine->update();
   }
+#ifdef STAR_SYSTEM_SWITCH
+  wsuLap(s_wsuLiquid);
+#endif
 
   if (shouldRunThisStep("fallingBlocksUpdate"))
     m_fallingBlocksAgent->update();
@@ -708,6 +808,9 @@ void WorldServer::update(float dt) {
 
   for (EntityId entityId : toRemove)
     removeEntity(entityId, true);
+#ifdef STAR_SYSTEM_SWITCH
+  wsuLap(s_wsuStorage);
+#endif
 
   bool sendRemoteUpdates = m_entityUpdateTimer.wrapTick(dt);
   for (auto const& pair : m_clientInfo) {
@@ -716,6 +819,9 @@ void WorldServer::update(float dt) {
     queueUpdatePackets(pair.first, sendRemoteUpdates);
   }
   m_netStateCache.clear();
+#ifdef STAR_SYSTEM_SWITCH
+  wsuLap(s_wsuNet);
+#endif
 
   for (auto& pair : m_clientInfo)
     pair.second->pendingForward = false;
@@ -726,6 +832,24 @@ void WorldServer::update(float dt) {
   LogMap::set(strf("server_{}_time", m_worldId), strf("age = {:4.2f}, day = {:4.2f}/{:4.2f}s", epochTime(), timeOfDay(), dayLength()));
   LogMap::set(strf("server_{}_active_liquid", m_worldId), m_liquidEngine->activeCells());
   LogMap::set(strf("server_{}_lua_mem", m_worldId), m_luaRoot->luaMemoryUsage());
+
+#ifdef STAR_SYSTEM_SWITCH
+  wsuLap(s_wsuRest);
+  if (++s_wsuTicks >= 150) {
+    Logger::info("[perf-wsu] {}: entities={:.1f}ms({}) liquid={:.1f} storage={:.1f} net={:.1f} rest={:.1f}",
+        m_worldId, s_wsuEntities / 1e3 / s_wsuTicks, s_wsuEntityCount / s_wsuTicks,
+        s_wsuLiquid / 1e3 / s_wsuTicks, s_wsuStorage / 1e3 / s_wsuTicks,
+        s_wsuNet / 1e3 / s_wsuTicks, s_wsuRest / 1e3 / s_wsuTicks);
+    Logger::info("[perf-wse] per-tick us: plant={} obj={} veh={} drop={} pdrop={} proj={} stage={} mon={} npc={} player={}",
+        s_wseType[0]/s_wsuTicks, s_wseType[1]/s_wsuTicks, s_wseType[2]/s_wsuTicks, s_wseType[3]/s_wsuTicks,
+        s_wseType[4]/s_wsuTicks, s_wseType[5]/s_wsuTicks, s_wseType[6]/s_wsuTicks, s_wseType[7]/s_wsuTicks,
+        s_wseType[8]/s_wsuTicks, s_wseType[9]/s_wsuTicks);
+    s_wsuTicks = 0;
+    s_wsuEntities = s_wsuLiquid = s_wsuStorage = s_wsuNet = s_wsuRest = 0;
+    s_wsuEntityCount = 0;
+    for (auto& v : s_wseType) v = 0;
+  }
+#endif
 }
 
 WorldGeometry WorldServer::geometry() const {
@@ -1987,6 +2111,33 @@ void WorldServer::queueUpdatePackets(ConnectionId clientId, bool sendRemoteUpdat
   }
   clientInfo->pendingLiquidUpdates.clear();
 
+  bool sendLocalUpdates = clientInfo->local;
+#ifdef STAR_SYSTEM_SWITCH
+  // Local clients historically received entity net-state deltas EVERY server
+  // tick (the `clientInfo->local` bypass below), costing a full serialize +
+  // loopback + client-side deserialize of every monitored entity per tick.
+  // On Switch the local client runs with interpolation enabled (see
+  // WorldClient::initWorld), so cutting the update rate keeps motion smooth
+  // via the same mechanism real multiplayer uses, at a fraction of the
+  // netcode cost (serialize + apply of every monitored entity's delta).
+  sendLocalUpdates = sendLocalUpdates && (m_currentStep % 4 == 0);
+#endif
+
+  bool anyPendingForward = false;
+  for (auto const& p : m_clientInfo) {
+    if (p.first != clientId && p.second->pendingForward)
+      anyPendingForward = true;
+  }
+#ifdef STAR_SYSTEM_SWITCH
+  // Building the monitored-entity set (a shared_ptr hash set over every
+  // loaded entity, plus id-set difference for range-exit destroys) is real
+  // per-tick cost that only feeds the delta/create/destroy work below --
+  // skip all of it on ticks where nothing would be sent. Entity pop-in /
+  // drop-out at the monitored-range edge shifts by at most 3 ticks.
+  if (!sendRemoteUpdates && !sendLocalUpdates && !anyPendingForward)
+    return;
+#endif
+
   HashSet<EntityPtr> monitoredEntities;
   for (auto const& monitoredRegion : clientInfo->monitoringRegions(m_entityMap))
     monitoredEntities.addAll(m_entityMap->entityQuery(RectF(monitoredRegion)));
@@ -2000,16 +2151,6 @@ void WorldServer::queueUpdatePackets(ConnectionId clientId, bool sendRemoteUpdat
     clientInfo->clientSlavesNetVersion.remove(entityId);
   }
 
-  bool sendLocalUpdates = clientInfo->local;
-#ifdef STAR_SYSTEM_SWITCH
-  // Local clients historically received entity net-state deltas EVERY server
-  // tick (the `clientInfo->local` bypass below), costing a full serialize +
-  // loopback + client-side deserialize of every monitored entity per tick.
-  // On Switch the local client runs with interpolation enabled (see
-  // WorldClient::initWorld), so halving the update rate keeps motion smooth
-  // via the same mechanism real multiplayer uses, at half the netcode cost.
-  sendLocalUpdates = sendLocalUpdates && (m_currentStep % 3 == 0);
-#endif
   HashMap<ConnectionId, shared_ptr<EntityUpdateSetPacket>> updateSetPackets;
   if (sendRemoteUpdates || sendLocalUpdates)
     updateSetPackets.add(ServerConnectionId, make_shared<EntityUpdateSetPacket>(ServerConnectionId));
@@ -2197,6 +2338,20 @@ void WorldServer::dirtyCollision(RectI const& region) {
 
 void WorldServer::freshenCollision(RectI const& region) {
   RectI freshenRegion = RectI::null();
+#ifdef STAR_SYSTEM_SWITCH
+  // Read-only dirtiness scan via column-batched iteration: this scan runs on
+  // EVERY collision query (each movement substep of every entity) and the
+  // per-tile modifyTile form paid a full sector resolve per tile.
+  m_tileArray->tileEach(region, [&](Vec2I const& pos, auto const& tile) {
+      // Null-collision tiles never populate the collision cache (the block
+      // iteration emits nullBlock without touching it) -- this also excludes
+      // the default tile that tileEach substitutes for unloaded columns,
+      // whose dirty flag is meaninglessly true and could otherwise put
+      // unloaded space into the freshen region every query, forever.
+      if (tile.collisionCacheDirty && tile.getCollision() != CollisionKind::Null)
+        freshenRegion.combine(RectI(pos[0], pos[1], pos[0] + 1, pos[1] + 1));
+    });
+#else
   for (int x = region.xMin(); x < region.xMax(); ++x) {
     for (int y = region.yMin(); y < region.yMax(); ++y) {
       if (auto tile = m_tileArray->modifyTile({x, y})) {
@@ -2205,6 +2360,7 @@ void WorldServer::freshenCollision(RectI const& region) {
       }
     }
   }
+#endif
 
   if (!freshenRegion.isNull()) {
     for (int x = freshenRegion.xMin(); x < freshenRegion.xMax(); ++x) {
