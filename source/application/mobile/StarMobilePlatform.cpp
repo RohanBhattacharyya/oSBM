@@ -722,6 +722,16 @@ private:
     if (!m_glContext)
       throw ApplicationException::format("Could not create GLES context: {}", SDL_GetError());
 
+#ifdef STAR_SYSTEM_SWITCH
+    // Disable vsync-driven present backpressure: the loop paces itself to the
+    // 30Hz update rate with sleepPrecise.  With the default swap interval of 1
+    // a single long stall (loading burst, host contention) phase-locks every
+    // subsequent frame into waiting ~27ms for the next-next 60Hz vsync slot
+    // inside startFrame -- the loop wedges at ~26fps with zero sleep and can
+    // never recover on its own.
+    SDL_GL_SetSwapInterval(0);
+#endif
+
     // Avoid touching swap interval at startup on Android. Some devices crash
     // in VsyncReceiver when swap interval state mutates while surfaces settle.
     m_vsync = false;
@@ -3505,7 +3515,20 @@ private:
         m_quitRequested = true;
       }
 
-      int64_t spare = round(m_updateTicker.spareTime() * 1000.0);
+      double spareSeconds = m_updateTicker.spareTime();
+#ifdef STAR_SYSTEM_SWITCH
+      // Forgive large tick backlogs: after a stall (world load, host
+      // contention) the approacher would otherwise demand a long catch-up --
+      // with the 1-update-per-frame cap that means minutes of never sleeping
+      // (and with an uncapped loop it would fast-forward the game).  Brief
+      // hitches still catch up smoothly; anything beyond a quarter second is
+      // written off and pacing restarts from now.
+      if (spareSeconds < -0.25) {
+        m_updateTicker.reset();
+        spareSeconds = 0.0;
+      }
+#endif
+      int64_t spare = round(spareSeconds * 1000.0);
       if (spare > 0)
         Thread::sleepPrecise(spare);
 #ifdef STAR_SYSTEM_SWITCH

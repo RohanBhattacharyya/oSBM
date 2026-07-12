@@ -1480,6 +1480,23 @@ void ClientApplication::updateRunning(float dt) {
         s_lastAutoBeam = nowSecs;
         m_universeClient->warpPlayer(WarpAlias::OrbitedWorld, true, "beam");
       }
+
+      // Autopilot walk: exercise REAL gameplay load (camera scroll, tile
+      // chunk rebuilds, lighting recalculation, sector loads, humanoid
+      // animation) instead of an idle stare.  Walk one direction for a
+      // while, hop occasionally, then turn around; net drift stays bounded
+      // around the beam-down point.
+      if (m_autopilotActive && m_player && m_player->inWorld()
+          && m_universeClient->playerWorld().is<CelestialWorldId>()) {
+        static uint64_t s_walkTick = 0;
+        ++s_walkTick;
+        // Walk continuously in one direction: real exploration constantly
+        // enters new sectors (generation, microdungeon placement, chunk and
+        // lighting churn) -- the load an idle or bounded soak never shows.
+        m_player->moveRight();
+        if (s_walkTick % 90 == 0) // hop every ~3s to clear obstacles
+          m_player->jump();
+      }
     }
 #endif
     auto p2pNetworkingService = app->p2pNetworkingService();
