@@ -325,6 +325,20 @@ void SpatialHash2D<KeyT, ScalarT, ValueT, IntT, AllocatorBlockSize>::removeSpati
 template <typename KeyT, typename ScalarT, typename ValueT, typename IntT, size_t AllocatorBlockSize>
 template <typename RectCollection>
 void SpatialHash2D<KeyT, ScalarT, ValueT, IntT, AllocatorBlockSize>::updateSpatial(Entry* entry, RectCollection const& rects) {
+  // Stationary entries (most world entities most ticks) keep an identical
+  // rect set; skip the sector-map remove/re-add churn entirely for them.
+  size_t newSize = 0;
+  bool same = true;
+  for (auto const& rect : rects) {
+    if (newSize >= entry->rects.size() || !(entry->rects[newSize] == rect)) {
+      same = false;
+      break;
+    }
+    ++newSize;
+  }
+  if (same && newSize == entry->rects.size())
+    return;
+
   removeSpatial(entry);
   entry->rects.clear();
   entry->rects.appendAll(rects);

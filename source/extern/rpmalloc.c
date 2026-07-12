@@ -209,8 +209,19 @@
 static DWORD fls_key;
 #endif
 
+#if defined(__SWITCH__)
+//  libnx has no mmap; rpmalloc spans are carved span-aligned out of the
+//  newlib heap instead (see _rpmalloc_mmap_os / _rpmalloc_unmap_os).
+#  include <malloc.h>
+#  include <stdio.h>
+#  ifndef MAP_FAILED
+#    define MAP_FAILED ((void*)(intptr_t)-1)
+#  endif
+#endif
 #if PLATFORM_POSIX
-#  include <sys/mman.h>
+#  if !defined(__SWITCH__)
+#    include <sys/mman.h>
+#  endif
 #  include <sched.h>
 #  ifdef __FreeBSD__
 #    include <sys/sysctl.h>
@@ -802,8 +813,11 @@ get_thread_id(void) {
 #  elif defined(__arm__)
 	__asm__ volatile ("mrc p15, 0, %0, c13, c0, 3" : "=r" (tid));
 #  elif defined(__aarch64__)
-#    if defined(__MACH__)
-	// tpidr_el0 likely unused, always return 0 on iOS
+#    if defined(__MACH__) || defined(__SWITCH__)
+	// tpidr_el0 likely unused, always return 0 on iOS.
+	// On HOS (Switch) the per-thread TLS pointer lives in tpidrro_el0;
+	// tpidr_el0 is not maintained per-thread, which would make every thread
+	// share a thread id and corrupt cross-thread free handling.
 	__asm__ volatile ("mrs %0, tpidrro_el0" : "=r" (tid));
 #    else
 	__asm__ volatile ("mrs %0, tpidr_el0" : "=r" (tid));
@@ -950,8 +964,26 @@ _rpmalloc_mmap_os(size_t size, size_t* offset) {
 		return 0;
 	}
 #else
+#  if defined(__SWITCH__)
+	//  Span-aligned allocation from the newlib heap.  Alignment to the span
+	//  size makes the generic padding logic below a no-op adjustment.
+	size_t align = (_memory_span_size > _memory_page_size) ? _memory_span_size : _memory_page_size;
+	void* ptr = memalign(align, size + padding);
+	if (!ptr) {
+		//  Loud failure: distinguishing heap exhaustion from other faults is
+		//  critical when the whole engine runs on this allocator.
+		extern void svcOutputDebugString(const char* str, unsigned long size);
+		char dbg[128];
+		struct mallinfo mi = mallinfo();
+		int len = snprintf(dbg, sizeof(dbg), "rpmalloc: span map FAILED size=%zu arena=%zu used=%zu free=%zu",
+			size + padding, (size_t)mi.arena, (size_t)mi.uordblks, (size_t)mi.fordblks);
+		if (len > 0) svcOutputDebugString(dbg, (unsigned long)len);
+	}
+#  else
 	int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED;
-#  if defined(__APPLE__) && !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+#  endif
+#  if defined(__SWITCH__)
+#  elif defined(__APPLE__) && !TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 	int fd = (int)VM_MAKE_TAG(240U);
 	if (_memory_huge_pages)
 		fd |= VM_FLAGS_SUPERPAGE_SIZE_2MB;
@@ -1022,6 +1054,11 @@ _rpmalloc_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 	if (!VirtualFree(address, release ? 0 : size, release ? MEM_RELEASE : MEM_DECOMMIT)) {
 		rpmalloc_assert(0, "Failed to unmap virtual memory block");
 	}
+#elif defined(__SWITCH__)
+	if (release)
+		free(address);
+	//  Decommit (release == 0) is a no-op: the span stays resident in the
+	//  newlib heap and is reused by rpmalloc's span cache.
 #else
 	if (release) {
 		if (munmap(address, release)) {
@@ -3626,7 +3663,13 @@ rpmalloc_get_heap_for_ptr(void* ptr)
 
 #endif
 
-#if ENABLE_PRELOAD || ENABLE_OVERRIDE
+#if (ENABLE_PRELOAD || ENABLE_OVERRIDE) && !defined(__SWITCH__)
+// On Switch the libc-level malloc overrides are NOT installed: rpmalloc's
+// span source is newlib memalign (see _rpmalloc_mmap_os), so overriding the
+// libc entry points would recurse.  Only the engine allocates through
+// rpmalloc (operator new/delete via rpnew.h and Star::malloc), while C
+// libraries (SDL, freetype, ...) stay on the newlib heap.  ENABLE_PRELOAD
+// still provides lazy per-thread heap initialization in get_thread_heap.
 
 #include "malloc.c"
 

@@ -80,6 +80,18 @@ DataStream& operator<<(DataStream& ds, ActorJumpProfile const& movementParameter
   return ds;
 }
 
+bool operator==(ActorJumpProfile const& lhs, ActorJumpProfile const& rhs) {
+  return lhs.jumpSpeed == rhs.jumpSpeed
+      && lhs.jumpControlForce == rhs.jumpControlForce
+      && lhs.jumpInitialPercentage == rhs.jumpInitialPercentage
+      && lhs.jumpHoldTime == rhs.jumpHoldTime
+      && lhs.jumpTotalHoldTime == rhs.jumpTotalHoldTime
+      && lhs.multiJump == rhs.multiJump
+      && lhs.reJumpDelay == rhs.reJumpDelay
+      && lhs.autoJump == rhs.autoJump
+      && lhs.collisionCancelled == rhs.collisionCancelled;
+}
+
 ActorMovementParameters ActorMovementParameters::sensibleDefaults() {
   return ActorMovementParameters(Root::singleton().assets()->json("/default_actor_movement.config").toObject());
 }
@@ -338,6 +350,47 @@ DataStream& operator<<(DataStream& ds, ActorMovementParameters const& movementPa
   return ds;
 }
 
+bool operator==(ActorMovementParameters const& lhs, ActorMovementParameters const& rhs) {
+  return lhs.mass == rhs.mass
+      && lhs.gravityMultiplier == rhs.gravityMultiplier
+      && lhs.liquidBuoyancy == rhs.liquidBuoyancy
+      && lhs.airBuoyancy == rhs.airBuoyancy
+      && lhs.bounceFactor == rhs.bounceFactor
+      && lhs.stopOnFirstBounce == rhs.stopOnFirstBounce
+      && lhs.enableSurfaceSlopeCorrection == rhs.enableSurfaceSlopeCorrection
+      && lhs.slopeSlidingFactor == rhs.slopeSlidingFactor
+      && lhs.maxMovementPerStep == rhs.maxMovementPerStep
+      && lhs.maximumCorrection == rhs.maximumCorrection
+      && lhs.speedLimit == rhs.speedLimit
+      && lhs.standingPoly == rhs.standingPoly
+      && lhs.crouchingPoly == rhs.crouchingPoly
+      && lhs.stickyCollision == rhs.stickyCollision
+      && lhs.stickyForce == rhs.stickyForce
+      && lhs.walkSpeed == rhs.walkSpeed
+      && lhs.runSpeed == rhs.runSpeed
+      && lhs.flySpeed == rhs.flySpeed
+      && lhs.airFriction == rhs.airFriction
+      && lhs.liquidFriction == rhs.liquidFriction
+      && lhs.minimumLiquidPercentage == rhs.minimumLiquidPercentage
+      && lhs.liquidImpedance == rhs.liquidImpedance
+      && lhs.normalGroundFriction == rhs.normalGroundFriction
+      && lhs.ambulatingGroundFriction == rhs.ambulatingGroundFriction
+      && lhs.groundForce == rhs.groundForce
+      && lhs.airForce == rhs.airForce
+      && lhs.liquidForce == rhs.liquidForce
+      && lhs.airJumpProfile == rhs.airJumpProfile
+      && lhs.liquidJumpProfile == rhs.liquidJumpProfile
+      && lhs.fallStatusSpeedMin == rhs.fallStatusSpeedMin
+      && lhs.fallThroughSustainFrames == rhs.fallThroughSustainFrames
+      && lhs.maximumPlatformCorrection == rhs.maximumPlatformCorrection
+      && lhs.maximumPlatformCorrectionVelocityFactor == rhs.maximumPlatformCorrectionVelocityFactor
+      && lhs.physicsEffectCategories == rhs.physicsEffectCategories
+      && lhs.collisionEnabled == rhs.collisionEnabled
+      && lhs.frictionEnabled == rhs.frictionEnabled
+      && lhs.gravityEnabled == rhs.gravityEnabled
+      && lhs.pathExploreRate == rhs.pathExploreRate;
+}
+
 ActorMovementModifiers::ActorMovementModifiers(Json const& config) {
   groundMovementModifier = 1.0f;
   liquidMovementModifier = 1.0f;
@@ -420,6 +473,18 @@ DataStream& operator<<(DataStream& ds, ActorMovementModifiers const& movementMod
   return ds;
 }
 
+bool operator==(ActorMovementModifiers const& lhs, ActorMovementModifiers const& rhs) {
+  return lhs.groundMovementModifier == rhs.groundMovementModifier
+      && lhs.liquidMovementModifier == rhs.liquidMovementModifier
+      && lhs.speedModifier == rhs.speedModifier
+      && lhs.airJumpModifier == rhs.airJumpModifier
+      && lhs.liquidJumpModifier == rhs.liquidJumpModifier
+      && lhs.runningSuppressed == rhs.runningSuppressed
+      && lhs.jumpingSuppressed == rhs.jumpingSuppressed
+      && lhs.movementSuppressed == rhs.movementSuppressed
+      && lhs.facingSuppressed == rhs.facingSuppressed;
+}
+
 ActorMovementController::ActorMovementController(ActorMovementParameters const& parameters) {
   m_controlRotationRate = 0.0f;
   m_controlRun = false;
@@ -457,11 +522,13 @@ ActorMovementParameters const& ActorMovementController::baseParameters() const {
 
 void ActorMovementController::updateBaseParameters(ActorMovementParameters const& parameters) {
   m_baseParameters = m_baseParameters.merge(parameters);
+  m_activeParamsCacheValid = false;
   applyMCParameters(m_baseParameters);
 }
 
 void ActorMovementController::resetBaseParameters(ActorMovementParameters const& parameters) {
   m_baseParameters = ActorMovementParameters::sensibleDefaults().merge(parameters);
+  m_activeParamsCacheValid = false;
   applyMCParameters(m_baseParameters);
 }
 
@@ -471,10 +538,12 @@ ActorMovementModifiers const& ActorMovementController::baseModifiers() const {
 
 void ActorMovementController::updateBaseModifiers(ActorMovementModifiers const& modifiers) {
   m_baseModifiers = m_baseModifiers.combine(modifiers);
+  m_activeParamsCacheValid = false;
 }
 
 void ActorMovementController::resetBaseModifiers(ActorMovementModifiers const& modifiers) {
   m_baseModifiers = modifiers;
+  m_activeParamsCacheValid = false;
 }
 
 Json ActorMovementController::storeState() const {
@@ -722,8 +791,27 @@ void ActorMovementController::tickMaster(float dt) {
     MovementController::tickMaster(dt);
     setPosition(m_entityAnchor->position);
   } else {
-    auto activeParameters = m_baseParameters.merge(m_controlParameters);
-    auto activeModifiers = m_baseModifiers.combine(m_controlModifiers);
+#ifdef STAR_SYSTEM_SWITCH
+    static int64_t s_amCalls = 0, s_amPre = 0, s_amMc = 0, s_amTail = 0;
+    int64_t amT0 = Time::monotonicMicroseconds();
+#endif
+    // merge()/combine() rebuild large Maybe-field structs (several of which
+    // heap-allocate) and for idle/steady actors the inputs are value-identical
+    // tick after tick.  Memoize: only rebuild when the base or control inputs
+    // actually changed.  This is a large fixed per-actor-per-tick cost on
+    // guest-translated platforms where malloc is expensive.
+    if (!m_activeParamsCacheValid
+        || !(m_controlParameters == m_lastControlParameters)
+        || !(m_controlModifiers == m_lastControlModifiers)) {
+      m_cachedActiveParameters = m_baseParameters.merge(m_controlParameters);
+      m_cachedActiveModifiers = m_baseModifiers.combine(m_controlModifiers);
+      m_lastControlParameters = m_controlParameters;
+      m_lastControlModifiers = m_controlModifiers;
+      m_activeParamsCacheValid = true;
+      ++m_activeParamsVersion;
+    }
+    auto const& activeParameters = m_cachedActiveParameters;
+    auto const& activeModifiers = m_cachedActiveModifiers;
 
     if (activeModifiers.movementSuppressed) {
       m_controlMove = {};
@@ -978,7 +1066,13 @@ void ActorMovementController::tickMaster(float dt) {
     bool falling = (yVelocity() < *activeParameters.fallStatusSpeedMin) && !m_groundMovement.get();
     m_falling.set(falling);
 
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t amT1 = Time::monotonicMicroseconds();
+#endif
     MovementController::tickMaster(dt);
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t amT2 = Time::monotonicMicroseconds();
+#endif
 
     m_lastControlJump = m_controlJump;
     m_lastControlDown = m_controlDown;
@@ -987,6 +1081,18 @@ void ActorMovementController::tickMaster(float dt) {
       m_canJump.set(m_reJumpTimer.ready() && (!m_groundMovementSustainTimer.ready() || *activeParameters.liquidJumpProfile.multiJump));
     else
       m_canJump.set(m_reJumpTimer.ready() && (!m_groundMovementSustainTimer.ready() || *activeParameters.airJumpProfile.multiJump));
+#ifdef STAR_SYSTEM_SWITCH
+    int64_t amT3 = Time::monotonicMicroseconds();
+    s_amPre += amT1 - amT0;
+    s_amMc += amT2 - amT1;
+    s_amTail += amT3 - amT2;
+    if (++s_amCalls >= 4000) {
+      Logger::info("[perf-am] per-call us: pre={} mc={} tail={} (over {} calls)",
+          s_amPre / s_amCalls, s_amMc / s_amCalls, s_amTail / s_amCalls, s_amCalls);
+      s_amCalls = 0;
+      s_amPre = s_amMc = s_amTail = 0;
+    }
+#endif
   }
 
   clearControls();
@@ -1003,11 +1109,36 @@ void ActorMovementController::tickSlave(float dt) {
 }
 
 void ActorMovementController::applyMCParameters(ActorMovementParameters const& parameters) {
+  bool fallingGravity = !onGround() && yVelocity() < 0;
+
+  float relativeXVelocity = xVelocity() - surfaceVelocity()[0];
+  bool useAmbulatingGroundFriction = (m_walking.get() || m_running.get())
+      && copysign(1, m_targetHorizontalAmbulatingVelocity) == copysign(1, relativeXVelocity)
+      && fabs(relativeXVelocity) <= fabs(m_targetHorizontalAmbulatingVelocity);
+
+  bool ignorePlatforms = m_fallThroughSustain > 0 || m_controlFly || m_controlDown;
+
+  // The output of this function depends only on `parameters` and the four
+  // dynamic selector bits computed above, and it merges onto m_parameters.
+  // Rebuilding it involves two full MovementParameters constructions with
+  // several heap allocations, every tick for every actor -- so skip the whole
+  // thing when nothing that feeds it has changed since the last application.
+  uint8_t dynamicKey = (fallingGravity ? 1 : 0)
+      | (m_crouching.get() ? 2 : 0)
+      | (useAmbulatingGroundFriction ? 4 : 0)
+      | (ignorePlatforms ? 8 : 0);
+  bool cachedSource = &parameters == &m_cachedActiveParameters;
+  if (cachedSource && m_mcMemoValid
+      && m_mcMemoActiveVersion == m_activeParamsVersion
+      && m_mcMemoDynamicKey == dynamicKey
+      && m_mcMemoResultVersion == MovementController::parametersVersion())
+    return;
+
   MovementParameters mcParameters;
 
   mcParameters.mass = parameters.mass;
 
-  if (!onGround() && yVelocity() < 0)
+  if (fallingGravity)
     mcParameters.gravityMultiplier = *parameters.gravityMultiplier;
   else
     mcParameters.gravityMultiplier = parameters.gravityMultiplier;
@@ -1034,12 +1165,7 @@ void ActorMovementController::applyMCParameters(ActorMovementParameters const& p
   // If we are traveling in the correct direction while in a movement mode that
   // requires contact with the ground (ambulating i.e. walking or running), and
   // not traveling faster than our target horizontal movement, then apply the
-  // special 'ambulatingGroundFriction'.
-  float relativeXVelocity = xVelocity() - surfaceVelocity()[0];
-  bool useAmbulatingGroundFriction = (m_walking.get() || m_running.get())
-      && copysign(1, m_targetHorizontalAmbulatingVelocity) == copysign(1, relativeXVelocity)
-      && fabs(relativeXVelocity) <= fabs(m_targetHorizontalAmbulatingVelocity);
-
+  // special 'ambulatingGroundFriction' (computed above for the memo key).
   if (useAmbulatingGroundFriction)
     mcParameters.groundFriction = parameters.ambulatingGroundFriction;
   else
@@ -1049,7 +1175,7 @@ void ActorMovementController::applyMCParameters(ActorMovementParameters const& p
   mcParameters.frictionEnabled = parameters.frictionEnabled;
   mcParameters.gravityEnabled = parameters.gravityEnabled;
 
-  mcParameters.ignorePlatformCollision = m_fallThroughSustain > 0 || m_controlFly || m_controlDown;
+  mcParameters.ignorePlatformCollision = ignorePlatforms;
   mcParameters.maximumPlatformCorrection = parameters.maximumPlatformCorrection;
   mcParameters.maximumPlatformCorrectionVelocityFactor = parameters.maximumPlatformCorrectionVelocityFactor;
 
@@ -1059,6 +1185,15 @@ void ActorMovementController::applyMCParameters(ActorMovementParameters const& p
   mcParameters.speedLimit = parameters.speedLimit;
 
   MovementController::applyParameters(mcParameters);
+
+  if (cachedSource) {
+    m_mcMemoValid = true;
+    m_mcMemoActiveVersion = m_activeParamsVersion;
+    m_mcMemoDynamicKey = dynamicKey;
+    m_mcMemoResultVersion = MovementController::parametersVersion();
+  } else {
+    m_mcMemoValid = false;
+  }
 }
 
 void ActorMovementController::doSetAnchorState(Maybe<EntityAnchorState> anchorState) {

@@ -26,6 +26,7 @@ STAR_CLASS(LuaRoot);
 STAR_CLASS(DamageManager);
 STAR_CLASS(EntityMap);
 STAR_CLASS(ParticleManager);
+STAR_CLASS(StoredFunction);
 STAR_CLASS(WorldClient);
 STAR_CLASS(Player);
 STAR_CLASS(Item);
@@ -68,6 +69,10 @@ public:
   bool tileIsOccupied(Vec2I const& pos, TileLayer layer, bool includeEphemeral = false, bool checkCollision = false) const override;
   CollisionKind tileCollisionKind(Vec2I const& pos) const override;
   void forEachCollisionBlock(RectI const& region, function<void(CollisionBlock const&)> const& iterator) const override;
+  bool getTileCollisionBlocks(RectI const& region, List<CollisionBlock const*>& output) const override;
+  uint64_t collisionChangeEpoch() const override;
+  bool collisionRegionsChangedSince(uint64_t epoch, RectI const& region) const override;
+  bool hasPhysicsEntities() const override;
   bool isTileConnectable(Vec2I const& pos, TileLayer layer, bool tilesOnly = false) const override;
   bool pointTileCollision(Vec2F const& point, CollisionSet const& collisionSet = DefaultCollisionSet) const override;
   bool lineTileCollision(Vec2F const& begin, Vec2F const& end, CollisionSet const& collisionSet = DefaultCollisionSet) const override;
@@ -255,7 +260,8 @@ private:
   // based on transparency rules.
   bool readNetTile(Vec2I const& pos, NetTile const& netTile, bool updateCollision = true);
   void dirtyCollision(RectI const& region);
-  void freshenCollision(RectI const& region);
+  bool freshenCollision(RectI const& region);
+  CollisionChangeTracker m_collisionTracker;
   void renderCollisionDebug();
 
   void informTilePrediction(Vec2I const& pos, TileModification const& modification);
@@ -412,6 +418,7 @@ private:
   // Persistent parallax layer buffer (see render()); renderData points at it.
   ParallaxLayers m_parallaxLayersBuffer;
   List<float> m_parallaxLayerBaseAlpha;
+  List<StoredFunctionPtr> m_parallaxLayerTodFunctions;
   Parallax const* m_parallaxBuiltFrom = nullptr;
 
   HashMap<DungeonId, float> m_dungeonIdGravity;

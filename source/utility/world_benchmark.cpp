@@ -22,9 +22,9 @@ int main(int argc, char** argv) {
     OptionParser::Options options;
     tie(root, options) = rootLoader.commandInitOrDie(argc, argv);
 
-    coutf("Fully loading root...");
-    root->fullyLoad();
-    coutf(" done\n");
+    // fullyLoad() eagerly loads EVERY asset in the pak (many minutes); the
+    // benchmark only needs the assets the chosen dungeon actually touches,
+    // which load lazily during the first steps.
 
     String dungeon = options.arguments.first();
     VisitableWorldParametersPtr worldParameters = generateFloatingDungeonWorldParameters(dungeon);

@@ -603,6 +603,7 @@ private:
     void quit() override {
       // Treat in-engine quits as a soft return-to-launcher on mobile.
       // Hard process exits on some Android devices race SDL vsync teardown.
+      Logger::info("QUIT PATH: ApplicationController::quit (in-engine quit/return-to-launcher)");
       parent->m_softQuitRequested = true;
       parent->m_quitRequested = false;
       parent->m_runtimeExitReason = "Game requested quit and returned to launcher.";
@@ -3499,13 +3500,17 @@ private:
 
       m_renderRate = m_renderTicker.tick();
 
-      if (m_signalHandler.interruptCaught())
+      if (m_signalHandler.interruptCaught()) {
+        Logger::info("QUIT PATH: signal handler interrupt");
         m_quitRequested = true;
+      }
 
       int64_t spare = round(m_updateTicker.spareTime() * 1000.0);
       if (spare > 0)
         Thread::sleepPrecise(spare);
 #ifdef STAR_SYSTEM_SWITCH
+      if (m_quitRequested || m_softQuitRequested)
+        Logger::info("GAME LOOP EXITING: quitRequested={} softQuitRequested={}", m_quitRequested, m_softQuitRequested);
       lpLap(s_lpSleep);
       if (++s_lpFrames >= 150) {
         Logger::info("[perf-loop] events={:.1f}ms update={:.1f} start={:.1f} render={:.1f} finish={:.1f} swap={:.1f} sleep={:.1f}",
@@ -3730,6 +3735,7 @@ private:
         // from the system. Once that happens it is STICKY (SDL re-posts QUIT on
         // every PumpEvents), so we must NOT ignore-and-continue (that turns the
         // event-drain loop into an infinite spin = freeze). Honor it as a quit.
+        Logger::info("QUIT PATH: SDL_EVENT_QUIT received (system exit request)");
         m_quitRequested = true;
         continue;
 #else
@@ -3900,6 +3906,7 @@ private:
         // See runGameLoop's handler: appletMainLoop()->false is sticky and SDL
         // re-posts QUIT every PumpEvents, so break out of the drain loop (a
         // `continue` would spin forever and freeze) and honor the quit.
+        Logger::info("QUIT PATH: SDL_EVENT_QUIT in processWindowEvents (system exit request)");
         m_quitRequested = true;
         break;
 #else

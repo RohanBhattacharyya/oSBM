@@ -225,6 +225,7 @@ void DungeonGeneratorWorld::markSpace(PolyF const& region) {
 }
 
 void DungeonGeneratorWorld::setForegroundMaterial(Vec2I const& position, MaterialId material, MaterialHue hueshift, MaterialColorVariant colorVariant) {
+  m_worldServer->recordCollisionChange(RectI::withCenter(position, {8, 8}));
   // Collision dirtying for the whole part is done once in markRegion instead
   // of per-tile here (markRegion's region exactly covers every tile written
   // for this part, so nothing is missed).
@@ -286,6 +287,7 @@ void DungeonGeneratorWorld::placeBiomeTree(Vec2I const& pos) {
 
 // yay, copy paste coding, kyren WILL kill me
 void DungeonGeneratorWorld::placePlant(PlantPtr const& plant, Vec2I const& position) {
+  m_worldServer->recordCollisionChange(RectI::withCenter(position, {96, 96}));
   if (!plant)
     return;
 
@@ -657,6 +659,8 @@ WorldGenerator::WorldGenerator(WorldServer* server) : m_worldServer(server) {
 }
 
 void WorldGenerator::generateSectorLevel(WorldStorage* worldStorage, Sector const& sector, SectorGenerationLevel generationLevel) {
+  if (auto sectorRegion = worldStorage->regionForSector(sector))
+    m_worldServer->recordCollisionChange(*sectorRegion);
   if (generationLevel == SectorGenerationLevel::BaseTiles) {
     prepareTiles(worldStorage, sector);
   } else if (generationLevel == SectorGenerationLevel::MicroDungeons) {
@@ -675,6 +679,8 @@ void WorldGenerator::generateSectorLevel(WorldStorage* worldStorage, Sector cons
 }
 
 void WorldGenerator::sectorLoadLevelChanged(WorldStorage* worldStorage, Sector const& sector, SectorLoadLevel loadLevel) {
+  if (auto sectorRegion = worldStorage->regionForSector(sector))
+    m_worldServer->recordCollisionChange(*sectorRegion);
   if (loadLevel == SectorLoadLevel::Loaded) {
     if (worldStorage->sectorGenerationLevel(sector) == SectorGenerationLevel::Complete)
       m_worldServer->activateLiquidRegion(worldStorage->tileArray()->sectorRegion(sector));
@@ -682,6 +688,8 @@ void WorldGenerator::sectorLoadLevelChanged(WorldStorage* worldStorage, Sector c
 }
 
 void WorldGenerator::terraformSector(WorldStorage* worldStorage, Sector const& sector) {
+  if (auto sectorRegion = worldStorage->regionForSector(sector))
+    m_worldServer->recordCollisionChange(*sectorRegion);
   // Logger::info("terraforming sector {}...", sector);
   reapplyBiome(worldStorage, sector);
 }
@@ -1003,6 +1011,8 @@ void WorldGenerator::generateCaveLiquid(WorldStorage* worldStorage, ServerTileSe
 }
 
 void WorldGenerator::prepareSector(WorldStorage* worldStorage, ServerTileSectorArray::Sector const& sector) {
+  if (auto sectorRegion = worldStorage->regionForSector(sector))
+    m_worldServer->recordCollisionChange(*sectorRegion);
   auto materialDatabase = Root::singleton().materialDatabase();
   auto planet = m_worldServer->worldTemplate();
   auto tileArray = worldStorage->tileArray();
@@ -1509,6 +1519,7 @@ void WorldGenerator::levelCluster(Set<Vec2I>& cluster, Set<Vec2I> const& filled,
 }
 
 bool WorldGenerator::placePlant(WorldStorage* worldStorage, PlantPtr const& plant, Vec2I const& position) {
+  m_worldServer->recordCollisionChange(RectI::withCenter(position, {96, 96}));
   if (!plant)
     return false;
 

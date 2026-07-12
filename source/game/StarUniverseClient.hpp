@@ -53,6 +53,15 @@ public:
   // Updates internal world client in addition to handling universe level
   // commands.
   void update(float dt);
+#ifdef STAR_SYSTEM_SWITCH
+  // Overlapped-pipeline support: while the update tick runs on the sim
+  // worker thread, world lifecycle packets are deferred (they rebuild state
+  // the main thread is concurrently rendering from) and must be flushed on
+  // the main thread between frames.
+  void setProcessingOnSimWorker(bool onWorker);
+  bool hasDeferredWorldPackets() const;
+  void flushDeferredWorldPackets();
+#endif
 
   Maybe<BeamUpRule> beamUpRule() const;
   bool canBeamUp() const;
@@ -154,6 +163,10 @@ private:
   List<ChatReceivedMessage> m_pendingMessages;
 
   Maybe<String> m_disconnectReason;
+#ifdef STAR_SYSTEM_SWITCH
+  bool m_onSimWorker = false;
+  List<PacketPtr> m_deferredWorldPackets;
+#endif
 
   LuaRootPtr m_luaRoot;
 

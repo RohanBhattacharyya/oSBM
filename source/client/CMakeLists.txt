@@ -56,6 +56,22 @@ ENDIF ()
 
 IF (STAR_PRECOMPILED_HEADERS)
   TARGET_PRECOMPILE_HEADERS (starbound REUSE_FROM star_core)
+
+  IF (STAR_SYSTEM_SWITCH)
+    # Diagnostic: route libnx fatalThrow through a logging wrapper so
+    # spontaneous system fatals carry caller attribution (see
+    # StarSwitchPlatform.cpp __wrap_fatalThrow).
+    TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=fatalThrow")
+    # libnx's internal result assertions abort via diagAbortWithResult (not the
+    # public fatalThrow). Wrap it too: attribute + swallow the spurious post-warp
+    # applet "NotInitialized" fatal (see __wrap_diagAbortWithResult).
+    TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=diagAbortWithResult")
+    # Attribute the spurious post-warp process shutdown: capture whoever calls
+    # exit()/_exit()/appletExit (see __wrap_exit et al in StarSwitchPlatform.cpp).
+    TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=exit")
+    TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=_exit")
+    TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=appletExit")
+  ENDIF ()
 ENDIF()
 
 IF(STAR_SYSTEM_MACOS)

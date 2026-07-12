@@ -2,6 +2,10 @@
 #include "StarTime.hpp"
 #include "StarLogging.hpp"
 
+#if defined(STAR_SYSTEM_SWITCH) && defined(STAR_USE_RPMALLOC)
+#include "rpmalloc.h"
+#endif
+
 #include <limits.h>
 #include <libgen.h>
 #include <stdlib.h>
@@ -137,6 +141,13 @@ struct ThreadImpl {
         Logger::error("Unknown exception caught in Thread {}", ptr->name);
     }
     ptr->stopped = true;
+#if defined(STAR_SYSTEM_SWITCH) && defined(STAR_USE_RPMALLOC)
+    // Without the libc-override preload hooks (not installed on Switch),
+    // nothing releases this thread's rpmalloc heap on exit; do it here so
+    // short-lived threads (per-world server threads etc.) don't leak their
+    // span caches.
+    rpmalloc_thread_finalize(1);
+#endif
     return nullptr;
   }
 

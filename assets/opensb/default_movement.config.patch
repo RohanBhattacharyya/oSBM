@@ -8,12 +8,5 @@
   // stationary player) just stop paying the full collision cost every tick.
   // Movement collision is the single hottest per-entity cost on the Switch
   // build's server thread.
-  "restDuration" : 5,
-
-  // Halve movement collision substep count for fast movers (vanilla 0.4):
-  // collision cost is dominated by the per-substep query+separate, and 0.7
-  // tiles per substep still cannot pop a body through a 1-tile wall (the
-  // separation would have to move it past the wall's midplane). Movement
-  // collision is the hottest per-entity cost on the Switch build.
-  "maxMovementPerStep" : 0.7
+  "restDuration" : 5
 }

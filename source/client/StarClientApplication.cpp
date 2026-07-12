@@ -235,10 +235,12 @@ void ClientApplication::startSimTick() {
           locker.unlock();
           int64_t tickStart = Time::monotonicMicroseconds();
           try {
+            m_universeClient->setProcessingOnSimWorker(true);
             m_universeClient->update(m_simTickDt);
           } catch (...) {
             m_simException = std::current_exception();
           }
+          m_universeClient->setProcessingOnSimWorker(false);
           m_simLastTickUs = Time::monotonicMicroseconds() - tickStart;
           locker.lock();
           m_simRunning = false;
@@ -776,6 +778,10 @@ void ClientApplication::render() {
     lap(s_joinUs);
     s_simUs += m_simLastTickUs;
     m_simLastTickUs = 0;
+    // World lifecycle packets the worker deferred are applied here, on the
+    // main thread with no frame in flight (nothing holds pointers into the
+    // world client's buffers between frames).
+    m_universeClient->flushDeferredWorldPackets();
     if (++s_frames >= 150) {
       Logger::info("[perf] fps={:.1f} frame={:.1f}ms snap={:.1f} paint={:.1f} join={:.1f} iface={:.1f} sim={:.1f} other={:.1f}",
           1e6 * s_frames / std::max<int64_t>(s_frameUs, 1),
@@ -1384,10 +1390,19 @@ void ClientApplication::updateTitle(float dt) {
   // Used only for automated performance testing; absent for normal users.
   {
     static bool s_autopilotStarted = false;
+    // Cache the flag-file check: File::isFile on Switch is an opendir+readdir
+    // scan (libnx stat aborts on missing paths), and libnx fsdev path
+    // handling races other threads' file IO -- polling it every tick from
+    // the main thread intermittently crashed in opendir (null strchr). One
+    // check at title time is enough; the flag doesn't change mid-run.
+    static int s_autopilotFlagCached = -1;
+    if (s_autopilotFlagCached < 0 && m_titleScreen->currentState() == TitleState::Main)
+      s_autopilotFlagCached = File::isFile("/switch/oSBM/autopilot.flag") ? 1 : 0;
     if (!s_autopilotStarted && m_titleScreen->currentState() == TitleState::Main
         && m_playerStorage && m_playerStorage->playerUuidAt(0)
-        && File::isFile("/switch/oSBM/autopilot.flag")) {
+        && s_autopilotFlagCached == 1) {
       s_autopilotStarted = true;
+      m_autopilotActive = true;
       changeState(MainAppState::SinglePlayer);
     }
   }
@@ -1456,18 +1471,34 @@ void ClientApplication::updateRunning(float dt) {
       double nowSecs = Time::monotonicTime();
       // Cheap in-memory checks first: File::isFile is an emulated fs stat on
       // Switch and this runs every update tick once the cooldown has expired.
+      // The flag state is cached at title time (see updateTitle): repeated
+      // File::isFile from the main thread races libnx fsdev (see there).
       if (m_mainInterface && (nowSecs - s_lastAutoBeam > 60.0)
           && m_universeClient->playerWorld().is<ClientShipWorldId>()
           && !m_universeClient->flying() && m_universeClient->clientContext()->orbitWarpAction()
-          && File::isFile("/switch/oSBM/autopilot.flag")) {
+          && m_autopilotActive) {
         s_lastAutoBeam = nowSecs;
         m_universeClient->warpPlayer(WarpAlias::OrbitedWorld, true, "beam");
       }
     }
 #endif
     auto p2pNetworkingService = app->p2pNetworkingService();
+#ifdef STAR_SYSTEM_SWITCH
+    // Configuration::get is a mutex + Json map lookup; these two settings
+    // change only via the options menu, so refresh them at ~2Hz instead of
+    // paying the lookup every sim tick.
+    static uint64_t s_joinableRefreshCounter = 0;
+    static bool s_clientIPJoinable = false, s_clientP2PJoinable = false;
+    if (s_joinableRefreshCounter++ % 32 == 0) {
+      s_clientIPJoinable = m_root->configuration()->get("clientIPJoinable").toBool();
+      s_clientP2PJoinable = m_root->configuration()->get("clientP2PJoinable").toBool();
+    }
+    bool clientIPJoinable = s_clientIPJoinable;
+    bool clientP2PJoinable = s_clientP2PJoinable;
+#else
     bool clientIPJoinable = m_root->configuration()->get("clientIPJoinable").toBool();
     bool clientP2PJoinable = m_root->configuration()->get("clientP2PJoinable").toBool();
+#endif
     Maybe<pair<uint16_t, uint16_t>> party = make_pair(m_universeClient->players(), m_universeClient->maxPlayers());
 
     if (m_state == MainAppState::MultiPlayer) {
@@ -1683,6 +1714,11 @@ void ClientApplication::updateRunning(float dt) {
 
     m_mainInterface->preUpdate(dt);
 #ifdef STAR_SYSTEM_SWITCH
+    // Safety net for frames that never reach the world render path (state
+    // changes, menus): worker-deferred world lifecycle packets must still be
+    // applied promptly, and this is a safe main-thread point (no frame in
+    // flight, sim not running).
+    m_universeClient->flushDeferredWorldPackets();
     // Overlapped sim pipeline: instead of running the (~20-25ms) sim tick
     // here, defer it so render() can run it on the sim worker thread
     // CONCURRENTLY with world painting (pure GL from immutable renderData

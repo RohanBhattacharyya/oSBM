@@ -104,9 +104,16 @@ public:
   static Map<String, String> getValues();
   static void clear();
 
+  // LogMap feeds the debug overlay only, but set() calls (string formatting +
+  // a mutex) are sprinkled through per-tick engine code.  When nothing reads
+  // the map (debug display hidden), setters become near-free early-outs.
+  static void setObserved(bool observed) { s_observed = observed; }
+  static bool observed() { return s_observed; }
+
 private:
   static HashMap<String, String> s_logMap;
   static Mutex s_logMapMutex;
+  static bool s_observed;
 };
 
 // Logging for spatial data.  Divided into multiple named coordinate spaces.
@@ -192,6 +199,8 @@ void Logger::error(char const* msg, Args const&... args) {
 
 template <typename T>
 void LogMap::set(String const& key, T const& t) {
+  if (!s_observed)
+    return;
   setValue(key, toString(t));
 }
 

@@ -39,6 +39,8 @@ struct ActorJumpProfile {
 DataStream& operator>>(DataStream& ds, ActorJumpProfile& movementParameters);
 DataStream& operator<<(DataStream& ds, ActorJumpProfile const& movementParameters);
 
+bool operator==(ActorJumpProfile const& lhs, ActorJumpProfile const& rhs);
+
 // A not-quite superset of MovementParameters, with some fields from
 // MovementParameters ignored because they make no sense, and other fields
 // expanded out to different cases based on Actor specific things.
@@ -115,6 +117,8 @@ struct ActorMovementParameters {
 DataStream& operator>>(DataStream& ds, ActorMovementParameters& movementParameters);
 DataStream& operator<<(DataStream& ds, ActorMovementParameters const& movementParameters);
 
+bool operator==(ActorMovementParameters const& lhs, ActorMovementParameters const& rhs);
+
 // A set of normalized values that act as "modifiers" or "bonuses" to movement,
 // and can be combined sensibly.  A modifier of 0.0 represents a 0% change, a
 // modifier of 0.2 represents a 20% increase, and a modifier of -0.2 represents
@@ -143,6 +147,8 @@ struct ActorMovementModifiers {
 
 DataStream& operator>>(DataStream& ds, ActorMovementModifiers& movementModifiers);
 DataStream& operator<<(DataStream& ds, ActorMovementModifiers const& movementModifiers);
+
+bool operator==(ActorMovementModifiers const& lhs, ActorMovementModifiers const& rhs);
 
 class ActorMovementController : public virtual MovementController {
 public:
@@ -264,6 +270,18 @@ private:
 
   ActorMovementParameters m_baseParameters;
   ActorMovementModifiers m_baseModifiers;
+
+  // Memoized merge of base+control parameters/modifiers (see tickMaster).
+  ActorMovementParameters m_lastControlParameters;
+  ActorMovementModifiers m_lastControlModifiers;
+  ActorMovementParameters m_cachedActiveParameters;
+  ActorMovementModifiers m_cachedActiveModifiers;
+  bool m_activeParamsCacheValid = false;
+  uint64_t m_activeParamsVersion = 0;
+  bool m_mcMemoValid = false;
+  uint8_t m_mcMemoDynamicKey = 0;
+  uint64_t m_mcMemoActiveVersion = 0;
+  uint64_t m_mcMemoResultVersion = 0;
 
   // State data
 

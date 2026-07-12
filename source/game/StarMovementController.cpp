@@ -461,6 +461,7 @@ void MovementController::approachYVelocity(float targetYVelocity, float maxContr
 
 void MovementController::init(World* world) {
   m_world = world;
+  m_lastQueryRegion = RectI::null();
   setPosition(position());
   updatePositionInterpolators();
 }
@@ -524,6 +525,10 @@ void MovementController::tickMaster(float dt) {
   m_surfaceSlope = Vec2F(1, 0);
   m_surfaceMovingCollision.set({});
 
+#ifdef STAR_SYSTEM_SWITCH
+  static int64_t s_mtCalls = 0, s_mtPre = 0, s_mtSteps = 0, s_mtTail = 0;
+  int64_t mtT0 = Time::monotonicMicroseconds();
+#endif
   unsigned steps;
   float maxMovementPerStep = *m_parameters.maxMovementPerStep;
   if (maxMovementPerStep > 0.0f)
@@ -551,7 +556,13 @@ void MovementController::tickMaster(float dt) {
       m_onGround.set(false);
 
     } else {
-      auto body = collisionBody();
+      // Build the world-space body into a reused member: PolyF copy-construct
+      // heap-allocates its vertex list, and guest-side malloc is expensive
+      // enough under emulation to dominate the whole collision substep.
+      m_workingBody = collisionPoly();
+      m_workingBody.rotate(rotation());
+      m_workingBody.translate(position());
+      PolyF const& body = m_workingBody;
 
       float velocityMagnitude = vmag(relativeVelocity);
       Vec2F velocityDirection = relativeVelocity / velocityMagnitude;
@@ -562,18 +573,11 @@ void MovementController::tickMaster(float dt) {
           + *m_parameters.maximumPlatformCorrectionVelocityFactor * velocityMagnitude;
       Vec2F bodyCenter = body.center();
 
-#ifdef STAR_SYSTEM_SWITCH
-      // The collision query pad only has to cover the correction actually
-      // applied in a normal substep (a fraction of a tile) plus the movement
-      // envelope -- padding by the full maximumCorrection (3 tiles for
-      // actors) made the query region ~2x larger and the poly working set
-      // with it (measured 28 polys, ~750us/substep). A deeply-stuck body
-      // whose needed correction exceeds the pad still resolves, just over a
-      // few ticks instead of one.
-      RectF queryBounds = body.boundBox().padded(std::min(maximumCorrection, 1.25f));
-#else
-      RectF queryBounds = body.boundBox().padded(maximumCorrection);
-#endif
+      // Query padding is clamped: maximumCorrection can be several tiles, but
+      // actual per-substep corrections are small fractions of a tile, and the
+      // poly count returned scales the whole substep cost (copy + separate).
+      // collisionMove still receives the full maximumCorrection.
+      RectF queryBounds = body.boundBox().padded(min(maximumCorrection, 1.25f));
       queryBounds.combine(queryBounds.translated(movement));
 #ifdef STAR_SYSTEM_SWITCH
       // Substep cost breakdown ([perf-mm]), thread-local so the sim worker,
@@ -662,9 +666,10 @@ void MovementController::tickMaster(float dt) {
     }
   }
   
+#ifdef STAR_SYSTEM_SWITCH
+  int64_t mtT1 = Time::monotonicMicroseconds();
+#endif
   Vec2F newVelocity = relativeVelocity + m_surfaceVelocity;
-
-  PolyF body = collisionBody();
 
   updateLiquidPercentage();
 
@@ -733,6 +738,17 @@ void MovementController::tickMaster(float dt) {
   setVelocity(newVelocity);
 
   updateForceRegions(dt);
+#ifdef STAR_SYSTEM_SWITCH
+  int64_t mtT2 = Time::monotonicMicroseconds();
+  s_mtSteps += mtT1 - mtT0;
+  s_mtTail += mtT2 - mtT1;
+  if (++s_mtCalls >= 4000) {
+    Logger::info("[perf-mt] per-call us: steps={} tail={} (over {} calls)",
+        s_mtSteps / s_mtCalls, s_mtTail / s_mtCalls, s_mtCalls);
+    s_mtCalls = 0;
+    s_mtPre = s_mtSteps = s_mtTail = 0;
+  }
+#endif
 }
 
 void MovementController::tickSlave(float dt) {
@@ -756,6 +772,10 @@ void MovementController::setIgnorePhysicsEntities(Set<EntityId> ignorePhysicsEnt
 }
 
 void MovementController::forEachMovingCollision(RectF const& region, function<bool(MovingCollisionId id, PhysicsMovingCollision, PolyF, RectF)> callback) {
+  // Moving collisions only come from PhysicsEntities, which are rare -- skip
+  // the per-substep spatial query entirely when the world has none.
+  if (!world()->hasPhysicsEntities())
+    return;
   auto geometry = world()->geometry();
   for (auto& physicsEntity : world()->query<PhysicsEntity>(region)) {
     if (m_ignorePhysicsEntities.contains(physicsEntity->entityId()))
@@ -781,7 +801,11 @@ void MovementController::forEachMovingCollision(RectF const& region, function<bo
 void MovementController::updateForceRegions(float) {
   auto geometry = world()->geometry();
   auto pos = position();
-  auto body = collisionBody();
+  // Reused scratch (a fresh collisionBody() copy heap-allocates every tick).
+  m_workingBody = collisionPoly();
+  m_workingBody.rotate(rotation());
+  m_workingBody.translate(position());
+  PolyF const& body = m_workingBody;
   RectF boundBox = body.boundBox();
 
   m_appliedForceRegion = false;
@@ -835,11 +859,13 @@ void MovementController::updateForceRegions(float) {
       }
     };
 
-  for (auto& physicsEntity : world()->query<PhysicsEntity>(boundBox)) {
-    if (m_ignorePhysicsEntities.contains(physicsEntity->entityId()))
-      continue;
+  if (world()->hasPhysicsEntities()) {
+    for (auto& physicsEntity : world()->query<PhysicsEntity>(boundBox)) {
+      if (m_ignorePhysicsEntities.contains(physicsEntity->entityId()))
+        continue;
 
-    handleForceRegions(physicsEntity->forceRegions());
+      handleForceRegions(physicsEntity->forceRegions());
+    }
   }
 
   handleForceRegions(world()->forceRegions());
@@ -855,8 +881,10 @@ void MovementController::updateLiquidPercentage() {
     return;
 #endif
   auto pos = position();
-  auto body = collisionBody();
-  RectF boundBox = body.boundBox();
+  m_workingBody = collisionPoly();
+  m_workingBody.rotate(rotation());
+  m_workingBody.translate(position());
+  RectF boundBox = m_workingBody.boundBox();
 
   LiquidLevel cll;
   if (boundBox.isEmpty())
@@ -912,9 +940,15 @@ MovementController::CollisionResult MovementController::collisionMove(List<Colli
   if (body.isNull())
     return {movement, Vec2F(), {}, false, false, Vec2F(1, 0), CollisionKind::None};
 
-  PolyF translatedBody = body;
+  // Reused thread-local scratch: assignment into existing vertex-list capacity
+  // avoids the per-substep heap allocations a fresh PolyF copy would make.
+  static thread_local PolyF t_cmTranslatedBody;
+  static thread_local PolyF t_cmCheckBody;
+  PolyF& translatedBody = t_cmTranslatedBody;
+  translatedBody = body;
   translatedBody.translate(movement);
-  PolyF checkBody = translatedBody;
+  PolyF& checkBody = t_cmCheckBody;
+  checkBody = translatedBody;
   Vec2F totalCorrection = Vec2F();
   CollisionKind maxCollided = CollisionKind::None;
   Maybe<MovingCollisionId> surfaceMovingCollisionId;
@@ -1055,7 +1089,9 @@ MovementController::CollisionSeparation MovementController::collisionSeparate(Li
     });
 
   PolyF::IntersectResult intersectResult;
-  PolyF correctedPoly = poly;
+  static thread_local PolyF t_csCorrectedPoly;
+  PolyF& correctedPoly = t_csCorrectedPoly;
+  correctedPoly = poly;
   RectF correctedBoundBox = correctedPoly.boundBox();
   for (auto const& cp : collisionPolys) {
     if ((ignorePlatforms && cp.collisionKind == CollisionKind::Platform) || !correctedBoundBox.intersects(cp.polyBounds, false))
@@ -1104,6 +1140,7 @@ MovementController::CollisionSeparation MovementController::collisionSeparate(Li
 }
 
 void MovementController::updateParameters(MovementParameters parameters) {
+  ++m_parametersVersion;
   m_parameters = std::move(parameters);
   m_collisionPoly.set(*m_parameters.collisionPoly);
   m_mass.set(*m_parameters.mass);
@@ -1119,6 +1156,34 @@ void MovementController::updatePositionInterpolators() {
 }
 
 void MovementController::queryCollisions(RectF const& region) {
+  RectI integralRegion = RectI::integral(region.padded(1));
+  bool physicsEntities = world()->hasPhysicsEntities();
+
+  // Memoized reuse: the working set is a pure function of the integral query
+  // region and the world's collision geometry.  Every collision-geometry
+  // writer (dirtyCollision, generation, sector loads, freshen regeneration)
+  // records its changed region with the world, so if this controller queried
+  // the same integral region last time, nothing recorded since intersects
+  // that region, and there are no moving collisions to merge, the previous
+  // working set is still exact -- skipping the entire query, which runs for
+  // every movement substep of every entity.
+#ifdef STAR_SYSTEM_SWITCH
+  static int64_t s_qcHits = 0, s_qcMisses = 0;
+#endif
+  if (!physicsEntities && integralRegion == m_lastQueryRegion
+      && !world()->collisionRegionsChangedSince(m_lastQueryEpoch, integralRegion)) {
+#ifdef STAR_SYSTEM_SWITCH
+    ++s_qcHits;
+#endif
+    return;
+  }
+#ifdef STAR_SYSTEM_SWITCH
+  if (++s_qcMisses >= 8000) {
+    Logger::info("[perf-qc] collision query memo: hits={} misses={} epoch={}", s_qcHits, s_qcMisses, world()->collisionChangeEpoch());
+    s_qcHits = s_qcMisses = 0;
+  }
+#endif
+
   while (!m_workingCollisions.empty()) {
     m_collisionBuffers.append(m_workingCollisions.takeLast().poly);
   }
@@ -1134,24 +1199,33 @@ void MovementController::queryCollisions(RectF const& region) {
 
   auto geometry = world()->geometry();
 
-  world()->forEachCollisionBlock(RectI::integral(region.padded(1)), [&](CollisionBlock const& block) {
-      if (block.kind != CollisionKind::None && !block.poly.isNull()) {
-        RectF polyBounds = block.polyBounds;
-        Vec2F basePosition = block.poly.vertex(0);
-        Vec2F nearTranslation = geometry.nearestTo(region.min(), basePosition) - basePosition;
-        polyBounds.translate(nearTranslation);
+  // Batch fetch: one virtual call for the whole region instead of a per-tile
+  // std::function callback -- this runs for every movement substep of every
+  // entity and the callback overhead dominated the query cost.  All blocks in
+  // the integral region are kept (no sub-tile float filter) so the resulting
+  // set depends only on the integral region and can be reused (memo above);
+  // collisionMove bounding-box prechecks each poly anyway.
+  m_workingCollisionBlocks.clear();
+  world()->getTileCollisionBlocks(integralRegion, m_workingCollisionBlocks);
+  Vec2F wrapAnchor = Vec2F(integralRegion.min());
+  for (CollisionBlock const* blockPtr : m_workingCollisionBlocks) {
+    CollisionBlock const& block = *blockPtr;
+    if (block.kind != CollisionKind::None && !block.poly.isNull()) {
+      Vec2F basePosition = block.poly.vertex(0);
+      Vec2F nearTranslation = geometry.nearestTo(wrapAnchor, basePosition) - basePosition;
 
-        if (region.intersects(polyBounds)) {
-          CollisionPoly& collisionPoly = newCollisionPoly();
-          collisionPoly.poly = block.poly;
-          collisionPoly.poly.translate(nearTranslation);
-          collisionPoly.polyBounds = polyBounds;
-          collisionPoly.sortPosition = centerOfTile(block.space);
-          collisionPoly.movingCollisionId = {};
-          collisionPoly.collisionKind = block.kind;
-        }
-      }
-    });
+      CollisionPoly& collisionPoly = newCollisionPoly();
+      collisionPoly.poly = block.poly;
+      collisionPoly.poly.translate(nearTranslation);
+      collisionPoly.polyBounds = block.polyBounds.translated(nearTranslation);
+      collisionPoly.sortPosition = centerOfTile(block.space);
+      collisionPoly.movingCollisionId = {};
+      collisionPoly.collisionKind = block.kind;
+    }
+  }
+
+  m_lastQueryRegion = physicsEntities ? RectI::null() : integralRegion;
+  m_lastQueryEpoch = world()->collisionChangeEpoch();
 
   forEachMovingCollision(region, [&](MovingCollisionId id, PhysicsMovingCollision mc, PolyF poly, RectF bounds) {
     CollisionPoly& collisionPoly = newCollisionPoly();

@@ -711,13 +711,7 @@ void WorldServer::update(float dt) {
         // rests on can be up to an entire sector large in any direction.
         if (doBreakChecks && regionActive(RectI::integral(tileEntity->metaBoundBox().translated(tileEntity->position())).padded(WorldSectorSize)))
           tileEntity->checkBroken();
-        // Plants never change their material spaces after placement, but the
-        // per-tick change check still copies + compares two space lists per
-        // plant. Every 8th tick catches the rare structural change (damage)
-        // within ~270ms; the surrounding damage path also dirties tiles
-        // directly, so gameplay collision is unaffected.
-        if (entity->entityType() != EntityType::Plant || (unsigned(entity->entityId()) + m_currentStep) % 8 == 0)
-          updateTileEntityTiles(tileEntity);
+        updateTileEntityTiles(tileEntity);
       }
 
       if (entity->shouldDestroy() && entity->entityMode() == EntityMode::Master)
@@ -950,6 +944,40 @@ void WorldServer::forEachCollisionBlock(RectI const& region, function<void(Colli
           iterator(block);
       }
     });
+}
+
+bool WorldServer::hasPhysicsEntities() const {
+  return m_entityMap->physicsEntityCount() > 0;
+}
+
+bool WorldServer::getTileCollisionBlocks(RectI const& region, List<CollisionBlock const*>& output) const {
+  // Fused single pass for the common (nothing dirty) case: check dirtiness
+  // and collect in one sector-blocked iteration instead of a freshen scan
+  // followed by a collect scan.  Null-collision tiles (which includes the
+  // default tile used for unloaded positions, whose dirty flag is always set)
+  // contribute no blocks and cannot go stale, so they never force the slow
+  // path.  This runs for every movement substep of every entity.
+  size_t mark = output.size();
+  bool sawDirty = false;
+  m_tileArray->tileEach(region, [&](Vec2I const&, ServerTile const& tile) {
+      if (tile.collisionCacheDirty) {
+        if (tile.getCollision() != CollisionKind::Null)
+          sawDirty = true;
+      } else {
+        for (auto const& block : tile.collisionCache)
+          output.append(&block);
+      }
+    });
+  if (!sawDirty)
+    return false;
+
+  output.resize(mark);
+  const_cast<WorldServer*>(this)->freshenCollision(region);
+  m_tileArray->tileEach(region, [&output](Vec2I const&, ServerTile const& tile) {
+      for (auto const& block : tile.collisionCache)
+        output.append(&block);
+    });
+  return true;
 }
 
 bool WorldServer::isTileConnectable(Vec2I const& pos, TileLayer layer, bool tilesOnly) const {
@@ -2328,55 +2356,47 @@ void WorldServer::writeNetTile(Vec2I const& pos, NetTile& netTile) const {
 
 void WorldServer::dirtyCollision(RectI const& region) {
   auto dirtyRegion = region.padded(CollisionGenerator::BlockInfluenceRadius);
-  for (int x = dirtyRegion.xMin(); x < dirtyRegion.xMax(); ++x) {
-    for (int y = dirtyRegion.yMin(); y < dirtyRegion.yMax(); ++y) {
-      if (auto tile = m_tileArray->modifyTile({x, y}))
-        tile->collisionCacheDirty = true;
-    }
-  }
+  m_collisionTracker.record(dirtyRegion, m_geometry.width());
+  // tileEval iterates sector-blocked (one sector lookup per sector instead of
+  // one hash lookup per tile) -- this and freshenCollision below run inside
+  // every entity movement collision query, so per-tile modifyTile cost here
+  // was a large fixed tax on the whole physics path.
+  m_tileArray->tileEval(dirtyRegion, [](Vec2I const&, ServerTile& tile) {
+      tile.collisionCacheDirty = true;
+    });
 }
 
-void WorldServer::freshenCollision(RectI const& region) {
+bool WorldServer::freshenCollision(RectI const& region) {
   RectI freshenRegion = RectI::null();
-#ifdef STAR_SYSTEM_SWITCH
-  // Read-only dirtiness scan via column-batched iteration: this scan runs on
-  // EVERY collision query (each movement substep of every entity) and the
-  // per-tile modifyTile form paid a full sector resolve per tile.
-  m_tileArray->tileEach(region, [&](Vec2I const& pos, auto const& tile) {
-      // Null-collision tiles never populate the collision cache (the block
-      // iteration emits nullBlock without touching it) -- this also excludes
-      // the default tile that tileEach substitutes for unloaded columns,
-      // whose dirty flag is meaninglessly true and could otherwise put
-      // unloaded space into the freshen region every query, forever.
-      if (tile.collisionCacheDirty && tile.getCollision() != CollisionKind::Null)
+  m_tileArray->tileEval(region, [&](Vec2I const& pos, ServerTile& tile) {
+      if (tile.collisionCacheDirty)
         freshenRegion.combine(RectI(pos[0], pos[1], pos[0] + 1, pos[1] + 1));
     });
-#else
-  for (int x = region.xMin(); x < region.xMax(); ++x) {
-    for (int y = region.yMin(); y < region.yMax(); ++y) {
-      if (auto tile = m_tileArray->modifyTile({x, y})) {
-        if (tile->collisionCacheDirty)
-          freshenRegion.combine(RectI(x, y, x + 1, y + 1));
-      }
-    }
-  }
-#endif
 
   if (!freshenRegion.isNull()) {
-    for (int x = freshenRegion.xMin(); x < freshenRegion.xMax(); ++x) {
-      for (int y = freshenRegion.yMin(); y < freshenRegion.yMax(); ++y) {
-        if (auto tile = m_tileArray->modifyTile({x, y})) {
-          tile->collisionCacheDirty = false;
-          tile->collisionCache.clear();
-        }
-      }
-    }
+    m_tileArray->tileEval(freshenRegion, [](Vec2I const&, ServerTile& tile) {
+        tile.collisionCacheDirty = false;
+        tile.collisionCache.clear();
+      });
 
     for (auto collisionBlock : m_collisionGenerator.getBlocks(freshenRegion)) {
       if (auto tile = m_tileArray->modifyTile(collisionBlock.space))
         tile->collisionCache.append(std::move(collisionBlock));
     }
+    m_collisionTracker.record(freshenRegion, m_geometry.width());
+    return true;
   }
+  return false;
+}
+
+uint64_t WorldServer::collisionChangeEpoch() const {
+  return m_collisionTracker.epoch();
+}
+
+bool WorldServer::collisionRegionsChangedSince(uint64_t epoch, RectI const& region) const {
+  if (region.xMin() < 0 || region.xMax() > (int)m_geometry.width())
+    return true; // wrap-seam regions are always conservatively invalidated
+  return m_collisionTracker.changedSince(epoch, region);
 }
 
 void WorldServer::removeEntity(EntityId entityId, bool andDie) {

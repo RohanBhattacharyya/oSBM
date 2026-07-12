@@ -2,6 +2,7 @@
 #include "StarTileEntity.hpp"
 #include "StarInteractiveEntity.hpp"
 #include "StarProjectile.hpp"
+#include "StarPhysicsEntity.hpp"
 
 namespace Star {
 
@@ -68,20 +69,26 @@ void EntityMap::addEntity(EntityPtr entity) {
   if (uniqueId && m_uniqueMap.hasLeftValue(*uniqueId))
     throw EntityMapException::format("Duplicate entity unique id ({}) on entity id ({}) in EntityMap::addEntity", *uniqueId, entityId);
 
+  if (as<PhysicsEntity>(entity))
+    ++m_physicsEntityCount;
   m_spatialMap.set(entityId, m_geometry.splitRect(boundBox, position), std::move(entity));
   if (uniqueId)
     m_uniqueMap.add(*uniqueId, entityId);
 }
 
 EntityPtr EntityMap::removeEntity(EntityId entityId) {
-#ifdef STAR_SYSTEM_SWITCH
-  m_infoUpdateGate.remove(entityId);
-#endif
   if (auto entity = m_spatialMap.remove(entityId)) {
     m_uniqueMap.removeRight(entityId);
-    return entity.take();
+    auto taken = entity.take();
+    if (as<PhysicsEntity>(taken))
+      --m_physicsEntityCount;
+    return taken;
   }
   return {};
+}
+
+size_t EntityMap::physicsEntityCount() const {
+  return m_physicsEntityCount.load(std::memory_order_relaxed);
 }
 
 size_t EntityMap::size() const {
@@ -99,22 +106,6 @@ void EntityMap::updateAllEntities(EntityCallback const& callback, function<bool(
       return;
     }
     auto const& entity = entry.value;
-#ifdef STAR_SYSTEM_SWITCH
-    // Position-gated re-index: the full info update (metaBoundBox, rect
-    // splitting/compare, unique-id map maintenance) costs ~100+us per entity
-    // per tick under emulation and is almost always a no-op. If the entity
-    // has not moved, run it only every 4th tick -- bound-box growth without
-    // movement (animation) and unique-id changes still land within ~130ms,
-    // and spatial queries are padded well beyond that staleness.
-    {
-      auto position = entity->position();
-      auto& gate = m_infoUpdateGate[entity->entityId()];
-      if (position == gate.first && (++gate.second % 4) != 0)
-        return;
-      gate.first = position;
-      gate.second = 0;
-    }
-#endif
 
     auto position = entity->position();
     auto boundBox = entity->metaBoundBox();

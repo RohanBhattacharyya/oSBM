@@ -196,6 +196,10 @@ public:
   void forEachMovingCollision(RectF const& region, function<bool(MovingCollisionId, PhysicsMovingCollision, PolyF, RectF)> callback);
 
 protected:
+  // Incremented whenever m_parameters is replaced; lets subclasses detect
+  // external parameter changes cheaply (see ActorMovementController memo).
+  uint64_t parametersVersion() const { return m_parametersVersion; }
+
   // forces the movement controller onGround status, used when manually controlling movement outside the movement controller
   void updateForceRegions(float dt);
   void updateLiquidPercentage();
@@ -254,6 +258,7 @@ private:
   float gravity();
 
   MovementParameters m_parameters;
+  uint64_t m_parametersVersion = 0;
 
   World* m_world;
 
@@ -300,6 +305,13 @@ private:
   float m_timeStep;
 
   List<CollisionPoly> m_workingCollisions;
+  List<CollisionBlock const*> m_workingCollisionBlocks;
+  // Collision-query memo (see queryCollisions).
+  RectI m_lastQueryRegion = RectI::null();
+  uint64_t m_lastQueryEpoch = 0;
+  // Reused scratch poly for the collision substep hot path (avoids a per-step
+  // vertex-list heap allocation building the world-space body).
+  PolyF m_workingBody;
   List<PolyF> m_collisionBuffers;
 };
 

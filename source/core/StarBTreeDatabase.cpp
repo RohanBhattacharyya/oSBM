@@ -174,6 +174,7 @@ bool BTreeDatabase::contains(ByteArray const& k) {
 
 Maybe<ByteArray> BTreeDatabase::find(ByteArray const& k) {
   ReadLocker readLocker(m_lock);
+  checkIfOpen("find", true);
   checkKeySize(k);
   return m_impl.find(k);
 }
@@ -187,6 +188,7 @@ List<pair<ByteArray, ByteArray>> BTreeDatabase::find(ByteArray const& lower, Byt
 
 void BTreeDatabase::forEach(ByteArray const& lower, ByteArray const& upper, function<void(ByteArray, ByteArray)> v) {
   ReadLocker readLocker(m_lock);
+  checkIfOpen("forEach", true);
   checkKeySize(lower);
   checkKeySize(upper);
   m_impl.forEach(lower, upper, std::move(v));
@@ -194,6 +196,7 @@ void BTreeDatabase::forEach(ByteArray const& lower, ByteArray const& upper, func
 
 void BTreeDatabase::forAll(function<void(ByteArray, ByteArray)> v) {
   ReadLocker readLocker(m_lock);
+  checkIfOpen("forAll", true);
   m_impl.forAll(std::move(v));
 }
 
@@ -204,12 +207,17 @@ void BTreeDatabase::recoverAll(function<void(ByteArray, ByteArray)> v, function<
 
 bool BTreeDatabase::insert(ByteArray const& k, ByteArray const& data) {
   WriteLocker writeLocker(m_lock);
+  // Operating on a closed database dereferences a closed IO device; on libnx
+  // a pread on a stale fd is a process-fatal fault rather than EBADF, so fail
+  // loudly here (same guard the metadata accessors already have).
+  checkIfOpen("insert", true);
   checkKeySize(k);
   return m_impl.insert(k, data);
 }
 
 bool BTreeDatabase::remove(ByteArray const& k) {
   WriteLocker writeLocker(m_lock);
+  checkIfOpen("remove", true);
   checkKeySize(k);
   return m_impl.remove(k);
 }
@@ -305,6 +313,10 @@ void BTreeDatabase::rollback() {
 
 void BTreeDatabase::close(bool closeDevice) {
   WriteLocker writeLocker(m_lock);
+#ifdef STAR_SYSTEM_SWITCH
+  if (m_open && m_device)
+    Logger::info("[BTreeDatabase] close('{}', closeDevice={})", m_device->deviceName(), closeDevice);
+#endif
   if (m_open) {
     if (!tryFlatten())
       doCommit();
@@ -1136,6 +1148,15 @@ void BTreeDatabase::commitWrites() {
 }
 
 bool BTreeDatabase::tryFlatten() {
+#ifdef STAR_SYSTEM_SWITCH
+  // Skip BTree compaction on Switch. tryFlatten() ftruncates (m_device->resize)
+  // and rewrites the SD-card-backed database file in place; under libnx/Ryujinx
+  // fsdev this leaves the file handle in a state that faults the next pread,
+  // crashing the idle ship-world shutdown-save ~15s after every beam-down.
+  // Skipping flatten only forgoes on-disk slack reclamation -- no data, gameplay,
+  // or visual change -- so it is a safe mitigation for the file-layer bug.
+  return false;
+#endif
   if (m_headFreeIndexBlock == InvalidBlockIndex || m_rootIsLeaf || !m_device->isWritable())
     return false;
   

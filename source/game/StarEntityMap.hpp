@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include "StarSpatialHash2D.hpp"
 #include "StarEntity.hpp"
 
@@ -40,6 +42,10 @@ public:
   EntityPtr removeEntity(EntityId entityId);
 
   size_t size() const;
+  // Number of entities implementing PhysicsEntity (moving collisions / force
+  // regions).  Almost always zero; lets movement hot paths skip their
+  // per-tick spatial queries entirely.
+  size_t physicsEntityCount() const;
   List<EntityId> entityIds() const;
 
   // Iterates through the entity map optionally in the given order, updating
@@ -139,11 +145,7 @@ private:
   // Set by updateAllEntitiesConditional's wrapper when the just-called
   // callback skipped its entity; consumed by updateEntityInfo.
   bool m_skipInfoUpdate = false;
-#ifdef STAR_SYSTEM_SWITCH
-  // Last-seen position + tick counter per entity for the position-gated
-  // spatial info update (see updateAllEntities).
-  HashMap<EntityId, pair<Vec2F, uint8_t>> m_infoUpdateGate;
-#endif
+  std::atomic<size_t> m_physicsEntityCount{0};
 };
 
 template <typename EntityT>

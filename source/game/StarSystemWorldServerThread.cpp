@@ -53,15 +53,25 @@ void SystemWorldServerThread::setPause(shared_ptr<const atomic<bool>> pause) {
 void SystemWorldServerThread::run() {
   TickRateApproacher tickApproacher(1.0 / SystemWorldTimestep, 0.5);
 
+  // Storage cadence must be wall-clock based. The original code decremented a
+  // countdown by 1.0 / tickApproacher.rate() per iteration, but rate() decays
+  // to ZERO whenever one loop iteration takes longer than the monitor window
+  // (0.5s) -- then the decrement is infinite and the "every 5 minutes" store
+  // fires every single iteration, rewriting the whole .system file ~1/s.
+  double now = Time::monotonicTime();
+  double nextPeriodicStore = now + 300.0; // store every 5 minutes
+  double nextTriggeredStore = now; // debounce window for triggered stores
+
   while (!m_stop) {
     LogMap::set(strf("system_{}_update_rate", m_systemLocation), strf("{:4.2f}Hz", tickApproacher.rate()));
 
     update();
 
-    m_periodicStorage -= 1.0 / tickApproacher.rate();
-    if (m_triggerStorage || m_periodicStorage <= 0.0) {
+    now = Time::monotonicTime();
+    if ((m_triggerStorage && now >= nextTriggeredStore) || now >= nextPeriodicStore) {
       m_triggerStorage = false;
-      m_periodicStorage = 300.0; // store every 5 minutes
+      nextPeriodicStore = now + 300.0;
+      nextTriggeredStore = now + 30.0;
       store();
     }
 

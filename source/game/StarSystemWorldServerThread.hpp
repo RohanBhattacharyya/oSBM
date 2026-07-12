@@ -48,7 +48,6 @@ private:
   SystemWorldServerPtr m_systemWorld;
 
   atomic<bool> m_stop{false};
-  float m_periodicStorage{300.0f};
   bool m_triggerStorage{ false};
   String m_storageFile;
 

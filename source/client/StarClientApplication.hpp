@@ -138,6 +138,9 @@ private:
   bool m_simTickInFlight = false;
   int64_t m_hudSyncCounter = 0;
   bool m_hudFbValid = false;
+  bool m_autopilotActive = false;
+  float m_pendingInterfaceDt = 0.0f;
+  unsigned m_interfaceUpdateCounter = 0;
   float m_simTickDt = 0.0f;
   std::exception_ptr m_simException;
   int64_t m_simLastTickUs = 0; // written by worker, read after join

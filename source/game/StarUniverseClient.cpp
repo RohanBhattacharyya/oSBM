@@ -227,6 +227,30 @@ SystemWorldClientPtr UniverseClient::systemWorldClient() const {
   return m_systemWorldClient;
 }
 
+#ifdef STAR_SYSTEM_SWITCH
+void UniverseClient::setProcessingOnSimWorker(bool onWorker) {
+  m_onSimWorker = onWorker;
+}
+
+bool UniverseClient::hasDeferredWorldPackets() const {
+  return !m_deferredWorldPackets.empty();
+}
+
+void UniverseClient::flushDeferredWorldPackets() {
+  if (m_deferredWorldPackets.empty())
+    return;
+  List<PacketPtr> deferred = take(m_deferredWorldPackets);
+  try {
+    handlePackets(deferred);
+  } catch (StarException const& e) {
+    Logger::error("Exception caught handling deferred world packets {}", outputException(e, true));
+    reset();
+    if (!m_disconnectReason)
+      m_disconnectReason = String("Exception caught handling deferred world packets, check log");
+  }
+}
+#endif
+
 void UniverseClient::update(float dt) {
   auto assets = Root::singleton().assets();
 
@@ -312,7 +336,6 @@ void UniverseClient::update(float dt) {
 
 #ifdef STAR_SYSTEM_SWITCH
   ucLap(s_ucStats);
-  s_ucPre += s_ucRecvOnly + s_ucHandle + s_ucStats;
 #endif
   if (!m_pause) {
     m_worldClient->update(dt);
@@ -426,8 +449,8 @@ void UniverseClient::update(float dt) {
 #ifdef STAR_SYSTEM_SWITCH
   ucLap(s_ucRest);
   if (++s_ucTicks >= 150) {
-    Logger::info("[perf-uc] pre={:.1f}ms (recv={:.1f} handle={:.1f} stats={:.1f}) world={:.1f} rest={:.1f}",
-        s_ucPre / 1e3 / s_ucTicks, s_ucRecvOnly / 1e3 / s_ucTicks, s_ucHandle / 1e3 / s_ucTicks,
+    Logger::info("[perf-uc] recv={:.1f}ms handle={:.1f} stats={:.1f} world={:.1f} rest={:.1f}",
+        s_ucRecvOnly / 1e3 / s_ucTicks, s_ucHandle / 1e3 / s_ucTicks,
         s_ucStats / 1e3 / s_ucTicks, s_ucWorld / 1e3 / s_ucTicks, s_ucRest / 1e3 / s_ucTicks);
     s_ucTicks = 0;
     s_ucPre = s_ucWorld = s_ucRest = 0;
@@ -779,7 +802,21 @@ void UniverseClient::setPause(bool pause) {
 }
 
 void UniverseClient::handlePackets(List<PacketPtr> const& packets) {
-  for (auto const& packet : packets) {
+  for (size_t packetIndex = 0; packetIndex < packets.size(); ++packetIndex) {
+    auto const& packet = packets[packetIndex];
+#ifdef STAR_SYSTEM_SWITCH
+    // World lifecycle packets tear down / rebuild the world client's state.
+    // When this tick is running on the sim worker thread, the main thread is
+    // concurrently painting from that state (the overlapped pipeline), so a
+    // world switch here is a use-after-free. Defer the lifecycle packet AND
+    // everything after it (ordering!) to be processed on the main thread
+    // between frames (see flushDeferredPackets).
+    if (m_onSimWorker && (packet->type() == PacketType::WorldStart || packet->type() == PacketType::WorldStop)) {
+      for (size_t j = packetIndex; j < packets.size(); ++j)
+        m_deferredWorldPackets.append(packets[j]);
+      return;
+    }
+#endif
     try {
       bool skip = false;
       Maybe<Json> packetJson;

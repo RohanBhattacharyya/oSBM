@@ -99,6 +99,8 @@ String LogMap::getValue(String const& key) {
 }
 
 void LogMap::setValue(String const& key, String const& value) {
+  if (!s_observed)
+    return;
   MutexLocker locker(s_logMapMutex);
   s_logMap[key] = value;
 }
@@ -114,6 +116,7 @@ void LogMap::clear() {
 }
 
 HashMap<String, String> LogMap::s_logMap;
+bool LogMap::s_observed = false;
 Mutex LogMap::s_logMapMutex;
 
 size_t const SpatialLogger::MaximumLines;

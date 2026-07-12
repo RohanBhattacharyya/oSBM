@@ -17,6 +17,43 @@ STAR_CLASS(ScriptedEntity);
 
 typedef function<void(World*)> WorldAction;
 
+// Fixed-size history of recently changed collision regions, used to validate
+// memoized collision queries (see World::collisionRegionsChangedSince).
+// Regions crossing the world wrap seam are recorded as global changes.
+class CollisionChangeTracker {
+public:
+  void record(RectI const& region, unsigned worldWidth) {
+    ++m_epoch;
+    RectI stored = region;
+    if (region.isNull() || region.xMin() < 0 || region.xMax() > (int)worldWidth)
+      stored = RectI(); // treated as intersecting everything
+    m_ring[m_epoch % RingSize] = {m_epoch, stored};
+  }
+  uint64_t epoch() const {
+    return m_epoch;
+  }
+  bool changedSince(uint64_t epoch, RectI const& region) const {
+    if (epoch > m_epoch)
+      return true;
+    uint64_t span = m_epoch - epoch;
+    if (span == 0)
+      return false;
+    if (span > RingSize)
+      return true;
+    for (uint64_t e = epoch + 1; e <= m_epoch; ++e) {
+      auto const& entry = m_ring[e % RingSize];
+      if (entry.first != e || entry.second.isEmpty() || entry.second.intersects(region))
+        return true;
+    }
+    return false;
+  }
+
+private:
+  static size_t const RingSize = 64;
+  uint64_t m_epoch = 0;
+  pair<uint64_t, RectI> m_ring[RingSize];
+};
+
 class World {
 public:
   virtual ~World() {}
@@ -89,6 +126,31 @@ public:
   // polys for tiles can extend to a maximum of 1 tile outside of the natural
   // tile bounds.
   virtual void forEachCollisionBlock(RectI const& region, function<void(CollisionBlock const&)> const& iterator) const = 0;
+
+  // True if any entity in the world implements PhysicsEntity (moving
+  // collisions / force regions).  Almost always false; lets the movement hot
+  // path skip its per-tick physics-entity spatial queries.
+  virtual bool hasPhysicsEntities() const = 0;
+
+  // Batch variant of forEachCollisionBlock for the movement hot path: appends
+  // pointers to the (freshened) per-tile cached collision blocks in the region
+  // in a single call, avoiding a per-tile indirect callback.  Null-collision
+  // placeholder blocks are omitted.  The pointers alias the world's internal
+  // tile collision cache and are only valid until the next tile modification
+  // or collision query, so consume them immediately.  Returns true if any
+  // tile in the region had a dirty collision cache (i.e. the region's
+  // collision geometry changed since it was last queried by anyone).
+  virtual bool getTileCollisionBlocks(RectI const& region, List<CollisionBlock const*>& output) const = 0;
+
+  // Monotonic counter incremented whenever any collision geometry changes
+  // anywhere (tile modification, generation, sector load, freshen rebuild).
+  virtual uint64_t collisionChangeEpoch() const = 0;
+
+  // Returns true if any collision-geometry change recorded after `epoch`
+  // intersects `region` (conservatively true when the change history since
+  // `epoch` is no longer fully retained).  Lets movement controllers reuse
+  // their previous collision query results unless something changed nearby.
+  virtual bool collisionRegionsChangedSince(uint64_t epoch, RectI const& region) const = 0;
 
   // Is there some connectable tile / tile based entity in this position?  If
   // tilesOnly is true, only checks to see whether that tile is a connectable

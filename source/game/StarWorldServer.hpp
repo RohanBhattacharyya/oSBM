@@ -152,6 +152,14 @@ public:
   bool tileIsOccupied(Vec2I const& pos, TileLayer layer, bool includeEphemeral = false, bool checkCollision = false) const override;
   CollisionKind tileCollisionKind(Vec2I const& pos) const override;
   void forEachCollisionBlock(RectI const& region, function<void(CollisionBlock const&)> const& iterator) const override;
+  bool getTileCollisionBlocks(RectI const& region, List<CollisionBlock const*>& output) const override;
+  uint64_t collisionChangeEpoch() const override;
+  bool collisionRegionsChangedSince(uint64_t epoch, RectI const& region) const override;
+  // Invalidate memoized collision queries overlapping `region` (see
+  // World::collisionRegionsChangedSince); called by every collision-geometry
+  // writer that does not go through dirtyCollision (generation, sector loads).
+  void recordCollisionChange(RectI const& region) { m_collisionTracker.record(region, m_geometry.width()); }
+  bool hasPhysicsEntities() const override;
   bool isTileConnectable(Vec2I const& pos, TileLayer layer, bool tilesOnly = false) const override;
   bool pointTileCollision(Vec2F const& point, CollisionSet const& collisionSet = DefaultCollisionSet) const override;
   bool lineTileCollision(Vec2F const& begin, Vec2F const& end, CollisionSet const& collisionSet = DefaultCollisionSet) const override;
@@ -348,7 +356,8 @@ private:
   void queueTileDamageUpdates(Vec2I const& pos, TileLayer layer);
   void writeNetTile(Vec2I const& pos, NetTile& netTile) const;
 
-  void freshenCollision(RectI const& region);
+  bool freshenCollision(RectI const& region);
+  CollisionChangeTracker m_collisionTracker;
 
   Vec2F findPlayerStart(Maybe<Vec2F> firstTry = {});
   Vec2F findPlayerSpaceStart(float targetX);

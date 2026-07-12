@@ -173,6 +173,8 @@ private:
   bool m_aggressive;
 
   bool m_knockedOut;
+  float m_statusTickPendingDt = 0.0f;
+  unsigned m_statusTickCounter = 0;
   double m_knockoutTimer;
   String m_deathParticleBurst;
   String m_deathSound;

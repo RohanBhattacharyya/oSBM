@@ -295,6 +295,38 @@ void WorldClient::forEachCollisionBlock(RectI const& region, function<void(Colli
     });
 }
 
+bool WorldClient::hasPhysicsEntities() const {
+  return inWorld() && m_entityMap->physicsEntityCount() > 0;
+}
+
+bool WorldClient::getTileCollisionBlocks(RectI const& region, List<CollisionBlock const*>& output) const {
+  if (!inWorld())
+    return false;
+
+  // Fused single pass; see WorldServer::getTileCollisionBlocks.
+  size_t mark = output.size();
+  bool sawDirty = false;
+  m_tileArray->tileEach(region, [&](Vec2I const&, ClientTile const& tile) {
+      if (tile.collisionCacheDirty) {
+        if (tile.getCollision() != CollisionKind::Null)
+          sawDirty = true;
+      } else {
+        for (auto const& block : tile.collisionCache)
+          output.append(&block);
+      }
+    });
+  if (!sawDirty)
+    return false;
+
+  output.resize(mark);
+  const_cast<WorldClient*>(this)->freshenCollision(region);
+  m_tileArray->tileEach(region, [&output](Vec2I const&, ClientTile const& tile) {
+      for (auto const& block : tile.collisionCache)
+        output.append(&block);
+    });
+  return true;
+}
+
 bool WorldClient::isTileConnectable(Vec2I const& pos, TileLayer layer, bool tilesOnly) const {
   if (!inWorld())
     return false;
@@ -487,6 +519,7 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
 #ifdef STAR_SYSTEM_SWITCH
   // Section + per-entity-type breakdown of the render snapshot ([perf-wcr]).
   static int64_t s_wcrFrames = 0, s_wcrLights = 0, s_wcrEntities = 0, s_wcrTiles = 0, s_wcrRest = 0;
+  static int64_t s_wcrFresh = 0, s_wcrReuse = 0;
   int64_t wcrLapTime = Time::monotonicMicroseconds();
   auto wcrLap = [&wcrLapTime](int64_t& acc) {
     int64_t n = Time::monotonicMicroseconds();
@@ -643,6 +676,9 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
         if (auto cached = m_peripheralRenderCache.ptr(entity->entityId())) {
           if (m_peripheralRenderFrame - cached->frame < skipInterval) {
             Vec2F delta = m_geometry.diff(entity->position(), cached->position);
+#ifdef STAR_SYSTEM_SWITCH
+            ++s_wcrReuse;
+#endif
             if (delta == Vec2F()) {
               // Static entity (the overwhelmingly common case: Plants and
               // Objects don't move): re-share the exact cached entry -- a
@@ -664,7 +700,9 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
       }
 
       ClientRenderCallback renderCallback;
-
+#ifdef STAR_SYSTEM_SWITCH
+      ++s_wcrFresh;
+#endif
       try { entity->render(&renderCallback); }
       catch (StarException const& e) {
         if (entity->isMaster()) // this is YOUR problem!!
@@ -868,17 +906,24 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
         return tie(a.zLevel, a.verticalOrigin) > tie(b.zLevel, b.verticalOrigin);
       });
     m_parallaxLayerBaseAlpha.clear();
-    for (auto const& layer : m_parallaxLayersBuffer)
+    m_parallaxLayerTodFunctions.clear();
+    auto functionDatabase = Root::singleton().functionDatabase();
+    for (auto const& layer : m_parallaxLayersBuffer) {
       m_parallaxLayerBaseAlpha.append(layer.alpha);
+      // Cache the time-of-day correlation function per layer: the name->
+      // function lookup is a string map query that was running per layer
+      // per frame.
+      m_parallaxLayerTodFunctions.append(
+          layer.timeOfDayCorrelation.empty() ? StoredFunctionPtr() : functionDatabase->function(layer.timeOfDayCorrelation));
+    }
     m_parallaxBuiltFrom = parallaxSteady ? m_currentParallax.get() : nullptr;
   }
 
   {
-    auto functionDatabase = Root::singleton().functionDatabase();
+    float timeOfDayRatio = m_sky->timeOfDay() / m_sky->dayLength();
     for (size_t i = 0; i < m_parallaxLayersBuffer.size(); ++i) {
-      auto& layer = m_parallaxLayersBuffer[i];
-      if (!layer.timeOfDayCorrelation.empty())
-        layer.alpha = m_parallaxLayerBaseAlpha[i] * clamp((float)functionDatabase->function(layer.timeOfDayCorrelation)->evaluate(m_sky->timeOfDay() / m_sky->dayLength()), 0.0f, 1.0f);
+      if (auto const& todFunction = m_parallaxLayerTodFunctions[i])
+        m_parallaxLayersBuffer[i].alpha = m_parallaxLayerBaseAlpha[i] * clamp((float)todFunction->evaluate(timeOfDayRatio), 0.0f, 1.0f);
     }
   }
 
@@ -900,11 +945,13 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
 #ifdef STAR_SYSTEM_SWITCH
   wcrLap(s_wcrRest);
   if (++s_wcrFrames >= 150) {
-    Logger::info("[perf-wcr] lights={:.1f}ms entities={:.1f} tiles={:.1f} rest={:.1f}",
+    Logger::info("[perf-wcr] lights={:.1f}ms entities={:.1f} tiles={:.1f} rest={:.1f} fresh={}/f reuse={}/f",
         s_wcrLights / 1e3 / s_wcrFrames, s_wcrEntities / 1e3 / s_wcrFrames,
-        s_wcrTiles / 1e3 / s_wcrFrames, s_wcrRest / 1e3 / s_wcrFrames);
+        s_wcrTiles / 1e3 / s_wcrFrames, s_wcrRest / 1e3 / s_wcrFrames,
+        s_wcrFresh / s_wcrFrames, s_wcrReuse / s_wcrFrames);
     s_wcrFrames = 0;
     s_wcrLights = s_wcrEntities = s_wcrTiles = s_wcrRest = 0;
+    s_wcrFresh = s_wcrReuse = 0;
   }
 #endif
 }
@@ -1519,6 +1566,13 @@ void WorldClient::update(float dt) {
   for (EntityId entityId : toRemove)
     removeEntity(entityId, true);
 
+#ifdef STAR_SYSTEM_SWITCH
+  static int64_t s_wcAmb = 0;
+  wcLap(s_wcAmb);
+  static int64_t s_wcAmbLogCounter = 0;
+  if (++s_wcAmbLogCounter % 150 == 0)
+    Logger::info("[perf-wcn] amb={:.1f}ms (avg last window)", (double)s_wcAmb / 150.0 / 1000.0), s_wcAmb = 0;
+#endif
   queueUpdatePackets(m_entityUpdateTimer.wrapTick(dt));
 #ifdef STAR_SYSTEM_SWITCH
   wcLap(s_wcNet);
@@ -2344,59 +2398,50 @@ void WorldClient::dirtyCollision(RectI const& region) {
   if (!inWorld())
     return;
 
+
   auto dirtyRegion = region.padded(CollisionGenerator::BlockInfluenceRadius);
-  for (int x = dirtyRegion.xMin(); x < dirtyRegion.xMax(); ++x) {
-    for (int y = dirtyRegion.yMin(); y < dirtyRegion.yMax(); ++y) {
-      if (auto tile = m_tileArray->modifyTile({x, y}))
-        tile->collisionCacheDirty = true;
-    }
-  }
+  m_collisionTracker.record(dirtyRegion, m_geometry.width());
+  // Sector-blocked iteration; see WorldServer::dirtyCollision -- these run
+  // inside every entity movement collision query.
+  m_tileArray->tileEval(dirtyRegion, [](Vec2I const&, ClientTile& tile) {
+      tile.collisionCacheDirty = true;
+    });
 }
 
-void WorldClient::freshenCollision(RectI const& region) {
+bool WorldClient::freshenCollision(RectI const& region) {
   if (!inWorld())
-    return;
+    return false;
 
   RectI freshenRegion = RectI::null();
-#ifdef STAR_SYSTEM_SWITCH
-  // Read-only dirtiness scan via column-batched iteration: this scan runs on
-  // EVERY collision query (each movement substep of every entity) and the
-  // per-tile modifyTile form paid a full sector resolve per tile.
-  m_tileArray->tileEach(region, [&](Vec2I const& pos, auto const& tile) {
-      // Null-collision tiles never populate the collision cache (the block
-      // iteration emits nullBlock without touching it) -- this also excludes
-      // the default tile that tileEach substitutes for unloaded columns,
-      // whose dirty flag is meaninglessly true and could otherwise put
-      // unloaded space into the freshen region every query, forever.
-      if (tile.collisionCacheDirty && tile.getCollision() != CollisionKind::Null)
+  m_tileArray->tileEval(region, [&](Vec2I const& pos, ClientTile& tile) {
+      if (tile.collisionCacheDirty)
         freshenRegion.combine(RectI(pos[0], pos[1], pos[0] + 1, pos[1] + 1));
     });
-#else
-  for (int x = region.xMin(); x < region.xMax(); ++x) {
-    for (int y = region.yMin(); y < region.yMax(); ++y) {
-      if (auto tile = m_tileArray->modifyTile({x, y})) {
-        if (tile->collisionCacheDirty)
-          freshenRegion.combine(RectI(x, y, x + 1, y + 1));
-      }
-    }
-  }
-#endif
 
   if (!freshenRegion.isNull()) {
-    for (int x = freshenRegion.xMin(); x < freshenRegion.xMax(); ++x) {
-      for (int y = freshenRegion.yMin(); y < freshenRegion.yMax(); ++y) {
-        if (auto tile = m_tileArray->modifyTile({x, y})) {
-          tile->collisionCacheDirty = false;
-          tile->collisionCache.clear();
-        }
-      }
-    }
+    m_tileArray->tileEval(freshenRegion, [](Vec2I const&, ClientTile& tile) {
+        tile.collisionCacheDirty = false;
+        tile.collisionCache.clear();
+      });
 
     for (auto& collisionBlock : m_collisionGenerator.getBlocks(freshenRegion)) {
       if (auto tile = m_tileArray->modifyTile(collisionBlock.space))
         tile->collisionCache.append(std::move(collisionBlock));
     }
+    m_collisionTracker.record(freshenRegion, m_geometry.width());
+    return true;
   }
+  return false;
+}
+
+uint64_t WorldClient::collisionChangeEpoch() const {
+  return m_collisionTracker.epoch();
+}
+
+bool WorldClient::collisionRegionsChangedSince(uint64_t epoch, RectI const& region) const {
+  if (region.xMin() < 0 || region.xMax() > (int)m_geometry.width())
+    return true; // wrap-seam regions are always conservatively invalidated
+  return m_collisionTracker.changedSince(epoch, region);
 }
 
 float WorldClient::lightLevel(Vec2F const& pos) const {

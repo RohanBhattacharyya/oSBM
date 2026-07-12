@@ -956,8 +956,37 @@ void OpenGlRenderer::finishFrame() {
   // Ryujinx's glReadPixels row pitch is buggy (only ~width/4 of each row is
   // valid) but colors and shapes remain judgeable.
   {
+    // Poll via the CONTENT of an always-existing control file: checking for
+    // a missing file on Switch means opendir+readdir (libnx stat aborts on
+    // missing paths), and libnx fsdev path handling races other threads'
+    // file IO -- an opendir poll here intermittently crashed in strchr.
+    // Reading an existing file with fopen is safe. Trigger externally with:
+    //   echo 1 > /switch/oSBM/screenshot.ctl
     static uint64_t s_ssCheckCounter = 0;
-    if (++s_ssCheckCounter % 60 == 0 && File::isFile("/switch/oSBM/screenshot.flag")) {
+    static int s_ssCtlState = -1; // -1 unchecked, 0 ready, 1 unavailable
+    if (s_ssCtlState == -1 && ++s_ssCheckCounter >= 300) {
+      // One-time setup, done well after boot so the SD devoptab is stable:
+      // ensure the control file exists (single opendir-based existence check).
+      s_ssCtlState = 1;
+      try {
+        if (!File::isFile("/switch/oSBM/screenshot.ctl"))
+          File::writeFile("0", 1, "/switch/oSBM/screenshot.ctl");
+        s_ssCtlState = 0;
+      } catch (std::exception const&) {}
+    }
+    auto screenshotRequested = [&]() -> bool {
+      if (s_ssCtlState != 0)
+        return false;
+      try {
+        auto contents = File::readFile("/switch/oSBM/screenshot.ctl");
+        if (!contents.empty() && contents[0] == '1') {
+          File::writeFile("0", 1, "/switch/oSBM/screenshot.ctl");
+          return true;
+        }
+      } catch (std::exception const&) {}
+      return false;
+    };
+    if (s_ssCtlState == 0 && s_ssCheckCounter++ % 60 == 0 && screenshotRequested()) {
       Vec2U wsize = m_screenSize;
       Image img(wsize, PixelFormat::RGBA32);
       glBindFramebuffer(GL_READ_FRAMEBUFFER, m_screenFbo);
@@ -977,7 +1006,6 @@ void OpenGlRenderer::finishFrame() {
           }
         }
         glBindFramebuffer(GL_READ_FRAMEBUFFER, m_screenFbo);
-        File::remove("/switch/oSBM/screenshot.flag");
         Logger::info("Diagnostic screenshot written ({}x{})", wsize[0], wsize[1]);
       } catch (std::exception const& e) {
         Logger::error("Diagnostic screenshot failed: {}", e.what());

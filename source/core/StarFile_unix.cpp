@@ -20,6 +20,28 @@
 #include <sys/sysctl.h>
 #endif
 
+#ifdef STAR_SYSTEM_SWITCH
+#include <switch.h>
+#include <cstdio>
+#include <atomic>
+#include <mutex>
+
+// Serialize ALL file I/O on Switch. libnx's fsdev/newlib fd layer is not
+// reliably safe under concurrent open/close on one thread vs pread/lseek on
+// another: the post-warp ship-world shutdown save (big .shipworld preads)
+// racing the system-world storage writes (open/write/close/rename) faults
+// inside newlib's fd handling (_lseek_r -> mutexUnlock on a junk pointer)
+// and kills the process. SD-card I/O is serial at the device level anyway,
+// so a process-wide lock costs little beyond the (rare) genuine overlap.
+static std::recursive_mutex& switchFileLock() {
+  static std::recursive_mutex m;
+  return m;
+}
+#define SWITCH_FILE_SERIALIZE std::lock_guard<std::recursive_mutex> _switchFileGuard(switchFileLock())
+#else
+#define SWITCH_FILE_SERIALIZE
+#endif
+
 namespace Star {
 
 namespace {
@@ -30,6 +52,53 @@ namespace {
   void* handleFromFd(int handle) {
     return (void*)(intptr_t)handle;
   }
+
+#ifdef STAR_SYSTEM_SWITCH
+  // fd-lifecycle tracing for save-file handles (player/universe/temp files):
+  // the post-warp shutdown crash is a pread on a shipworld fd faulting inside
+  // libnx's fd table. Track which fds belong to save files so a double-close,
+  // close-then-use, or fd reuse is directly visible in the debug log.
+  std::atomic<uint32_t> s_trackedFds[32]; // bitset for fds 0..1023
+  bool switchTrackedPath(char const* filename) {
+    return strstr(filename, "/player/") || strstr(filename, "/universe/") || strstr(filename, "tmpfile");
+  }
+  void switchMarkFd(int fd, char const* filename) {
+    if (fd < 0 || fd >= 1024) return;
+    s_trackedFds[fd / 32].fetch_or(1u << (fd % 32));
+    char b[256];
+    int l = snprintf(b, sizeof(b), "FDTRACE open fd=%d '%s'", fd, filename);
+    if (l > 0) svcOutputDebugString(b, (size_t)l);
+  }
+  bool switchFdTracked(int fd) {
+    if (fd < 0 || fd >= 1024) return false;
+    return (s_trackedFds[fd / 32].load() >> (fd % 32)) & 1u;
+  }
+  // fds of save files that have been closed and not since reopened: a
+  // pread/pwrite on one of these is a use-after-close (or unlucky fd reuse).
+  std::atomic<uint32_t> s_closedTrackedFds[32];
+  void switchUnmarkFd(int fd) {
+    if (fd < 0 || fd >= 1024) return;
+    if (switchFdTracked(fd)) {
+      s_trackedFds[fd / 32].fetch_and(~(1u << (fd % 32)));
+      s_closedTrackedFds[fd / 32].fetch_or(1u << (fd % 32));
+      char b[64];
+      int l = snprintf(b, sizeof(b), "FDTRACE close fd=%d", fd);
+      if (l > 0) svcOutputDebugString(b, (size_t)l);
+    }
+  }
+  void switchFdReopened(int fd) {
+    if (fd < 0 || fd >= 1024) return;
+    s_closedTrackedFds[fd / 32].fetch_and(~(1u << (fd % 32)));
+  }
+  void switchCheckUseAfterClose(int fd, char const* op) {
+    if (fd < 0 || fd >= 1024) return;
+    if ((s_closedTrackedFds[fd / 32].load() >> (fd % 32)) & 1u) {
+      char b[96];
+      int l = snprintf(b, sizeof(b), "FDTRACE USE-AFTER-CLOSE %s fd=%d", op, fd);
+      if (l > 0) svcOutputDebugString(b, (size_t)l);
+    }
+  }
+#endif
 
 #ifdef STAR_SYSTEM_SWITCH
   // libnx's fsdev silently aborts the whole process when stat()/open() is given
@@ -122,6 +191,7 @@ void File::changeDirectory(const String& dirName) {
 }
 
 void File::makeDirectory(String const& dirName) {
+  SWITCH_FILE_SERIALIZE;
   if (::mkdir(dirName.utf8Ptr(), 0777) != 0)
     throw IOException(strf("could not create directory '{}', {}", dirName, strerror(errno)));
 }
@@ -201,6 +271,7 @@ FilePtr File::temporaryFile() {
 FilePtr File::ephemeralFile() {
   auto file = make_shared<File>();
   ByteArray path = ByteArray::fromCStringWithNull(relativeTo(ensuredTemporaryRootDirectory(), "starbound.tmpfile.XXXXXXXX").utf8Ptr());
+  SWITCH_FILE_SERIALIZE;
   auto res = mkstemp(path.ptr());
   if (res < 0)
     throw IOException::format("tmpfile error: {}", strerror(errno));
@@ -214,6 +285,9 @@ FilePtr File::ephemeralFile() {
 #else
   if (::unlink(path.ptr()) < 0)
     throw IOException::format("Could not remove mkstemp file when creating ephemeralFile: {}", strerror(errno));
+#endif
+#ifdef STAR_SYSTEM_SWITCH
+  switchMarkFd(res, path.ptr());
 #endif
   file->m_file = handleFromFd(res);
   file->setMode(IOMode::ReadWrite);
@@ -265,11 +339,13 @@ bool File::isDirectory(String const& path) {
 }
 
 void File::remove(String const& filename) {
+  SWITCH_FILE_SERIALIZE;
   if (::remove(filename.utf8Ptr()) < 0)
     throw IOException::format("remove error: {}", strerror(errno));
 }
 
 void File::rename(String const& source, String const& target) {
+  SWITCH_FILE_SERIALIZE;
 #ifdef STAR_SYSTEM_SWITCH
   // libnx's fsdev rename() cannot overwrite an existing target (POSIX rename
   // replaces atomically; fsdev returns an error / misbehaves). This breaks the
@@ -291,6 +367,7 @@ void File::overwriteFileWithRename(char const* data, size_t len, String const& f
 }
 
 void* File::fopen(char const* filename, IOMode mode) {
+  SWITCH_FILE_SERIALIZE;
   int oflag = 0;
 
   if (mode & IOMode::Read && mode & IOMode::Write)
@@ -324,10 +401,17 @@ void* File::fopen(char const* filename, IOMode mode) {
       throw IOException::format("Error opening file '{}', cannot seek: {}", filename, strerror(errno));
   }
 
+#ifdef STAR_SYSTEM_SWITCH
+  switchFdReopened(fd);
+  if (switchTrackedPath(filename))
+    switchMarkFd(fd, filename);
+#endif
+
   return handleFromFd(fd);
 }
 
 void File::fseek(void* f, StreamOffset offset, IOSeek seekMode) {
+  SWITCH_FILE_SERIALIZE;
   auto fd = fdFromHandle(f);
   StreamOffset retCode;
   if (seekMode == IOSeek::Relative)
@@ -342,10 +426,12 @@ void File::fseek(void* f, StreamOffset offset, IOSeek seekMode) {
 }
 
 StreamOffset File::ftell(void* f) {
+  SWITCH_FILE_SERIALIZE;
   return lseek(fdFromHandle(f), 0, SEEK_CUR);
 }
 
 size_t File::fread(void* file, char* data, size_t len) {
+  SWITCH_FILE_SERIALIZE;
   if (len == 0)
     return 0;
 
@@ -361,6 +447,7 @@ size_t File::fread(void* file, char* data, size_t len) {
 }
 
 size_t File::fwrite(void* file, char const* data, size_t len) {
+  SWITCH_FILE_SERIALIZE;
   if (len == 0)
     return 0;
 
@@ -376,6 +463,7 @@ size_t File::fwrite(void* file, char const* data, size_t len) {
 }
 
 void File::fsync(void* file) {
+  SWITCH_FILE_SERIALIZE;
   auto fd = fdFromHandle(file);
 #ifdef STAR_SYSTEM_LINUX
   ::fdatasync(fd);
@@ -385,11 +473,16 @@ void File::fsync(void* file) {
 }
 
 void File::fclose(void* file) {
+  SWITCH_FILE_SERIALIZE;
+#ifdef STAR_SYSTEM_SWITCH
+  switchUnmarkFd(fdFromHandle(file));
+#endif
   if (::close(fdFromHandle(file)) < 0)
     throw IOException::format("Close error: {}", strerror(errno));
 }
 
 StreamOffset File::fsize(void* file) {
+  SWITCH_FILE_SERIALIZE;
   StreamOffset pos = ftell(file);
   StreamOffset size = lseek(fdFromHandle(file), 0, SEEK_END);
   lseek(fdFromHandle(file), pos, SEEK_SET);
@@ -397,14 +490,35 @@ StreamOffset File::fsize(void* file) {
 }
 
 size_t File::pread(void* file, char* data, size_t len, StreamOffset position) {
-  return ::pread(fdFromHandle(file), data, len, position);
+  SWITCH_FILE_SERIALIZE;
+  int fd = fdFromHandle(file);
+#ifdef STAR_SYSTEM_SWITCH
+  if (fd <= 2) {
+    char b[112];
+    int l = snprintf(b, sizeof(b), "BADFD pread fd=%d (handle=%p) len=%zu pos=%lld", fd, file, len, (long long)position);
+    if (l > 0) svcOutputDebugString(b, (size_t)l);
+  }
+  switchCheckUseAfterClose(fd, "pread");
+#endif
+  return ::pread(fd, data, len, position);
 }
 
 size_t File::pwrite(void* file, char const* data, size_t len, StreamOffset position) {
-  return ::pwrite(fdFromHandle(file), data, len, position);
+  SWITCH_FILE_SERIALIZE;
+  int fd = fdFromHandle(file);
+#ifdef STAR_SYSTEM_SWITCH
+  if (fd <= 2) {
+    char b[112];
+    int l = snprintf(b, sizeof(b), "BADFD pwrite fd=%d (handle=%p) len=%zu pos=%lld", fd, file, len, (long long)position);
+    if (l > 0) svcOutputDebugString(b, (size_t)l);
+  }
+  switchCheckUseAfterClose(fd, "pwrite");
+#endif
+  return ::pwrite(fd, data, len, position);
 }
 
 void File::resize(void* f, StreamOffset size) {
+  SWITCH_FILE_SERIALIZE;
   if (::ftruncate(fdFromHandle(f), size) < 0)
     throw IOException::format("resize error: {}", strerror(errno));
 }
