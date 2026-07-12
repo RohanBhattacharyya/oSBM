@@ -38,6 +38,12 @@
 #include <algorithm>
 #include <cmath>
 
+#ifdef STAR_SYSTEM_SWITCH
+#include <malloc.h>
+extern "C" void starAllocTrackReport(char* buf, size_t bufSize);
+extern "C" void star_bufctx_report(long* out, int n);
+#endif
+
 #if defined STAR_SYSTEM_WINDOWS
 #include <windows.h>
 extern "C" __declspec(dllexport) DWORD NvOptimusEnablement = 1;
@@ -702,6 +708,14 @@ void ClientApplication::render() {
       LogMap::set("client_render_world_total", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - totalStart));
 #endif
 
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+      // With no post-process layers nothing ever samples the "main"
+      // framebuffer, so route the world render directly to the screen --
+      // saves a fullscreen blit + clear + render-target switch every frame
+      // (significant on translated drivers and mobile tile GPUs).  Re-checked
+      // every frame so enabling a post-process mod restores the intermediate.
+      renderer->setFrameBufferBypass("main", m_postProcessLayers.empty());
+#endif
       auto size = Vec2F(renderer->screenSize());
       auto quad = renderFlatRect(RectF::withSize(size / -2, size), Vec4B::filled(0), 0.0f);
       for (auto& layer : m_postProcessLayers) {
@@ -791,6 +805,24 @@ void ClientApplication::render() {
           (s_frameUs - s_snapUs - s_paintUs - s_joinUs - s_ifaceUs) / 1e3 / s_frames);
       s_frames = 0;
       s_frameUs = s_snapUs = s_paintUs = s_joinUs = s_ifaceUs = s_simUs = 0;
+      // Guest-memory watermark: a slow per-frame heap leak degrades driver
+      // performance long before it OOMs, so track committed process memory.
+      // newlib heap view: covers BOTH rpmalloc span growth (engine) and direct
+      // newlib users (the mesa/nouveau GL driver) -- deltas locate slow leaks.
+      struct mallinfo mi = mallinfo();
+      Logger::info("[perf-mem] newlibUsed={}kB newlibFree={}kB arena={}kB",
+          (uint64_t)(unsigned)mi.uordblks >> 10, (uint64_t)(unsigned)mi.fordblks >> 10,
+          (uint64_t)(unsigned)mi.arena >> 10);
+      char atBuf[512];
+      starAllocTrackReport(atBuf, sizeof(atBuf));
+      Logger::info("[perf-alloc]{}", (char const*)atBuf);
+      long binLive[512];
+      star_bufctx_report(binLive, 512);
+      String binStr;
+      for (int bi = 0; bi < 512; ++bi)
+        if (binLive[bi] > 500)
+          binStr += strf(" bin{}={}", bi, binLive[bi]);
+      Logger::info("[perf-bufctx]{}", binStr);
     }
 #endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
@@ -1490,12 +1522,19 @@ void ClientApplication::updateRunning(float dt) {
           && m_universeClient->playerWorld().is<CelestialWorldId>()) {
         static uint64_t s_walkTick = 0;
         ++s_walkTick;
-        // Walk continuously in one direction: real exploration constantly
-        // enters new sectors (generation, microdungeon placement, chunk and
-        // lighting churn) -- the load an idle or bounded soak never shows.
-        m_player->moveRight();
-        if (s_walkTick % 90 == 0) // hop every ~3s to clear obstacles
-          m_player->jump();
+        // Live A/B lever: drop autopilot-stand.flag on the sd card to halt the
+        // walk mid-run (isolates content-churn load from pure elapsed time).
+        static bool s_standFlag = false;
+        if (s_walkTick % 512 == 1)
+          s_standFlag = File::isFile("/switch/oSBM/autopilot-stand.flag");
+        if (!s_standFlag) {
+          // Walk continuously in one direction: real exploration constantly
+          // enters new sectors (generation, microdungeon placement, chunk and
+          // lighting churn) -- the load an idle or bounded soak never shows.
+          m_player->moveRight();
+          if (s_walkTick % 90 == 0) // hop every ~3s to clear obstacles
+            m_player->jump();
+        }
       }
     }
 #endif

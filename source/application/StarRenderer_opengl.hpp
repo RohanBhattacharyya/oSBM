@@ -102,6 +102,8 @@ public:
   void setScissorRect(Maybe<RectI> const& scissorRect) override;
 
   bool switchEffectConfig(String const& name) override;
+  void setFrameBufferBypass(String const& id, bool bypass) override;
+  void skipNextScreenClear() override;
   bool switchFrameBuffer(String const& id) override;
   void blitFrameBufferToCurrent(String const& id) override;
   void compositeFrameBufferToCurrent(String const& id) override;
@@ -209,6 +211,7 @@ private:
     Vec2U textureSize;
     TextureAddressing textureAddressing = TextureAddressing::Clamp;
     TextureFiltering textureFiltering = TextureFiltering::Nearest;
+    PixelFormat storedPixelFormat = PixelFormat::RGBA32;
   };
 
   struct GlPackedVertexData {
@@ -239,6 +242,7 @@ private:
       List<GlVertexBufferTexture> textures;
       GLuint vertexBuffer = 0;
       size_t vertexCount = 0;
+      size_t byteCapacity = 0;
     };
 
     GlRenderBuffer();
@@ -318,7 +322,7 @@ private:
   };
 
   static bool logGlErrorSummary(String prefix);
-  static void uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uint8_t const* data);
+  static void uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uint8_t const* data, bool sameStorage = false);
 
   
   static RefPtr<GlLoneTexture> createGlTexture(ImageView const& image, TextureAddressing addressing, TextureFiltering filtering);
@@ -357,6 +361,10 @@ private:
   Effect* m_currentEffect;
 
   StringMap<RefPtr<GlFrameBuffer>> m_frameBuffers;
+
+  StringSet m_frameBufferBypass;
+
+  bool m_skipNextScreenClear = false;
   RefPtr<GlFrameBuffer> m_currentFrameBuffer;
 
   RefPtr<GlTexture> m_whiteTexture;

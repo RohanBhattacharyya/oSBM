@@ -3396,15 +3396,14 @@ private:
 
   void runGameLoop() {
 #ifdef STAR_SYSTEM_SWITCH
-    // 30Hz simulation: the per-update tick (~31ms) far exceeds a 60Hz step, so the
-    // game can never run real-time at 60Hz on this hardware (it perpetually catches
-    // up / slow-mos). Halving the sim rate to 30Hz lets a single tick advance twice
-    // as much game time, so with a 1-tick/frame cap the sim stays much closer to
-    // real-time while the render frame cost drops (1 tick instead of 2). Physics and
-    // animation step at 30Hz (slightly coarser) but gameplay speed is preserved.
-    GlobalTimestep = 1.0f / 30.0f;
-    ServerGlobalTimestep = 1.0f / 30.0f;
-    m_updateTicker.setTargetTickRate(30.0f);
+    // 45Hz simulation: with the engine-wide allocator fix the per-update tick
+    // dropped from ~31ms to ~2ms, so the old 30Hz floor no longer applies.
+    // 45Hz brings physics/animation granularity closer to vanilla 60Hz while
+    // keeping ample per-frame headroom under emulation; rate * timestep = 1.0
+    // so gameplay speed is unchanged.
+    GlobalTimestep = 1.0f / 45.0f;
+    ServerGlobalTimestep = 1.0f / 45.0f;
+    m_updateTicker.setTargetTickRate(45.0f);
 #endif
     m_updateTicker.reset();
     m_renderTicker.reset();
@@ -3516,18 +3515,17 @@ private:
       }
 
       double spareSeconds = m_updateTicker.spareTime();
-#ifdef STAR_SYSTEM_SWITCH
-      // Forgive large tick backlogs: after a stall (world load, host
-      // contention) the approacher would otherwise demand a long catch-up --
-      // with the 1-update-per-frame cap that means minutes of never sleeping
-      // (and with an uncapped loop it would fast-forward the game).  Brief
-      // hitches still catch up smoothly; anything beyond a quarter second is
-      // written off and pacing restarts from now.
+      // Forgive large tick backlogs: after a stall (world load, app pause,
+      // host contention under emulation) the approacher would otherwise
+      // demand a long catch-up -- with the 1-update-per-frame cap that means
+      // minutes of never sleeping (and with an uncapped loop it would
+      // fast-forward the game).  Brief hitches still catch up smoothly;
+      // anything beyond a quarter second is written off and pacing restarts
+      // from now.
       if (spareSeconds < -0.25) {
         m_updateTicker.reset();
         spareSeconds = 0.0;
       }
-#endif
       int64_t spare = round(spareSeconds * 1000.0);
       if (spare > 0)
         Thread::sleepPrecise(spare);

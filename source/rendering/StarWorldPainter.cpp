@@ -95,7 +95,12 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   {
     int64_t nowUs = Time::monotonicMicroseconds();
     int64_t gapUs = m_bgLastRenderTimeUs != 0 ? nowUs - m_bgLastRenderTimeUs : 0;
-    bool wpUnderLoad = gapUs > 50000;
+    // Always refresh the background at a reduced cadence: sky/stars/parallax
+    // move less than a pixel per frame, so at the 45Hz target a 1-in-2
+    // refresh (22Hz) is imperceptible while halving the largest constant
+    // GPU fill cost -- decisive when the host GPU is power-managed to its
+    // floor clock.  Deeper intervals engage under real load as before.
+    bool wpUnderLoad = true;
     int64_t bgInterval = gapUs > 75000 ? 4 : 3;
     m_bgLastRenderTimeUs = nowUs;
     ++m_bgFrameCounter;
@@ -109,16 +114,43 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   }
 #endif
 
+#ifdef STAR_SYSTEM_SWITCH
+  // [perf-env] sub-phase breakdown of the env region, logged every ~150 frames.
+  static int64_t s_envStars = 0, s_envDebris = 0, s_envOrbHor = 0, s_envSky = 0,
+      s_envPar = 0, s_envFlush = 0, s_envBlit = 0, s_envFrames = 0, s_envRefreshes = 0;
+  int64_t envT = Time::monotonicMicroseconds();
+  auto envLap = [&](int64_t& acc) {
+    int64_t now = Time::monotonicMicroseconds();
+    acc += now - envT;
+    envT = now;
+  };
+#endif
+
   if (!bgReuse) {
+#ifdef STAR_SYSTEM_SWITCH
+    ++s_envRefreshes;
+#endif
     m_environmentPainter->renderStars(starAndDebrisRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+#ifdef STAR_SYSTEM_SWITCH
+    envLap(s_envStars);
+#endif
     m_environmentPainter->renderDebrisFields(starAndDebrisRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+#ifdef STAR_SYSTEM_SWITCH
+    envLap(s_envDebris);
+#endif
     if (renderData.skyRenderData.type != SkyType::Atmosphereless)
       m_environmentPainter->renderBackOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
     m_environmentPainter->renderPlanetHorizon(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+#ifdef STAR_SYSTEM_SWITCH
+    envLap(s_envOrbHor);
+#endif
     m_environmentPainter->renderSky(Vec2F(m_camera.screenSize()), renderData.skyRenderData);
     m_environmentPainter->renderFrontOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
     if (renderData.skyRenderData.type == SkyType::Atmosphereless)
       m_environmentPainter->renderBackOrbiters(orbiterAndPlanetRatio, Vec2F(m_camera.screenSize()), renderData.skyRenderData);
+#ifdef STAR_SYSTEM_SWITCH
+    envLap(s_envSky);
+#endif
   }
 
   // Parallax camera tracking must run exactly once per frame regardless of
@@ -142,22 +174,54 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   // parallax layers shade with the previous frame's lightmap -- one frame
   // stale, imperceptible for distant background content.
   if (bgScaled && renderData.parallaxLayers && !renderData.parallaxLayers->empty()) {
+#ifdef STAR_SYSTEM_SWITCH
+    envT = Time::monotonicMicroseconds();
+#endif
     m_environmentPainter->renderParallaxLayers(m_parallaxWorldPosition, m_camera, *renderData.parallaxLayers, renderData.skyRenderData);
+#ifdef STAR_SYSTEM_SWITCH
+    envLap(s_envPar);
+#endif
     parallaxRendered = true;
   }
 #endif
 
+#ifdef STAR_SYSTEM_SWITCH
+  envT = Time::monotonicMicroseconds();
+#endif
   m_renderer->flush();
+#ifdef STAR_SYSTEM_SWITCH
+  envLap(s_envFlush);
+#endif
 #ifdef STAR_SYSTEM_FAMILY_MOBILE
   if (bgReuse) {
     // Skip frame: composite the preserved background from the last refresh.
     parallaxRendered = true;
-    m_renderer->switchFrameBuffer("main");
+    if (!m_renderer->switchFrameBuffer("main"))
+      m_renderer->switchToDefaultFrameBuffer(); // "main" bypassed: target the screen
     m_renderer->blitFrameBufferToCurrent("background");
   } else if (bgScaled) {
-    m_renderer->switchFrameBuffer("main");
+    if (!m_renderer->switchFrameBuffer("main"))
+      m_renderer->switchToDefaultFrameBuffer();
     m_renderer->blitFrameBufferToCurrent("background");
   }
+  if (bgReuse || bgScaled) {
+    // The background blit just covered every pixel of the render target, and
+    // it will again next frame -- the next startFrame clear is redundant
+    // fill.  One-shot: if the world stops rendering (title, menus), the
+    // clear resumes automatically.
+    m_renderer->skipNextScreenClear();
+  }
+#ifdef STAR_SYSTEM_SWITCH
+  envLap(s_envBlit);
+  if (++s_envFrames >= 150) {
+    Logger::info("[perf-env] refr={}/150 stars={:.2f}ms debris={:.2f} orbhor={:.2f} sky={:.2f} par={:.2f} flush={:.2f} blit={:.2f}",
+        s_envRefreshes, s_envStars / 1e3 / s_envFrames, s_envDebris / 1e3 / s_envFrames,
+        s_envOrbHor / 1e3 / s_envFrames, s_envSky / 1e3 / s_envFrames, s_envPar / 1e3 / s_envFrames,
+        s_envFlush / 1e3 / s_envFrames, s_envBlit / 1e3 / s_envFrames);
+    s_envStars = s_envDebris = s_envOrbHor = s_envSky = s_envPar = s_envFlush = s_envBlit = 0;
+    s_envFrames = s_envRefreshes = 0;
+  }
+#endif
 #endif
 
 #ifdef STAR_SYSTEM_SWITCH

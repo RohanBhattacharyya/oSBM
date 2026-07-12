@@ -1,7 +1,11 @@
 #include "StarRenderer_opengl.hpp"
+#include <atomic>
 #include "StarJsonExtra.hpp"
 #include "StarCasting.hpp"
 #include "StarLogging.hpp"
+#ifdef STAR_SYSTEM_SWITCH
+#include <sys/stat.h>
+#endif
 
 #include <cstring>
 #include <cmath>
@@ -9,6 +13,14 @@
 namespace Star {
 
 size_t const MultiTextureCount = 4;
+
+#ifdef STAR_SYSTEM_SWITCH
+// Per-frame GL call volume counters ([perf-gl]); translated/mobile drivers pay
+// a fixed cost per GL call, so call count is the metric that matters.
+std::atomic<int64_t> g_glDrawCalls{0}, g_glTextureBinds{0};
+std::atomic<int64_t> g_glBufferReuses{0}, g_glBufferReallocs{0};
+std::atomic<int64_t> g_glTextureNews{0}, g_glTextureDels{0};
+#endif
 
 void setMobileStartupStatus(String const& status);
 
@@ -260,7 +272,11 @@ static void GLAPIENTRY GlMessageCallback(GLenum, GLenum type, GLuint, GLenum, GL
 }
 */
 
+void flushPooledGlObjects(bool deleteObjects);
+
 OpenGlRenderer::OpenGlRenderer() {
+  // Discard (without glDelete) any pooled object ids from a previous, now-dead context.
+  flushPooledGlObjects(false);
   auto glewResult = glewInit();
   if (glewResult != GLEW_OK && glewResult != GLEW_ERROR_NO_GLX_DISPLAY)
     throw RendererException::format("Could not initialize GLEW: {}", (char*)glewGetErrorString(glewResult));
@@ -301,6 +317,8 @@ OpenGlRenderer::~OpenGlRenderer() {
   for (auto& effect : m_effects)
     glDeleteProgram(effect.second.program);
 
+  m_immediateRenderBuffer.reset();
+  flushPooledGlObjects(true);
   m_frameBuffers.clear();
   logGlErrorSummary("OpenGL errors during shutdown");
 }
@@ -320,6 +338,9 @@ OpenGlRenderer::GlFrameBuffer::GlFrameBuffer(Json const& fbConfig) : config(fbCo
   texture->textureAddressing = TextureAddressing::Clamp;
   texture->textureSize = {0, 0};
   glGenTextures(1, &texture->textureId);
+#ifdef STAR_SYSTEM_SWITCH
+  g_glTextureNews.fetch_add(1, std::memory_order_relaxed);
+#endif
   if (texture->textureId == 0)
     throw RendererException("Could not generate OpenGL texture for framebuffer");
 
@@ -647,12 +668,16 @@ void OpenGlRenderer::setEffectTexture(String const& textureName, ImageView const
 
   if (!ptr->textureValue || ptr->textureValue->textureId == 0) {
     ptr->textureValue = createGlTexture(image, ptr->textureAddressing, ptr->textureFiltering);
+    ptr->textureValue->storedPixelFormat = image.format;
   } else {
+    bool sameStorage = ptr->textureValue->textureSize == image.size
+        && ptr->textureValue->storedPixelFormat == image.format;
     glBindTexture(GL_TEXTURE_2D, ptr->textureValue->textureId);
     ptr->textureValue->textureSize = image.size;
+    ptr->textureValue->storedPixelFormat = image.format;
     ptr->textureValue->textureFiltering = effectiveTextureFiltering(image.format, ptr->textureFiltering);
     setTextureFiltering(ptr->textureValue->textureFiltering);
-    uploadTextureImage(image.format, image.size, image.data);
+    uploadTextureImage(image.format, image.size, image.data, sameStorage);
   }
 
   if (ptr->textureSizeUniform != -1) {
@@ -671,8 +696,10 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
   if (m_currentEffect == &effect)
     return true;
 
-  if (auto blitFrameBufferId = effect.config.optString("blitFrameBuffer"))
-    blitGlFrameBuffer(getGlFrameBuffer(*blitFrameBufferId));
+  if (auto blitFrameBufferId = effect.config.optString("blitFrameBuffer")) {
+    if (!m_frameBufferBypass.contains(*blitFrameBufferId))
+      blitGlFrameBuffer(getGlFrameBuffer(*blitFrameBufferId));
+  }
 #ifdef STAR_SYSTEM_SWITCH
   else {
     static int64_t s_noBlitSwitches = 0;
@@ -682,7 +709,14 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
 #endif
 
   auto effectScreenSize = m_screenSize;
-  if (auto frameBufferId = effect.config.optString("frameBuffer")) {
+  Maybe<String> effectFrameBuffer = effect.config.optString("frameBuffer");
+  // Bypassed framebuffers render directly to the screen: when nothing will
+  // ever sample the intermediate (no post-process layers), the FB indirection
+  // costs a fullscreen blit + clear + render-target switch per frame for
+  // nothing -- significant on translated drivers and mobile tilers alike.
+  if (effectFrameBuffer && m_frameBufferBypass.contains(*effectFrameBuffer))
+    effectFrameBuffer = {};
+  if (auto frameBufferId = effectFrameBuffer) {
     auto buf = getGlFrameBuffer(*frameBufferId);
     switchGlFrameBuffer(buf);
     // Shader screenSize stays the LOGICAL size (vertices are authored in full screen
@@ -727,7 +761,16 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
   return true;
 }
 
+void OpenGlRenderer::setFrameBufferBypass(String const& id, bool bypass) {
+  if (bypass)
+    m_frameBufferBypass.add(id);
+  else
+    m_frameBufferBypass.remove(id);
+}
+
 bool OpenGlRenderer::switchFrameBuffer(String const& id) {
+  if (m_frameBufferBypass.contains(id))
+    return false;
   auto ptr = m_frameBuffers.ptr(id);
   if (!ptr)
     return false;
@@ -746,8 +789,22 @@ bool OpenGlRenderer::switchFrameBuffer(String const& id) {
 
 void OpenGlRenderer::blitFrameBufferToCurrent(String const& id) {
   auto ptr = m_frameBuffers.ptr(id);
-  if (!ptr || !m_currentFrameBuffer)
+  if (!ptr)
     return;
+  if (!m_currentFrameBuffer) {
+    // Current target is the screen (e.g. when the usual intermediate is
+    // bypassed): stretch-blit onto the physical screen viewport.
+    flushImmediatePrimitives();
+    Vec2U srcSize = framebufferTextureSize(m_screenSize, (*ptr)->sizeDiv, (*ptr)->sizeMul);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (*ptr)->id);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
+    glBlitFramebuffer(0, 0, srcSize[0], srcSize[1],
+        m_screenOffset[0], m_screenOffset[1],
+        m_screenOffset[0] + m_screenViewportSize[0], m_screenOffset[1] + m_screenViewportSize[1],
+        GL_COLOR_BUFFER_BIT, srcSize == m_screenViewportSize ? GL_NEAREST : GL_LINEAR);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_screenFbo);
+    return;
+  }
   flushImmediatePrimitives();
   Vec2U srcSize = framebufferTextureSize(m_screenSize, (*ptr)->sizeDiv, (*ptr)->sizeMul);
   Vec2U dstSize = framebufferTextureSize(m_screenSize, m_currentFrameBuffer->sizeDiv, m_currentFrameBuffer->sizeMul);
@@ -931,7 +988,7 @@ void OpenGlRenderer::startFrame() {
   glViewport(m_screenOffset[0], m_screenOffset[1], m_screenViewportSize[0], m_screenViewportSize[1]);
 
   for (auto& frameBuffer : m_frameBuffers) {
-    if (!frameBuffer.second->preserve) {
+    if (!frameBuffer.second->preserve && !m_frameBufferBypass.contains(frameBuffer.first)) {
       glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer.second->id);
       glClear(GL_COLOR_BUFFER_BIT);
     }
@@ -940,14 +997,79 @@ void OpenGlRenderer::startFrame() {
 
   glBindFramebuffer(GL_FRAMEBUFFER, m_screenFbo);
 
-  glClear(GL_COLOR_BUFFER_BIT);
+  // One-shot: when the caller guarantees every screen pixel will be written
+  // this frame (world render + background blit cover the full viewport), the
+  // clear is redundant fill.  The flag re-arms every frame, so any path that
+  // does not explicitly skip (title screens, menus) always clears.
+  if (m_skipNextScreenClear)
+    m_skipNextScreenClear = false;
+  else
+    glClear(GL_COLOR_BUFFER_BIT);
 
   if (m_scissorRect)
     glEnable(GL_SCISSOR_TEST);
 }
 
+void OpenGlRenderer::skipNextScreenClear() {
+  m_skipNextScreenClear = true;
+}
+
 void OpenGlRenderer::finishFrame() {
   flushImmediatePrimitives();
+
+#ifdef STAR_SYSTEM_FAMILY_MOBILE
+  // Explicit frame pacing: cap GPU work in flight at two frames.  With the
+  // swap interval at 0 (Switch) or driver-dependent present pacing (mobile),
+  // nothing else bounds the queue -- if the GPU momentarily falls behind the
+  // submit rate, in-flight work accumulates without limit, every implicit
+  // sync (e.g. glBufferSubData into a busy buffer) waits on ever-older work,
+  // and the frame time degrades monotonically without ever recovering.  A
+  // bounded queue keeps those waits small and makes recovery automatic; the
+  // wait, when needed, lands here where it is measured (finish lap) instead
+  // of at arbitrary sync points mid-frame.
+  {
+    static GLsync s_frameFences[2] = {nullptr, nullptr};
+    static unsigned s_fenceIndex = 0;
+    // Bisect lever (Switch only): drop nofence.flag on the sd card (checked
+    // once at startup) to disable the pacing-fence ring entirely.
+#ifdef STAR_SYSTEM_SWITCH
+    static int s_fencesEnabled = -1;
+    if (s_fencesEnabled < 0) {
+      struct stat st;
+      s_fencesEnabled = (stat("/switch/oSBM/nofence.flag", &st) == 0) ? 0 : 1;
+    }
+#else
+    constexpr int s_fencesEnabled = 1;
+#endif
+    if (s_fencesEnabled && s_frameFences[s_fenceIndex]) {
+      glClientWaitSync(s_frameFences[s_fenceIndex], GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull); // 100ms cap
+      glDeleteSync(s_frameFences[s_fenceIndex]);
+    }
+    if (s_fencesEnabled) {
+      s_frameFences[s_fenceIndex] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+      s_fenceIndex = (s_fenceIndex + 1) % 2;
+    }
+  }
+#endif
+
+#ifdef STAR_SYSTEM_SWITCH
+  {
+    static int64_t s_glFrames = 0;
+    if (++s_glFrames >= 150) {
+      Logger::info("[perf-gl] draws={}/f texBinds={}/f vbReuse={}/f vbRealloc={}/f texNew={} texDel={}",
+          g_glDrawCalls.load() / s_glFrames, g_glTextureBinds.load() / s_glFrames,
+          g_glBufferReuses.load() / s_glFrames, g_glBufferReallocs.load() / s_glFrames,
+          g_glTextureNews.load(), g_glTextureDels.load());
+      g_glDrawCalls = 0;
+      g_glTextureBinds = 0;
+      g_glBufferReuses = 0;
+      g_glBufferReallocs = 0;
+      g_glTextureNews = 0;
+      g_glTextureDels = 0;
+      s_glFrames = 0;
+    }
+  }
+#endif
 
 #ifdef STAR_SYSTEM_SWITCH
   // Diagnostic self-screenshot of the fully composed frame (world + HUD):
@@ -1054,6 +1176,9 @@ OpenGlRenderer::GlTextureAtlasSet::GlTextureAtlasSet(unsigned atlasNumCells)
 GLuint OpenGlRenderer::GlTextureAtlasSet::createAtlasTexture(Vec2U const& size, PixelFormat pixelFormat) {
   GLuint glTextureId;
   glGenTextures(1, &glTextureId);
+#ifdef STAR_SYSTEM_SWITCH
+  g_glTextureNews.fetch_add(1, std::memory_order_relaxed);
+#endif
   if (glTextureId == 0)
     throw RendererException("Could not generate texture in OpenGlRenderer::TextureGroup::createAtlasTexture()");
 
@@ -1076,6 +1201,9 @@ GLuint OpenGlRenderer::GlTextureAtlasSet::createAtlasTexture(Vec2U const& size, 
 
 void OpenGlRenderer::GlTextureAtlasSet::destroyAtlasTexture(GLuint const& glTexture) {
   glDeleteTextures(1, &glTexture);
+#ifdef STAR_SYSTEM_SWITCH
+  g_glTextureDels.fetch_add(1, std::memory_order_relaxed);
+#endif
 }
 
 void OpenGlRenderer::GlTextureAtlasSet::copyAtlasPixels(
@@ -1169,6 +1297,9 @@ void OpenGlRenderer::GlGroupedTexture::decrementBufferUseCount() {
 OpenGlRenderer::GlLoneTexture::~GlLoneTexture() {
   if (textureId != 0)
     glDeleteTextures(1, &textureId);
+#ifdef STAR_SYSTEM_SWITCH
+    g_glTextureDels.fetch_add(1, std::memory_order_relaxed);
+#endif
 }
 
 Vec2U OpenGlRenderer::GlLoneTexture::size() const {
@@ -1195,8 +1326,74 @@ Vec2U OpenGlRenderer::GlLoneTexture::glTextureCoordinateOffset() const {
   return Vec2U();
 }
 
+// Render buffers churn constantly while the world scrolls (chunk/entity buffers are
+// created and destroyed every frame), and per-frame glGen/glDelete/glBufferData cycles
+// slowly fragment mobile-family driver heaps, degrading GL call latency over long
+// sessions. Pooling the underlying GL objects across GlRenderBuffer lifetimes makes
+// steady-state frames allocation-free. GL objects are only touched on the render
+// thread (same invariant the previous direct glDelete calls relied on).
+struct PooledGlVertexBuffer {
+  GLuint id = 0;
+  size_t byteCapacity = 0;
+};
+static List<PooledGlVertexBuffer> s_vertexBufferPool;
+static List<GLuint> s_vertexArrayPool;
+static size_t const VertexBufferPoolMax = 256;
+static size_t const VertexArrayPoolMax = 128;
+
+static PooledGlVertexBuffer acquirePooledVertexBuffer(size_t needed) {
+  if (s_vertexBufferPool.empty())
+    return {};
+  // Best fit: smallest capacity that holds `needed`, else the largest (it will grow).
+  size_t pick = 0;
+  for (size_t i = 1; i < s_vertexBufferPool.size(); ++i) {
+    auto const& c = s_vertexBufferPool[i];
+    auto const& b = s_vertexBufferPool[pick];
+    bool cFits = c.byteCapacity >= needed, bFits = b.byteCapacity >= needed;
+    if (cFits ? (!bFits || c.byteCapacity < b.byteCapacity) : (!bFits && c.byteCapacity > b.byteCapacity))
+      pick = i;
+  }
+  auto out = s_vertexBufferPool[pick];
+  s_vertexBufferPool[pick] = s_vertexBufferPool.last();
+  s_vertexBufferPool.removeLast();
+  return out;
+}
+
+static void releasePooledVertexBuffer(PooledGlVertexBuffer vb) {
+  if (s_vertexBufferPool.size() < VertexBufferPoolMax)
+    s_vertexBufferPool.append(vb);
+  else
+    glDeleteBuffers(1, &vb.id);
+}
+
+static GLuint acquirePooledVertexArray() {
+  if (!s_vertexArrayPool.empty())
+    return s_vertexArrayPool.takeLast();
+  GLuint id = 0;
+  glGenVertexArrays(1, &id);
+  return id;
+}
+
+static void releasePooledVertexArray(GLuint id) {
+  if (s_vertexArrayPool.size() < VertexArrayPoolMax)
+    s_vertexArrayPool.append(id);
+  else
+    glDeleteVertexArrays(1, &id);
+}
+
+void flushPooledGlObjects(bool deleteObjects) {
+  if (deleteObjects) {
+    for (auto const& vb : s_vertexBufferPool)
+      glDeleteBuffers(1, &vb.id);
+    for (auto id : s_vertexArrayPool)
+      glDeleteVertexArrays(1, &id);
+  }
+  s_vertexBufferPool.clear();
+  s_vertexArrayPool.clear();
+}
+
 OpenGlRenderer::GlRenderBuffer::GlRenderBuffer() {
-  glGenVertexArrays(1, &vertexArray);
+  vertexArray = acquirePooledVertexArray();
 }
 
 OpenGlRenderer::GlRenderBuffer::~GlRenderBuffer() {
@@ -1205,8 +1402,8 @@ OpenGlRenderer::GlRenderBuffer::~GlRenderBuffer() {
       gt->decrementBufferUseCount();
   }
   for (auto const& vb : vertexBuffers)
-    glDeleteBuffers(1, &vb.vertexBuffer);
-  glDeleteVertexArrays(1, &vertexArray);
+    releasePooledVertexBuffer({vb.vertexBuffer, vb.byteCapacity});
+  releasePooledVertexArray(vertexArray);
 }
 
 void OpenGlRenderer::GlRenderBuffer::set(List<RenderPrimitive>& primitives) {
@@ -1229,18 +1426,37 @@ void OpenGlRenderer::GlRenderBuffer::set(List<RenderPrimitive>& primitives) {
         vb.textures.append(GlVertexBufferTexture{currentTextures[i], currentTextureSizes[i]});
       }
       vb.vertexCount = currentVertexCount;
+      // Grow-only power-of-two buffer capacities: exact-size STREAM_DRAW respecification
+      // fragments the driver heap over long sessions (GL calls slow down monotonically on
+      // mobile-family drivers). Bucketing sizes means steady-state frames never reallocate.
+      size_t needed = accumulationBuffer.size();
+      size_t bucketed = 1024;
+      while (bucketed < needed)
+        bucketed <<= 1;
       if (!oldVertexBuffers.empty()) {
         auto oldVb = oldVertexBuffers.takeLast();
         vb.vertexBuffer = oldVb.vertexBuffer;
-        glBindBuffer(GL_ARRAY_BUFFER, vb.vertexBuffer);
-        if (oldVb.vertexCount >= vb.vertexCount)
-          glBufferSubData(GL_ARRAY_BUFFER, 0, accumulationBuffer.size(), accumulationBuffer.ptr());
-        else
-          glBufferData(GL_ARRAY_BUFFER, accumulationBuffer.size(), accumulationBuffer.ptr(), GL_STREAM_DRAW);
+        vb.byteCapacity = oldVb.byteCapacity;
       } else {
-        glGenBuffers(1, &vb.vertexBuffer);
-        glBindBuffer(GL_ARRAY_BUFFER, vb.vertexBuffer);
-        glBufferData(GL_ARRAY_BUFFER, accumulationBuffer.size(), accumulationBuffer.ptr(), GL_STREAM_DRAW);
+        auto pooled = acquirePooledVertexBuffer(needed);
+        if (!pooled.id)
+          glGenBuffers(1, &pooled.id);
+        vb.vertexBuffer = pooled.id;
+        vb.byteCapacity = pooled.byteCapacity;
+      }
+      glBindBuffer(GL_ARRAY_BUFFER, vb.vertexBuffer);
+      if (vb.byteCapacity >= needed) {
+        glBufferSubData(GL_ARRAY_BUFFER, 0, needed, accumulationBuffer.ptr());
+#ifdef STAR_SYSTEM_SWITCH
+        g_glBufferReuses.fetch_add(1, std::memory_order_relaxed);
+#endif
+      } else {
+        vb.byteCapacity = bucketed;
+        glBufferData(GL_ARRAY_BUFFER, bucketed, nullptr, GL_STREAM_DRAW);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, needed, accumulationBuffer.ptr());
+#ifdef STAR_SYSTEM_SWITCH
+        g_glBufferReallocs.fetch_add(1, std::memory_order_relaxed);
+#endif
       }
 
       vertexBuffers.emplace_back(std::move(vb));
@@ -1334,11 +1550,10 @@ void OpenGlRenderer::GlRenderBuffer::set(List<RenderPrimitive>& primitives) {
     }
   }
 
-  vertexBuffers.reserve(primitives.size() * 6);
   finishCurrentBuffer();
 
   for (auto const& vb : oldVertexBuffers)
-    glDeleteBuffers(1, &vb.vertexBuffer);
+    releasePooledVertexBuffer({vb.vertexBuffer, vb.byteCapacity});
 }
 
 bool OpenGlRenderer::logGlErrorSummary(String prefix) {
@@ -1372,7 +1587,7 @@ bool OpenGlRenderer::logGlErrorSummary(String prefix) {
   return false;
 }
 
-void OpenGlRenderer::uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uint8_t const* data) {
+void OpenGlRenderer::uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uint8_t const* data, bool sameStorage) {
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
   Maybe<GLenum> internalFormat;
@@ -1398,7 +1613,15 @@ void OpenGlRenderer::uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uin
       throw RendererException("Unsupported texture format in OpenGlRenderer::uploadTextureImage");
   }
 
-  glTexImage2D(GL_TEXTURE_2D, 0, internalFormat.value(format), size[0], size[1], 0, format, type, data);
+  if (sameStorage) {
+    // Update in place: respecifying storage (glTexImage2D) for a per-frame
+    // streaming texture (e.g. the lightmap) forces the driver / translation
+    // layer to allocate a fresh backing texture every frame -- host texture
+    // caches grow without bound and per-frame cost degrades monotonically.
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, size[0], size[1], format, type, data);
+  } else {
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat.value(format), size[0], size[1], 0, format, type, data);
+  }
 }
 
 void OpenGlRenderer::flushImmediatePrimitives(Mat3F const& transformation) {
@@ -1456,6 +1679,9 @@ auto OpenGlRenderer::createGlTexture(ImageView const& image, TextureAddressing a
   glLoneTexture->textureSize = image.size;
 
   glGenTextures(1, &glLoneTexture->textureId);
+#ifdef STAR_SYSTEM_SWITCH
+  g_glTextureNews.fetch_add(1, std::memory_order_relaxed);
+#endif
   if (glLoneTexture->textureId == 0)
     throw RendererException("Could not generate texture in OpenGlRenderer::createGlTexture");
 
@@ -1487,30 +1713,60 @@ auto OpenGlRenderer::createGlRenderBuffer() -> shared_ptr<GlRenderBuffer> {
 }
 
 void OpenGlRenderer::renderGlBuffer(GlRenderBuffer const& renderBuffer, Mat3F const& transformation) {
-  for (auto const& vb : renderBuffer.vertexBuffers) {
-    glUniformMatrix3fv(m_vertexTransformUniform, 1, GL_TRUE, transformation.ptr());
+  // GL calls are expensive per-call on translated/mobile drivers, so state
+  // that does not vary per vertex buffer is issued once per renderGlBuffer,
+  // and per-VB texture binds / size uniforms are skipped when unchanged from
+  // the previous VB (the common case: consecutive buffers share the same
+  // texture atlas).  The caches are call-local, so there is no cross-frame
+  // staleness to manage.
+  if (renderBuffer.vertexBuffers.empty())
+    return;
 
+  glUniformMatrix3fv(m_vertexTransformUniform, 1, GL_TRUE, transformation.ptr());
+
+  for (auto const& p : m_currentEffect->textures) {
+    if (p.second.textureValue) {
+      glActiveTexture(GL_TEXTURE0 + p.second.textureUnit);
+      glBindTexture(GL_TEXTURE_2D, p.second.textureValue->textureId);
+    }
+  }
+
+  glEnableVertexAttribArray(m_positionAttribute);
+  glEnableVertexAttribArray(m_texCoordAttribute);
+  glEnableVertexAttribArray(m_colorAttribute);
+  glEnableVertexAttribArray(m_dataAttribute);
+
+  GLuint lastBound[MultiTextureCount];
+  Vec2F lastSize[MultiTextureCount];
+  for (size_t i = 0; i < MultiTextureCount; ++i) {
+    lastBound[i] = 0;
+    lastSize[i] = Vec2F(-1.0f, -1.0f);
+  }
+
+#ifdef STAR_SYSTEM_SWITCH
+  extern std::atomic<int64_t> g_glDrawCalls, g_glTextureBinds;
+#endif
+
+  for (auto const& vb : renderBuffer.vertexBuffers) {
     if (m_currentEffect->includeVBTextures) {
       for (size_t i = 0; i < vb.textures.size(); ++i) {
-        glUniform2f(m_textureSizeUniforms[i], vb.textures[i].size[0], vb.textures[i].size[1]);
-        glActiveTexture(GL_TEXTURE0 + i);
-        glBindTexture(GL_TEXTURE_2D, vb.textures[i].texture);
-      }
-    }
-
-    for (auto const& p : m_currentEffect->textures) {
-      if (p.second.textureValue) {
-        glActiveTexture(GL_TEXTURE0 + p.second.textureUnit);
-        glBindTexture(GL_TEXTURE_2D, p.second.textureValue->textureId);
+        Vec2F size = Vec2F(vb.textures[i].size[0], vb.textures[i].size[1]);
+        if (size != lastSize[i]) {
+          glUniform2f(m_textureSizeUniforms[i], size[0], size[1]);
+          lastSize[i] = size;
+        }
+        if (vb.textures[i].texture != lastBound[i]) {
+          glActiveTexture(GL_TEXTURE0 + i);
+          glBindTexture(GL_TEXTURE_2D, vb.textures[i].texture);
+          lastBound[i] = vb.textures[i].texture;
+#ifdef STAR_SYSTEM_SWITCH
+          ++g_glTextureBinds;
+#endif
+        }
       }
     }
 
     glBindBuffer(GL_ARRAY_BUFFER, vb.vertexBuffer);
-
-    glEnableVertexAttribArray(m_positionAttribute);
-    glEnableVertexAttribArray(m_texCoordAttribute);
-    glEnableVertexAttribArray(m_colorAttribute);
-    glEnableVertexAttribArray(m_dataAttribute);
 
     glVertexAttribPointer(m_positionAttribute, 2, GL_FLOAT, GL_FALSE, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, pos));
     glVertexAttribPointer(m_texCoordAttribute, 2, GL_FLOAT, GL_FALSE, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, uv));
@@ -1518,6 +1774,9 @@ void OpenGlRenderer::renderGlBuffer(GlRenderBuffer const& renderBuffer, Mat3F co
     glVertexAttribIPointer(m_dataAttribute, 1, GL_INT, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, pack));
 
     glDrawArrays(GL_TRIANGLES, 0, vb.vertexCount);
+#ifdef STAR_SYSTEM_SWITCH
+    ++g_glDrawCalls;
+#endif
   }
 }
 

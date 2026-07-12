@@ -153,6 +153,9 @@ public:
   // into the current target unchanged. Used to draw low-frequency content
   // (e.g. sky/background layers) into a reduced-resolution buffer.
   virtual bool switchFrameBuffer(String const& id) { return false; }
+  virtual void setFrameBufferBypass(String const&, bool) {}
+  // Skip the next startFrame screen clear (caller guarantees full coverage).
+  virtual void skipNextScreenClear() {}
   // Stretch-blit a named framebuffer's contents over the currently bound
   // framebuffer (no blending, linear filtered when sizes differ).
   virtual void blitFrameBufferToCurrent(String const& id) {}

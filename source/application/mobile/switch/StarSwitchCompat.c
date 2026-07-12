@@ -166,3 +166,150 @@ char* dirname(char* path) {
 }
 
 #endif
+
+/* ---- Allocation attribution (diagnostic) ----------------------------------
+ * Tags every wrapped malloc/calloc/realloc block with a 16-byte header naming
+ * the caller (return address), keeping per-caller live/total counts.  free()
+ * validates the header magic so blocks from unwrapped allocators (memalign --
+ * i.e. rpmalloc spans) pass through untouched.  Report via
+ * starAllocTrackReport(); addresses are relative to __wrap_malloc so they can
+ * be resolved offline with addr2line regardless of NRO load base. */
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdatomic.h>
+
+extern void* __real_malloc(size_t);
+extern void __real_free(void*);
+extern void* __real_realloc(void*, size_t);
+
+#define AT_SLOTS 2048
+#define AT_MAGIC 0xA110C8ED5EEDF00Dull
+#define AT_MARK  0x5EEDF00Du
+
+typedef struct {
+  _Atomic uintptr_t ra;
+  _Atomic long live;
+  _Atomic long total;
+  _Atomic long liveBytes;
+} AtSlot;
+static AtSlot s_atTable[AT_SLOTS];
+
+static unsigned at_slot_for(uintptr_t ra) {
+  unsigned h = (unsigned)((ra >> 2) * 2654435761u) % AT_SLOTS;
+  for (unsigned probe = 0; probe < 16; ++probe) {
+    unsigned idx = (h + probe) % AT_SLOTS;
+    if (idx == 0) continue; /* slot 0 = overflow bucket */
+    uintptr_t cur = atomic_load_explicit(&s_atTable[idx].ra, memory_order_relaxed);
+    if (cur == ra)
+      return idx;
+    if (cur == 0) {
+      uintptr_t expected = 0;
+      if (atomic_compare_exchange_strong(&s_atTable[idx].ra, &expected, ra))
+        return idx;
+      if (expected == ra)
+        return idx;
+    }
+  }
+  return 0;
+}
+
+static void* at_tag(unsigned char* p, size_t size, uintptr_t ra) {
+  unsigned idx = at_slot_for(ra);
+  ((uint64_t*)p)[0] = AT_MAGIC ^ ra;
+  ((uint32_t*)p)[2] = idx;
+  ((uint32_t*)p)[3] = AT_MARK;
+  atomic_fetch_add_explicit(&s_atTable[idx].live, 1, memory_order_relaxed);
+  atomic_fetch_add_explicit(&s_atTable[idx].total, 1, memory_order_relaxed);
+  atomic_fetch_add_explicit(&s_atTable[idx].liveBytes, (long)size, memory_order_relaxed);
+  return p + 16;
+}
+
+void* __wrap_malloc(size_t size) {
+  unsigned char* p = (unsigned char*)__real_malloc(size + 16);
+  if (!p) return 0;
+  return at_tag(p, size, (uintptr_t)__builtin_return_address(0));
+}
+
+void* __wrap_calloc(size_t nmemb, size_t size) {
+  size_t bytes = nmemb * size;
+  unsigned char* p = (unsigned char*)__real_malloc(bytes + 16);
+  if (!p) return 0;
+  memset(p, 0, bytes + 16);
+  return at_tag(p, bytes, (uintptr_t)__builtin_return_address(0));
+}
+
+void __wrap_free(void* ptr) {
+  if (!ptr) return;
+  unsigned char* p = (unsigned char*)ptr - 16;
+  if (((uint32_t*)p)[3] == AT_MARK) {
+    uint32_t idx = ((uint32_t*)p)[2];
+    if (idx < AT_SLOTS) {
+      uintptr_t ra = atomic_load_explicit(&s_atTable[idx].ra, memory_order_relaxed);
+      if (idx == 0 || (((uint64_t*)p)[0] ^ AT_MAGIC) == ra) {
+        atomic_fetch_add_explicit(&s_atTable[idx].live, -1, memory_order_relaxed);
+        ((uint32_t*)p)[3] = 0;
+        __real_free(p);
+        return;
+      }
+    }
+  }
+  __real_free(ptr);
+}
+
+void* __wrap_realloc(void* ptr, size_t size) {
+  if (!ptr) {
+    unsigned char* p = (unsigned char*)__real_malloc(size + 16);
+    if (!p) return 0;
+    return at_tag(p, size, (uintptr_t)__builtin_return_address(0));
+  }
+  unsigned char* p = (unsigned char*)ptr - 16;
+  if (((uint32_t*)p)[3] == AT_MARK) {
+    uint32_t idx = ((uint32_t*)p)[2];
+    uintptr_t ra = idx < AT_SLOTS ? atomic_load_explicit(&s_atTable[idx].ra, memory_order_relaxed) : 1;
+    if (idx < AT_SLOTS && (idx == 0 || (((uint64_t*)p)[0] ^ AT_MAGIC) == ra)) {
+      unsigned char* np = (unsigned char*)__real_realloc(p, size + 16);
+      if (!np) return 0;
+      /* keep the original slot; live count unchanged */
+      return np + 16;
+    }
+  }
+  return __real_realloc(ptr, size);
+}
+
+/* Top callers by live allocation count, addresses relative to __wrap_malloc. */
+void starAllocTrackReport(char* buf, size_t bufSize) {
+  int used = 0;
+  buf[0] = 0;
+  for (int rank = 0; rank < 8; ++rank) {
+    long bestLive = 0;
+    int bestIdx = -1;
+    for (int i = 0; i < AT_SLOTS; ++i) {
+      long lv = atomic_load_explicit(&s_atTable[i].live, memory_order_relaxed);
+      int already = 0;
+      /* skip ones we've printed by marking via negative search below */
+      if (lv > bestLive) {
+        /* check not already emitted this pass */
+        already = 0;
+        bestLive = lv;
+        bestIdx = i;
+        (void)already;
+      }
+    }
+    if (bestIdx < 0 || bestLive < 1000) break;
+    uintptr_t ra = atomic_load_explicit(&s_atTable[bestIdx].ra, memory_order_relaxed);
+    long lb = atomic_load_explicit(&s_atTable[bestIdx].liveBytes, memory_order_relaxed);
+    int n = snprintf(buf + used, bufSize - used, " ra=%+lld live=%ld kB=%ld;",
+        (long long)((intptr_t)ra - (intptr_t)&__wrap_malloc), bestLive, lb >> 10);
+    if (n <= 0 || (size_t)(used + n) >= bufSize) break;
+    used += n;
+    /* exclude from next passes */
+    atomic_store_explicit(&s_atTable[bestIdx].live, -bestLive, memory_order_relaxed);
+  }
+  /* restore live counts we negated */
+  for (int i = 0; i < AT_SLOTS; ++i) {
+    long lv = atomic_load_explicit(&s_atTable[i].live, memory_order_relaxed);
+    if (lv < 0)
+      atomic_store_explicit(&s_atTable[i].live, -lv, memory_order_relaxed);
+  }
+}

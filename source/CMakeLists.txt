@@ -249,6 +249,12 @@ if(STAR_SYSTEM_FAMILY STREQUAL "windows")
   set_flag(STAR_SYSTEM_FAMILY_WINDOWS)
 elseif(STAR_SYSTEM_FAMILY STREQUAL "mobile")
   set_flag(STAR_SYSTEM_FAMILY_MOBILE)
+  # The mobile family defaults to rpmalloc: the system allocators (newlib's
+  # globally-locked dlmalloc on Switch, hardened scudo on Android, libmalloc
+  # on iOS) measured as the single largest engine cost -- on Switch under
+  # emulation the swap took the whole engine from ~55ms to ~6ms per frame.
+  # Engine-only integration (no libc override); see rpmalloc.c.
+  set(STAR_USE_RPMALLOC ON)
 elseif(STAR_SYSTEM_FAMILY STREQUAL "unix")
   set_flag(STAR_SYSTEM_FAMILY_UNIX)
 endif()

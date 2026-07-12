@@ -3663,12 +3663,14 @@ rpmalloc_get_heap_for_ptr(void* ptr)
 
 #endif
 
-#if (ENABLE_PRELOAD || ENABLE_OVERRIDE) && !defined(__SWITCH__)
-// On Switch the libc-level malloc overrides are NOT installed: rpmalloc's
-// span source is newlib memalign (see _rpmalloc_mmap_os), so overriding the
-// libc entry points would recurse.  Only the engine allocates through
-// rpmalloc (operator new/delete via rpnew.h and Star::malloc), while C
-// libraries (SDL, freetype, ...) stay on the newlib heap.  ENABLE_PRELOAD
+#if (ENABLE_PRELOAD || ENABLE_OVERRIDE) && !defined(__SWITCH__) && !defined(STAR_SYSTEM_FAMILY_MOBILE)
+// On the mobile family (Switch/Android/iOS) the libc-level malloc overrides
+// are NOT installed: on Switch rpmalloc's span source is newlib memalign
+// (see _rpmalloc_mmap_os) so overriding the libc entry points would recurse,
+// and on Android/iOS interposing the hardened system allocators is fragile.
+// Only the engine allocates through rpmalloc (operator new/delete via
+// rpnew.h and Star::malloc/realloc/free, which also feed Lua), while C
+// libraries (SDL, freetype, ...) stay on the system heap.  ENABLE_PRELOAD
 // still provides lazy per-thread heap initialization in get_thread_heap.
 
 #include "malloc.c"
