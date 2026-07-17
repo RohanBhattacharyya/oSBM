@@ -92,6 +92,13 @@ private:
 
   void updateCamera(float dt);
 
+#ifdef STAR_SYSTEM_SWITCH
+  // One blocking software-keyboard session per textbox focus; see the
+  // implementation for why this bypasses SDL text input entirely.
+  void runSwitchKeyboardSession(PaneManager* paneManager, bool inputActive);
+  bool m_switchKeyboardSessionDone = false;
+#endif
+
   RootUPtr m_root;
   ThreadFunction<void> m_rootLoader;
   CallbackListenerPtr m_reloadListener;

@@ -487,10 +487,14 @@ private:
       parent->m_textInput = acceptingTextInput;
       parent->m_textInputDirty = true;
 #else
-      if (acceptingTextInput)
-        SDL_StartTextInput(parent->m_window);
-      else
-        SDL_StopTextInput(parent->m_window);
+      // Switch: deliberately NOT wired to SDL_StartTextInput. The game runs
+      // its own blocking software-keyboard session per textbox focus
+      // (ClientApplication::runSwitchKeyboardSession) because the SDL switch
+      // port suppresses all touch polling while SDL text input is active --
+      // with engine textboxes that keep focus until a (touch) blur, that is
+      // an input deadlock the moment the keyboard closes. SDL text input
+      // stays reserved for the ImGui launcher path, whose fields deactivate
+      // themselves on the synthetic Return the SDL driver queues.
       parent->m_textInput = acceptingTextInput;
       parent->m_textInputApplied = acceptingTextInput;
       parent->m_textInputDirty = false;

@@ -145,6 +145,15 @@ CharCreationPane::CharCreationPane(std::function<void(PlayerPtr)> requestCloseFu
 
   guiReader.construct(root.assets()->json("/interface/windowconfig/charcreation.config:paneLayout"), this);
 
+  // The stock pane config wires the name box's enterKey to "saveChar", so
+  // pressing Enter while naming instantly creates the character. With an
+  // on-screen keyboard (Switch swkbd OK, Android/iOS IME done) Enter is just
+  // "finish typing" -- creating a half-configured character from it is a
+  // trap. Enter now only ends the edit; creation stays on the Create button.
+  // (Set post-construction so it also wins over modded pane configs.)
+  if (auto nameBox = fetchChild<TextBoxWidget>("name"))
+    nameBox->setOnEnterKeyCallback([](Widget* widget) { widget->blur(); });
+
   createPlayer();
 
   RandomSource random;

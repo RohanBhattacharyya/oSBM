@@ -1,0 +1,179 @@
+diff --git a/src/video/switch/SDL_switchswkb.c b/src/video/switch/SDL_switchswkb.c
+index 09bb416..58a82b6 100644
+--- a/src/video/switch/SDL_switchswkb.c
++++ b/src/video/switch/SDL_switchswkb.c
+@@ -1,19 +1,42 @@
+ //
+ // Created by cpasjuste on 22/04/2020.
+ //
++// Rewritten (oSBM 2026-07-16): the original implementation used the INLINE
++// software keyboard (swkbdInline*), which has two structural problems for an
++// SDL app:
++//   1. Inline swkbd delivers text via per-keystroke ChangedString events that
++//      were never handled -- only the final DecidedEnter string was sent, so
++//      nothing ever appeared in the app's textboxes while typing.
++//   2. The inline applet must be pumped with swkbdInlineUpdate for as long as
++//      it is ALIVE, but the poll only pumped it while VISIBLE.  After the
++//      keyboard was dismissed the (invisible, still-running) applet was never
++//      pumped again and kept input focus: every controller button and touch
++//      went to it, and the application appeared to hang input-dead.
++//
++// This version uses the standard BLOCKING keyboard applet (swkbdShow): it has
++// its own text-preview field, and its lifecycle is handled entirely by the
++// applet system, so input focus always returns to the application when it
++// closes.  The resulting string cannot be sent from inside StartTextInput
++// (SDL marks the window's text input active only after the driver hook
++// returns, and SDL_SendKeyboardText drops text while inactive), so it is
++// queued and delivered from the next event pump, followed by a synthetic
++// Return key press so the receiving textbox commits/blurs and the next focus
++// re-opens the keyboard.
++//
+ 
+ #include "SDL_internal.h"
+ 
+ #if SDL_VIDEO_DRIVER_SWITCH
+ 
+ #include "SDL_switchswkb.h"
++#include "../../events/SDL_keyboard_c.h"
+ #include <switch.h>
++#include <string.h>
+ 
+-static SwkbdInline kbd;
+-static SwkbdAppearArg kbdAppearArg;
+-static bool kbdInited = false;
+ static bool kbdShown = false;
+-static SDL_Window *current_window = NULL;
++static char pendingText[1024];
++static bool pendingTextValid = false;
++static bool pendingEnter = false;
+ 
+ void SWITCH_InitSwkb(void)
+ {
+@@ -21,21 +44,22 @@ void SWITCH_InitSwkb(void)
+ 
+ void SWITCH_PollSwkb(Uint64 timestamp)
+ {
+-    if (kbdInited) {
+-        if (kbdShown) {
+-            swkbdInlineUpdate(&kbd, NULL);
+-        } else if (current_window != NULL && SDL_TextInputActive(current_window)) {
+-            SDL_StopTextInput(current_window);
+-        }
++    if (pendingTextValid) {
++        pendingTextValid = false;
++        SDL_SendKeyboardText(pendingText);
++    }
++    if (pendingEnter) {
++        pendingEnter = false;
++        SDL_SendKeyboardKey(timestamp, SDL_DEFAULT_KEYBOARD_ID, 0, SDL_SCANCODE_RETURN, true);
++        SDL_SendKeyboardKey(timestamp, SDL_DEFAULT_KEYBOARD_ID, 0, SDL_SCANCODE_RETURN, false);
+     }
+ }
+ 
+ void SWITCH_QuitSwkb(void)
+ {
+-    if (kbdInited) {
+-        swkbdInlineClose(&kbd);
+-        kbdInited = false;
+-    }
++    kbdShown = false;
++    pendingTextValid = false;
++    pendingEnter = false;
+ }
+ 
+ bool SWITCH_HasScreenKeyboardSupport(SDL_VideoDevice *_this)
+@@ -48,63 +72,50 @@ bool SWITCH_IsScreenKeyboardShown(SDL_VideoDevice *_this, SDL_Window *window)
+     return kbdShown;
+ }
+ 
+-static void SWITCH_EnterCb(const char *str, SwkbdDecidedEnterArg *arg)
+-{
+-    if (arg->stringLen > 0) {
+-        SDL_SendKeyboardText(str);
+-    }
+-
+-    kbdShown = false;
+-}
+-
+-static void SWITCH_CancelCb(void)
+-{
+-    if (current_window != NULL) {
+-        SDL_StopTextInput(current_window);
+-    }
+-}
+-
+ bool SWITCH_StartTextInput(SDL_VideoDevice *_this, SDL_Window *window, SDL_PropertiesID props)
+ {
++    SwkbdConfig kbd;
++    char text[sizeof(pendingText)];
+     Result rc;
+ 
+-    if (!kbdInited) {
+-        rc = swkbdInlineCreate(&kbd);
+-        if (R_SUCCEEDED(rc)) {
+-            rc = swkbdInlineLaunchForLibraryApplet(&kbd, SwkbdInlineMode_AppletDisplay, 0);
+-            if (R_SUCCEEDED(rc)) {
+-                current_window = window;
+-                swkbdInlineSetDecidedEnterCallback(&kbd, SWITCH_EnterCb);
+-                swkbdInlineSetDecidedCancelCallback(&kbd, SWITCH_CancelCb);
+-                swkbdInlineMakeAppearArg(&kbdAppearArg, SwkbdType_Normal);
+-                swkbdInlineAppearArgSetOkButtonText(&kbdAppearArg, "Submit");
+-                kbdAppearArg.dicFlag = 1;
+-                kbdAppearArg.returnButtonFlag = 1;
+-                kbdInited = true;
+-            }
+-        }
++    if (kbdShown) {
++        return true;
+     }
+ 
+-    if (kbdInited) {
+-        swkbdInlineSetInputText(&kbd, "");
+-        swkbdInlineSetCursorPos(&kbd, 0);
+-        swkbdInlineUpdate(&kbd, NULL);
+-        swkbdInlineAppear(&kbd, &kbdAppearArg);
+-        kbdShown = true;
++    rc = swkbdCreate(&kbd, 0);
++    if (R_FAILED(rc)) {
++        return true;
+     }
++    swkbdConfigMakePresetDefault(&kbd);
++
++    text[0] = '\0';
++    kbdShown = true;
++    rc = swkbdShow(&kbd, text, sizeof(text));
++    kbdShown = false;
++    swkbdClose(&kbd);
++
++    if (R_SUCCEEDED(rc) && text[0] != '\0') {
++        // Deferred: see file header. Delivered on the next event pump, once
++        // SDL has marked text input active for the window.
++        SDL_strlcpy(pendingText, text, sizeof(pendingText));
++        pendingTextValid = true;
++    }
++    // Always queue a Return -- submit or cancel, the keyboard session is
++    // over. Text fields that deactivate on Enter (ImGui InputText) then
++    // release text input, which matters because this port suppresses touch
++    // polling while text input is active (see SWITCH_PumpEvents): without
++    // the Return, a canceled keyboard would leave the field active and
++    // touch dead.
++    pendingEnter = true;
+ 
+     return true;
+ }
+ 
+ bool SWITCH_StopTextInput(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+-    if (kbdInited) {
+-        swkbdInlineDisappear(&kbd);
+-    }
+-
+-    kbdShown = false;
+-    current_window = NULL;
+-
++    // Nothing persistent to tear down: the blocking applet closed before
++    // StartTextInput returned. Pending events (if any) still get delivered --
++    // the text was decided while input was active.
+     return true;
+ }
+ 

@@ -31,6 +31,10 @@
 #include "StarVoiceLuaBindings.hpp"
 #include "StarHttpTrustDialog.hpp"
 #include "StarMainInterfaceTypes.hpp"
+#ifdef STAR_SYSTEM_SWITCH
+#include "StarTextBoxWidget.hpp"
+#include "mobile/switch/StarSwitchPlatform.hpp"
+#endif
 
 #include "imgui.h"
 #include "imgui_freetype.h"
@@ -1422,6 +1426,10 @@ void ClientApplication::updateTitle(float dt) {
 
   auto& app = appController();
   bool inputActive = m_titleScreen->textInputActive();
+#ifdef STAR_SYSTEM_SWITCH
+  runSwitchKeyboardSession(m_titleScreen->paneManager(), inputActive);
+  inputActive = m_titleScreen->textInputActive();
+#endif
   if (m_input)
     m_input->setTextInputActive(inputActive);
   if (inputActive)
@@ -1932,6 +1940,10 @@ void ClientApplication::updateRunning(float dt) {
 #endif
 
     bool inputActive = m_mainInterface->textInputActive();
+#ifdef STAR_SYSTEM_SWITCH
+    runSwitchKeyboardSession(m_mainInterface->paneManager(), inputActive);
+    inputActive = m_mainInterface->textInputActive();
+#endif
     if (m_input)
       m_input->setTextInputActive(inputActive);
     if (inputActive)
@@ -1992,6 +2004,48 @@ bool ClientApplication::isActionTakenEdge(InterfaceAction action) const {
 
   return false;
 }
+
+#ifdef STAR_SYSTEM_SWITCH
+void ClientApplication::runSwitchKeyboardSession(PaneManager* paneManager, bool inputActive) {
+  // Text entry on Switch is one BLOCKING software-keyboard session per
+  // textbox focus, driven here rather than through SDL's text-input
+  // machinery. Two reasons: (a) the SDL switch port suppresses ALL touch
+  // polling while SDL text input is active, and engine textboxes keep focus
+  // (and therefore text input) until a touch blurs them -- a hard input
+  // deadlock after the keyboard closes; (b) only the engine knows the
+  // textbox's current content, so only this path can pre-fill the keyboard
+  // and REPLACE the text on submit instead of appending to it.
+  if (!inputActive) {
+    m_switchKeyboardSessionDone = false;
+    return;
+  }
+  if (m_switchKeyboardSessionDone)
+    return;
+  m_switchKeyboardSessionDone = true;
+
+  auto widget = paneManager->keyboardCapturedWidget();
+  auto textBox = as<TextBoxWidget>(widget);
+  Logger::info("[swkbd] session begin ({})", textBox ? "textbox" : "non-textbox capture");
+  if (textBox) {
+    String entered;
+    if (switchShowKeyboard(textBox->getText(), entered)) {
+      textBox->setText(entered);
+      // Keyboard OK doubles as Enter (console convention): commits the box
+      // (chat send, dialog confirm) through its own key handling.
+      textBox->sendEvent(KeyDownEvent{Key::Return, KeyMod::NoMod});
+      Logger::info("[swkbd] session submit ({} chars)", entered.size());
+    } else {
+      Logger::info("[swkbd] session canceled");
+    }
+  }
+  // Release keyboard capture either way: the session IS the edit. The widget
+  // keeps its (new or old) content; focusing it again starts a new session.
+  // Without this, a focused textbox would suppress game key bindings
+  // indefinitely with no keyboard on screen.
+  if (widget && widget->hasFocus())
+    widget->blur();
+}
+#endif
 
 void ClientApplication::updateCamera(float dt) {
   if (!m_universeClient->worldClient()) {

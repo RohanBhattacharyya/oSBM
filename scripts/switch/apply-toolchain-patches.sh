@@ -18,12 +18,14 @@ git checkout -- . && git apply "$PATCHES/libdrm_nouveau-bufctx-ref-dedup.patch"
 make -j"$(nproc)"
 cp lib/libdrm_nouveau.a "$DEVKITPRO/portlibs/switch/lib/libdrm_nouveau.a"
 
-echo "== SDL3 (switch touch events) =="
+echo "== SDL3 (switch touch events + blocking swkbd) =="
 if [ ! -d "$WORK/SDL" ]; then
   git clone https://github.com/devkitPro/SDL "$WORK/SDL"
 fi
 cd "$WORK/SDL"
-git checkout -- . && git apply "$PATCHES/sdl3-switch-touch-events.patch"
+git checkout -- . \
+  && git apply "$PATCHES/sdl3-switch-touch-events.patch" \
+  && git apply "$PATCHES/sdl3-switch-swkbd-blocking.patch"
 cmake -B build-switch \
   -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
   -DCMAKE_BUILD_TYPE=Release -DSDL_STATIC=ON -DSDL_SHARED=OFF

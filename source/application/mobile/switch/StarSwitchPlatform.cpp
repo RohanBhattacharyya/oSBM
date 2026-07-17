@@ -457,6 +457,26 @@ void switchRestoreClocks() {
   switchDebugLog("switchRestoreClocks: restored pre-boost clocks");
 }
 
+bool switchShowKeyboard(String const& initialText, String& outText) {
+  SwkbdConfig kbd;
+  Result rc = swkbdCreate(&kbd, 0);
+  if (R_FAILED(rc)) {
+    Logger::warn("[swkbd] swkbdCreate failed (0x{:x})", rc);
+    return false;
+  }
+  swkbdConfigMakePresetDefault(&kbd);
+  if (!initialText.empty())
+    swkbdConfigSetInitialText(&kbd, initialText.utf8Ptr());
+  char result[1024];
+  result[0] = '\0';
+  rc = swkbdShow(&kbd, result, sizeof(result));
+  swkbdClose(&kbd);
+  if (R_FAILED(rc))
+    return false; // canceled (or applet unavailable)
+  outText = String(result);
+  return true;
+}
+
 void switchSyncBundledAssets(String const& storageRoot) {
   switchPlatformInit();
   if (!g_romfsMounted) {
@@ -487,6 +507,7 @@ void switchDebugLog(char const*) {}
 void switchInstallLogSink() {}
 void switchApplyClockBoost() {}
 void switchRestoreClocks() {}
+bool switchShowKeyboard(String const&, String&) { return false; }
 
 #endif
 

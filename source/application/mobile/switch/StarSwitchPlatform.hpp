@@ -42,4 +42,12 @@ void switchApplyClockBoost();
 // Restores the pre-boost clock rates (called when returning to the launcher).
 void switchRestoreClocks();
 
+// Runs one BLOCKING software-keyboard session (standard swkbd applet with its
+// own text-preview field), pre-filled with initialText. Returns true with the
+// decided string in outText, false if the user canceled. The game's text
+// entry deliberately bypasses SDL's text-input machinery: the SDL switch port
+// suppresses touch polling while SDL text input is active, which deadlocks
+// against engine textboxes that keep focus until a (touch) blur.
+bool switchShowKeyboard(String const& initialText, String& outText);
+
 }
