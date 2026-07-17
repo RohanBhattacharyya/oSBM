@@ -1702,6 +1702,16 @@ extern "C" bool StarIosBridge_openAppSettings() {
   }
 }
 
+// Earliest possible load marker: runs among the binary's static
+// constructors, long before SDL or the launcher. If launch-trace.txt gains
+// this line but nothing after, the crash is in a later static initializer
+// or early main; if even this line is absent, the loader (dyld /
+// LiveContainer's guest loader) never got the binary running at all.
+extern "C" void StarIosBridge_launchTrace(const char* msg);
+__attribute__((constructor)) static void starIosEarlyLoadMarker() {
+  StarIosBridge_launchTrace("binary loaded (static constructors running)");
+}
+
 // Appends a timestamped line to Documents/launch-trace.txt. The Documents
 // directory is user-visible in the Files app (UIFileSharingEnabled), so this
 // trace survives -- and is retrievable after -- an instant crash at launch,
