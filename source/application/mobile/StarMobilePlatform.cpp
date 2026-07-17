@@ -3048,7 +3048,10 @@ private:
       if (ImGui::Button(launcherText("launcher.pickPackedPak", "Pick packed.pak").utf8Ptr())) {
 #ifdef STAR_SYSTEM_IOS
         auto svc = m_platformServices->externalFileAccessService();
-        runLauncherActionAsync("Import packed.pak", [svc]() {
+        // [this] for launcherText() -- same worker-thread capture pattern as
+        // the mod-import async actions above (translations are immutable
+        // while the launcher runs).
+        runLauncherActionAsync("Import packed.pak", [this, svc]() {
           if (svc) {
             auto picked = svc->pickPackedPak();
             if (picked) {
@@ -3683,7 +3686,7 @@ private:
         }
         int64_t spare = round(frameSpare * 1000.0);
         if (spare > 0)
-          Thread::sleepPrecise(spare);
+          Thread::sleepPrecise((unsigned)std::min<int64_t>(spare, 1000));
       } else {
         // Uncapped: never sleep, but yield once per frame so same-core
         // threads (audio, driver callbacks, workers) aren't starved by a
