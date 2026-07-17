@@ -20,6 +20,13 @@ size_t const MultiTextureCount = 4;
 std::atomic<int64_t> g_glDrawCalls{0}, g_glTextureBinds{0};
 std::atomic<int64_t> g_glBufferReuses{0}, g_glBufferReallocs{0};
 std::atomic<int64_t> g_glTextureNews{0}, g_glTextureDels{0};
+// Bytes pushed to the driver per window: vertex buffers vs texture updates.
+std::atomic<int64_t> g_glBufferUploadBytes{0}, g_glTexUploadBytes{0};
+// GPU elapsed time from EXT_disjoint_timer_query (ns accumulated + samples).
+std::atomic<int64_t> g_glGpuNs{0}, g_glGpuSamples{0};
+#ifndef GL_TIME_ELAPSED_EXT
+#define GL_TIME_ELAPSED_EXT 0x88BF
+#endif
 #endif
 
 void setMobileStartupStatus(String const& status);
@@ -318,6 +325,12 @@ OpenGlRenderer::~OpenGlRenderer() {
     glDeleteProgram(effect.second.program);
 
   m_immediateRenderBuffer.reset();
+  for (auto& fence : m_frameFences) {
+    if (fence) {
+      glDeleteSync(fence);
+      fence = nullptr;
+    }
+  }
   flushPooledGlObjects(true);
   m_frameBuffers.clear();
   logGlErrorSummary("OpenGL errors during shutdown");
@@ -982,6 +995,35 @@ void OpenGlRenderer::setScreenViewportSize(Vec2U viewportSize) {
 }
 
 void OpenGlRenderer::startFrame() {
+#ifdef STAR_SYSTEM_SWITCH
+  // GPU frame-time attribution: an EXT_disjoint_timer_query spanning
+  // startFrame..finishFrame. CPU-side laps cannot distinguish "GPU is busy"
+  // from vsync/present echo in the pacing-fence wait; this can.
+  if (m_gpuTimerState == 0) {
+    auto exts = (char const*)glGetString(GL_EXTENSIONS);
+    m_gpuTimerState = (exts && strstr(exts, "GL_EXT_disjoint_timer_query")) ? 1 : -1;
+    if (m_gpuTimerState == 1)
+      glGenQueries(3, m_gpuTimerQueries);
+    Logger::info("[perf-gl] GPU timer queries {}", m_gpuTimerState == 1 ? "enabled" : "unsupported");
+  }
+  if (m_gpuTimerState == 1) {
+    if (m_gpuTimerPending[m_gpuTimerIndex]) {
+      GLuint available = 0;
+      glGetQueryObjectuiv(m_gpuTimerQueries[m_gpuTimerIndex], GL_QUERY_RESULT_AVAILABLE, &available);
+      if (available) {
+        GLuint elapsedNs = 0;
+        glGetQueryObjectuiv(m_gpuTimerQueries[m_gpuTimerIndex], GL_QUERY_RESULT, &elapsedNs);
+        g_glGpuNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+        g_glGpuSamples.fetch_add(1, std::memory_order_relaxed);
+        m_gpuTimerPending[m_gpuTimerIndex] = false;
+      }
+    }
+    if (!m_gpuTimerPending[m_gpuTimerIndex]) {
+      glBeginQuery(GL_TIME_ELAPSED_EXT, m_gpuTimerQueries[m_gpuTimerIndex]);
+      m_gpuTimerBegun = true;
+    }
+  }
+#endif
   if (m_scissorRect)
     glDisable(GL_SCISSOR_TEST);
 
@@ -1016,6 +1058,14 @@ void OpenGlRenderer::skipNextScreenClear() {
 
 void OpenGlRenderer::finishFrame() {
   flushImmediatePrimitives();
+#ifdef STAR_SYSTEM_SWITCH
+  if (m_gpuTimerBegun) {
+    glEndQuery(GL_TIME_ELAPSED_EXT);
+    m_gpuTimerPending[m_gpuTimerIndex] = true;
+    m_gpuTimerIndex = (m_gpuTimerIndex + 1) % 3;
+    m_gpuTimerBegun = false;
+  }
+#endif
 
 #ifdef STAR_SYSTEM_FAMILY_MOBILE
   // Explicit frame pacing: cap GPU work in flight at two frames.  With the
@@ -1028,8 +1078,9 @@ void OpenGlRenderer::finishFrame() {
   // wait, when needed, lands here where it is measured (finish lap) instead
   // of at arbitrary sync points mid-frame.
   {
-    static GLsync s_frameFences[2] = {nullptr, nullptr};
-    static unsigned s_fenceIndex = 0;
+    // NOTE: the fence ring lives in renderer MEMBERS, not function statics --
+    // statics would survive a return-to-launcher + relaunch and dangle into
+    // the destroyed GL context (first wait of the new session would fault).
     // Bisect lever (Switch only): drop nofence.flag on the sd card (checked
     // once at startup) to disable the pacing-fence ring entirely.
 #ifdef STAR_SYSTEM_SWITCH
@@ -1041,13 +1092,14 @@ void OpenGlRenderer::finishFrame() {
 #else
     constexpr int s_fencesEnabled = 1;
 #endif
-    if (s_fencesEnabled && s_frameFences[s_fenceIndex]) {
-      glClientWaitSync(s_frameFences[s_fenceIndex], GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull); // 100ms cap
-      glDeleteSync(s_frameFences[s_fenceIndex]);
+    if (s_fencesEnabled && m_frameFences[m_fenceIndex]) {
+      glClientWaitSync(m_frameFences[m_fenceIndex], GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull); // 100ms cap
+      glDeleteSync(m_frameFences[m_fenceIndex]);
+      m_frameFences[m_fenceIndex] = nullptr;
     }
     if (s_fencesEnabled) {
-      s_frameFences[s_fenceIndex] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-      s_fenceIndex = (s_fenceIndex + 1) % 2;
+      m_frameFences[m_fenceIndex] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+      m_fenceIndex = (m_fenceIndex + 1) % 2;
     }
   }
 #endif
@@ -1056,16 +1108,24 @@ void OpenGlRenderer::finishFrame() {
   {
     static int64_t s_glFrames = 0;
     if (++s_glFrames >= 150) {
-      Logger::info("[perf-gl] draws={}/f texBinds={}/f vbReuse={}/f vbRealloc={}/f texNew={} texDel={}",
+      int64_t gpuSamples = std::max<int64_t>(g_glGpuSamples.load(), 1);
+      Logger::info("[perf-gl] draws={}/f texBinds={}/f vbReuse={}/f vbRealloc={}/f texNew={} texDel={} vbUpKB={}/f texUpKB={}/f gpu={:.1f}ms",
           g_glDrawCalls.load() / s_glFrames, g_glTextureBinds.load() / s_glFrames,
           g_glBufferReuses.load() / s_glFrames, g_glBufferReallocs.load() / s_glFrames,
-          g_glTextureNews.load(), g_glTextureDels.load());
+          g_glTextureNews.load(), g_glTextureDels.load(),
+          g_glBufferUploadBytes.load() / 1024 / s_glFrames,
+          g_glTexUploadBytes.load() / 1024 / s_glFrames,
+          g_glGpuNs.load() / 1e6 / gpuSamples);
       g_glDrawCalls = 0;
       g_glTextureBinds = 0;
       g_glBufferReuses = 0;
       g_glBufferReallocs = 0;
       g_glTextureNews = 0;
       g_glTextureDels = 0;
+      g_glBufferUploadBytes = 0;
+      g_glTexUploadBytes = 0;
+      g_glGpuNs = 0;
+      g_glGpuSamples = 0;
       s_glFrames = 0;
     }
   }
@@ -1225,6 +1285,9 @@ void OpenGlRenderer::GlTextureAtlasSet::copyAtlasPixels(
     throw RendererException("Unsupported texture format in OpenGlRenderer::TextureGroup::copyAtlasPixels");
 
   glTexSubImage2D(GL_TEXTURE_2D, 0, bottomLeft[0], bottomLeft[1], image.width(), image.height(), format, GL_UNSIGNED_BYTE, image.data());
+#ifdef STAR_SYSTEM_SWITCH
+  g_glTexUploadBytes.fetch_add((int64_t)image.width() * image.height() * image.bytesPerPixel(), std::memory_order_relaxed);
+#endif
 }
 
 OpenGlRenderer::GlTextureGroup::GlTextureGroup(unsigned atlasNumCells)
@@ -1449,6 +1512,7 @@ void OpenGlRenderer::GlRenderBuffer::set(List<RenderPrimitive>& primitives) {
         glBufferSubData(GL_ARRAY_BUFFER, 0, needed, accumulationBuffer.ptr());
 #ifdef STAR_SYSTEM_SWITCH
         g_glBufferReuses.fetch_add(1, std::memory_order_relaxed);
+        g_glBufferUploadBytes.fetch_add(needed, std::memory_order_relaxed);
 #endif
       } else {
         vb.byteCapacity = bucketed;
@@ -1456,6 +1520,7 @@ void OpenGlRenderer::GlRenderBuffer::set(List<RenderPrimitive>& primitives) {
         glBufferSubData(GL_ARRAY_BUFFER, 0, needed, accumulationBuffer.ptr());
 #ifdef STAR_SYSTEM_SWITCH
         g_glBufferReallocs.fetch_add(1, std::memory_order_relaxed);
+        g_glBufferUploadBytes.fetch_add(needed, std::memory_order_relaxed);
 #endif
       }
 
@@ -1622,6 +1687,10 @@ void OpenGlRenderer::uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uin
   } else {
     glTexImage2D(GL_TEXTURE_2D, 0, internalFormat.value(format), size[0], size[1], 0, format, type, data);
   }
+#ifdef STAR_SYSTEM_SWITCH
+  int64_t bpp = (type == GL_FLOAT) ? 4 * (format == GL_RGBA ? 4 : 3) : (format == GL_RGBA ? 4 : 3);
+  g_glTexUploadBytes.fetch_add((int64_t)size[0] * size[1] * bpp, std::memory_order_relaxed);
+#endif
 }
 
 void OpenGlRenderer::flushImmediatePrimitives(Mat3F const& transformation) {

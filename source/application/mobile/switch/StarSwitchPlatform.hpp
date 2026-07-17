@@ -33,4 +33,13 @@ void switchDebugLog(char const* msg);
 // channel. Install as early as possible so renderer/startup logs are visible.
 void switchInstallLogSink();
 
+// Raises CPU/GPU/EMC clocks to the top official handheld profile (raise-only:
+// docked rates are untouched) for the duration of a game session. Walking on a
+// planet is compute-bound at handheld floor clocks. No-ops if the clkrst
+// service is unavailable (e.g. under emulators that stub it).
+void switchApplyClockBoost();
+
+// Restores the pre-boost clock rates (called when returning to the launcher).
+void switchRestoreClocks();
+
 }

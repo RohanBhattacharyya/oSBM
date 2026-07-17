@@ -41,7 +41,6 @@
 #ifdef STAR_SYSTEM_SWITCH
 #include <malloc.h>
 extern "C" void starAllocTrackReport(char* buf, size_t bufSize);
-extern "C" void star_bufctx_report(long* out, int n);
 #endif
 
 #if defined STAR_SYSTEM_WINDOWS
@@ -94,6 +93,8 @@ Json const AdditionalDefaultConfiguration = Json::parseJson(R"JSON(
 
       "allowAssetsMismatch" : false,
       "vsync" : true,
+      "fpsCap" : 0,
+      "renderInterpolation" : true,
       "limitTextureAtlasSize" : false,
       "useMultiTexturing" : true,
       "audioChannelSeparation" : [-25, 25],
@@ -203,7 +204,9 @@ Json const AdditionalDefaultConfiguration = Json::parseJson(R"JSON(
 void ClientApplication::startup(StringList const& cmdLineArgs) {
   setMobileStartupStatus("Parsing mobile boot configuration...");
   RootLoader rootLoader({AdditionalAssetsSettings, AdditionalDefaultConfiguration, String("starbound.log"), LogLevel::Info, false, String("starbound.config")});
+  setMobileStartupStatus("Initializing engine root (log rotation)...");
   m_root = rootLoader.initOrDie(cmdLineArgs).first;
+  setMobileStartupStatus("Engine root ready...");
 
 #if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
   setMobileStartupStatus("Opening asset index...");
@@ -377,6 +380,14 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
   if (auto jServerUpdateRate = configuration->get("serverUpdateRate"))
     ServerGlobalTimestep = 1.0f / jServerUpdateRate.toFloat();
   appController->setTargetUpdateRate(updateRate);
+  // Rendered-FPS cap, independent of the sim rate; 0 (the default) is
+  // unlimited -- powerful machines render as fast as vsync/platform allows,
+  // while a cap keeps weaker machines and batteries comfortable.
+  appController->setMaxFrameRate(configuration->get("fpsCap").optFloat().value(0.0f));
+  // Sub-tick render interpolation keeps motion crisp when rendering faster
+  // than the sim rate (costs one sim tick of render latency).
+  m_renderInterpolation = configuration->get("renderInterpolation").optBool().value(true);
+  Logger::info("Client build compiled {} {}", __DATE__, __TIME__);
   appController->setVSyncEnabled(vsync);
   appController->setCursorHardware(configuration->get("hardwareCursor").optBool().value(true));
 
@@ -679,6 +690,48 @@ void ClientApplication::render() {
       auto totalStart = Time::monotonicMicroseconds();
 #endif
       renderer->switchEffectConfig("world");
+
+      // Sub-tick render interpolation: frames rendered between sim ticks
+      // draw the world at lerp(previous tick, current tick, alpha) -- camera
+      // here, entities via per-entity offsets computed in the snapshot below,
+      // particles via velocity extrapolation in the painter. Without this,
+      // rendering faster than the sim rate shows each sim step for several
+      // frames (double-image ghosting on moving content).
+      float renderAlpha = m_renderInterpolation ? appController()->updateTickFraction() : 1.0f;
+      float worldAlpha = renderAlpha;
+#ifdef STAR_SYSTEM_SWITCH
+      // Deferred-pipeline phase correction: on frames that scheduled a sim
+      // tick, the snapshot below is taken BEFORE that tick runs (it executes
+      // on the worker during paint), so the snapshot lags the loop's alpha
+      // accumulator by one tick; on zero-update frames it does not lag at
+      // all (the previous frame's deferred tick completed during its paint).
+      // Rendering with the raw alpha therefore oscillates a full tick
+      // between the two frame kinds -- measured as the player sprite
+      // jittering at walk speed while the (smoothing-filtered) camera and
+      // world stayed smooth. Shifting the ENTITY/PARTICLE alpha back one
+      // tick on the frames whose snapshot already contains the newest tick
+      // makes rendered time uniformly (scheduledTicks - 2 + alpha): one
+      // extra tick of constant latency, linear in wall time. Negative alpha
+      // extrapolates one keyframe pair back through the same lerp formula
+      // (exact at constant velocity).
+      //
+      // The CAMERA keeps the raw alpha: its keyframe pair is captured in
+      // updateCamera (pre-tick, update-frames only), so it freezes on
+      // zero-update frames exactly when the entity pair advances -- the two
+      // opposite one-tick offsets cancel, and both timelines land on
+      // (scheduledTicks - 2 + alpha) with their respective alphas.
+      if (m_renderInterpolation && !m_simTickPending)
+        worldAlpha -= 1.0f;
+#endif
+      worldClient->setRenderInterpolationAlpha(worldAlpha);
+      m_worldPainter->setRenderInterpolationAlpha(worldAlpha);
+      if (renderAlpha < 1.0f && m_cameraHistoryValid) {
+        auto const& geometry = worldClient->geometry();
+        Vec2F cameraDelta = geometry.diff(m_cameraCurPosition, m_cameraPrevPosition);
+        if (cameraDelta != Vec2F() && cameraDelta.magnitude() < 16.0f) // teleports snap
+          m_worldPainter->setCameraPosition(geometry, m_cameraCurPosition + cameraDelta * (renderAlpha - 1.0f));
+      }
+
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       auto clientStart = totalStart;
 #endif
@@ -816,13 +869,6 @@ void ClientApplication::render() {
       char atBuf[512];
       starAllocTrackReport(atBuf, sizeof(atBuf));
       Logger::info("[perf-alloc]{}", (char const*)atBuf);
-      long binLive[512];
-      star_bufctx_report(binLive, 512);
-      String binStr;
-      for (int bi = 0; bi < 512; ++bi)
-        if (binLive[bi] > 500)
-          binStr += strf(" bin{}={}", bi, binLive[bi]);
-      Logger::info("[perf-bufctx]{}", binStr);
     }
 #endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
@@ -1486,6 +1532,20 @@ void ClientApplication::updateRunning(float dt) {
     auto worldClient = m_universeClient->worldClient();
 
 #ifdef STAR_SYSTEM_SWITCH
+    // Catch-up frames call update() more than once before the next render():
+    // a sim tick deferred by the previous update must run NOW, before this
+    // tick's input handling below applies fresh player controls -- running it
+    // any later would consume (and clear) THIS tick's controls one tick
+    // early, so the deferred tick would see jump/move released for a tick.
+    // On real hardware that manifested as held-jump becoming repeated tiny
+    // hops and walk-speed stutter on every frame hitch.
+    if (m_simTickPending) {
+      m_simTickPending = false;
+      m_universeClient->update(m_simTickDt);
+    }
+#endif
+
+#ifdef STAR_SYSTEM_SWITCH
     // Autopilot perf-testing: once the ship has arrived at the starter world, auto-warp
     // to the planet surface so the real gameplay scene can be measured (the ship/space
     // hub is not where players spend their time). This bypasses canBeamDown()'s UI-only
@@ -1784,6 +1844,8 @@ void ClientApplication::updateRunning(float dt) {
     // path. Deferral only happens when the world render path is guaranteed
     // to run (in-world); otherwise the tick runs synchronously as before.
     if (worldClient && m_state > MainAppState::Title) {
+      // The pending slot is guaranteed free here: any previously deferred
+      // tick was flushed at the top of this function, before input handling.
       m_simTickDt = dt;
       m_simTickPending = true;
     } else {
@@ -1932,14 +1994,20 @@ bool ClientApplication::isActionTakenEdge(InterfaceAction action) const {
 }
 
 void ClientApplication::updateCamera(float dt) {
-  if (!m_universeClient->worldClient())
+  if (!m_universeClient->worldClient()) {
+    m_cameraHistoryValid = false;
     return;
+  }
 
   WorldCamera& camera = m_worldPainter->camera();
   camera.update(dt);
 
-  if (m_mainInterface->fixedCamera())
+  if (m_mainInterface->fixedCamera()) {
+    // Camera is being driven externally (cinematics, Lua): don't interpolate
+    // against stale history.
+    m_cameraHistoryValid = false;
     return;
+  }
 
   auto assets = m_root->assets();
 
@@ -2006,6 +2074,12 @@ void ClientApplication::updateCamera(float dt) {
 
   m_worldPainter->setCameraPosition(m_universeClient->worldClient()->geometry(), baseCamera + (smoothDelta + m_cameraSmoothDelta) * 0.5f);
   m_cameraSmoothDelta = smoothDelta;
+
+  // Record the last two tick positions (post-clamp, from the camera itself)
+  // so render() can interpolate between them on sub-tick frames.
+  m_cameraPrevPosition = m_cameraHistoryValid ? m_cameraCurPosition : camera.centerWorldPosition();
+  m_cameraCurPosition = camera.centerWorldPosition();
+  m_cameraHistoryValid = true;
 
   m_universeClient->worldClient()->setClientWindow(camera.worldTileRect());
 }

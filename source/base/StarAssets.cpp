@@ -48,8 +48,21 @@ namespace {
 
 void setMobileStartupStatus(String const& status) {
 #if STAR_PLATFORM_MOBILE
-  std::lock_guard<std::mutex> lock(MobileStartupStatusMutex);
-  MobileStartupStatus = status;
+  {
+    std::lock_guard<std::mutex> lock(MobileStartupStatusMutex);
+    MobileStartupStatus = status;
+  }
+#ifdef STAR_SYSTEM_SWITCH
+  // Startup statuses double as a crash-window trace: appended + fsync'd so
+  // they survive a hard fault during (re)launch, where the game log may not
+  // even be open yet. See relaunch-trace.txt alongside the game logs.
+  if (FILE* f = fopen("/switch/oSBM/relaunch-trace.txt", "a")) {
+    fprintf(f, "status: %s\n", status.utf8Ptr());
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+  }
+#endif
 #else
   (void)status;
 #endif

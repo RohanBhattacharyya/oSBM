@@ -745,8 +745,23 @@ public:
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
 
-        int updatesBehind = max<int>(round(m_updateTicker.ticksBehind()), 1);
-        updatesBehind = min<int>(updatesBehind, m_maxFrameSkip + 1);
+        // The render rate is decoupled from the update rate: frames may run
+        // zero updates (re-rendering the latest state when rendering faster
+        // than the sim rate) or several (catch-up after a slow frame).
+        // Fixed-timestep accumulator: the tick count and the interpolation
+        // fraction both come from m_tickAccum, so the render alpha cannot
+        // drift out of phase with tick execution. (Measuring alpha against a
+        // separate wall-clock tick schedule drifts until alpha clamps at 1.0,
+        // silently disabling interpolation.)
+        double loopNow = Time::monotonicTime();
+        double tickRate = m_updateTicker.targetTickRate();
+        if (m_lastLoopTime > 0.0 && loopNow > m_lastLoopTime) {
+          // Stall forgiveness: write off anything beyond a quarter second so
+          // a world load or window drag doesn't trigger a fast-forward burst.
+          m_tickAccum += min(loopNow - m_lastLoopTime, 0.25) * tickRate;
+        }
+        m_lastLoopTime = loopNow;
+        int updatesBehind = min<int>((int)m_tickAccum, m_maxFrameSkip + 1);
         for (int i = 0; i < updatesBehind; ++i) {
           //since frame-skipping is a thing, we have to begin a new ImGui frame here to prevent duplicate elements made by updates
           if (i != 0)
@@ -755,6 +770,14 @@ public:
           m_application->update();
           m_updateRate = m_updateTicker.tick();
         }
+        m_tickAccum -= updatesBehind;
+        // If the frame-skip cap truncated a large backlog, drop the excess
+        // instead of carrying slow-motion debt into future frames.
+        if (m_tickAccum > m_maxFrameSkip + 1)
+          m_tickAccum = 1.0;
+        // Render-only frame: ImGui still needs exactly one open frame.
+        if (updatesBehind == 0)
+          ImGui::NewFrame();
 
         m_renderer->startFrame();
         m_application->render();
@@ -780,9 +803,25 @@ public:
           break;
         }
 
-        int64_t spareMilliseconds = round(m_updateTicker.spareTime() * 1000);
-        if (spareMilliseconds > 0)
-          Thread::sleepPrecise(spareMilliseconds);
+        // Frame pacing: with a cap, sleep to the next frame slot (updates run
+        // on their own schedule within whatever frames occur). Uncapped, the
+        // loop free-runs -- vsync (when enabled) is then the only limiter.
+        if (m_maxFrameRate > 0.0f) {
+          m_framePacer.tick();
+          double frameSpare = m_framePacer.spareTime();
+          if (frameSpare < -0.25) {
+            // Stall forgiveness: don't burst-render to repay a long stall.
+            m_framePacer.reset();
+            frameSpare = 0.0;
+          }
+          int64_t spareMilliseconds = round(frameSpare * 1000);
+          if (spareMilliseconds > 0)
+            Thread::sleepPrecise(spareMilliseconds);
+        } else {
+          // Uncapped: never sleep, but yield once per frame so an uncapped
+          // render loop doesn't starve same-core threads.
+          Thread::yield();
+        }
       }
     } catch (std::exception const& e) {
       Logger::error("Application: exception thrown!");
@@ -964,6 +1003,24 @@ private:
 
     void setMaxFrameSkip(unsigned maxFrameSkip) override {
       parent->m_maxFrameSkip = maxFrameSkip;
+    }
+
+    void setMaxFrameRate(float maxFrameRate) override {
+      parent->m_maxFrameRate = maxFrameRate;
+      if (maxFrameRate > 0.0f)
+        parent->m_framePacer.setTargetTickRate(maxFrameRate);
+    }
+
+    float updateTickFraction() const override {
+      // Live phase: the accumulator residual plus time elapsed since it was
+      // sampled, read at the moment the render snapshot consumes it. Using
+      // the loop-start residual alone leaves a per-frame error equal to the
+      // (variable) delay between loop start and snapshot, visible as
+      // alternating sub-tick judder when frame times vary.
+      double live = parent->m_tickAccum;
+      if (parent->m_lastLoopTime > 0.0)
+        live += (Time::monotonicTime() - parent->m_lastLoopTime) * parent->m_updateTicker.targetTickRate();
+      return (float)clamp(live, 0.0, 1.0);
     }
 
     void setCursorVisible(bool cursorVisible) override {
@@ -1320,6 +1377,12 @@ private:
   SignalHandler m_signalHandler;
 
   TickRateApproacher m_updateTicker = TickRateApproacher(60.0f, 1.0f);
+  float m_maxFrameRate = 0.0f; // 0 = unlimited
+  TickRateApproacher m_framePacer = TickRateApproacher(60.0f, 1.0f);
+  // Fixed-timestep accumulator (in ticks) driving both tick execution and
+  // the render interpolation fraction; see the main loop.
+  double m_tickAccum = 0.0;
+  double m_lastLoopTime = 0.0;
   float m_updateRate = 0.0f;
   TickRateMonitor m_renderTicker = TickRateMonitor(1.0f);
   float m_renderRate = 0.0f;

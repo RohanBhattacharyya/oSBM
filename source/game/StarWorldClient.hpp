@@ -158,6 +158,9 @@ public:
   // borderTiles here should extend the client window for border tile
   // calculations.  It is not necessary on the light array.
   void render(WorldRenderData& renderData, unsigned borderTiles);
+  // Fraction of the current sim tick elapsed at render time; drawables render
+  // at lerp(previous tick, current tick, alpha). 1.0 disables interpolation.
+  void setRenderInterpolationAlpha(float alpha);
   List<AudioInstancePtr> pullPendingAudio();
   List<AudioInstancePtr> pullPendingMusic();
 
@@ -405,6 +408,23 @@ private:
     int64_t frame;
   };
   HashMap<EntityId, CachedEntityRender> m_peripheralRenderCache;
+
+  // Sub-tick render interpolation: per-entity positions from the last two
+  // sim ticks, so frames rendered between ticks can place entities at
+  // lerp(prev, cur, alpha) instead of stepping once per tick (which reads as
+  // ghosting/double images when rendering faster than the sim rate).
+  struct RenderPositionHistory {
+    Vec2F prev;
+    Vec2F cur;
+    uint64_t stamp = 0;
+  };
+  HashMap<EntityId, RenderPositionHistory> m_renderPositionHistory;
+
+  // Scratch storage for synthesized null-tile collision blocks handed out by
+  // getTileCollisionBlocks (pointer-stable within a call via reserve).
+  mutable List<CollisionBlock> m_nullCollisionScratch;
+  uint64_t m_renderTickStamp = 1;
+  float m_renderInterpolationAlpha = 1.0f;
   int64_t m_peripheralRenderFrame = 0;
   int64_t m_lastRenderTimeUs = 0;
 

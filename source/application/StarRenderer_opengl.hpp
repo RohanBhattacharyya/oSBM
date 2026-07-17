@@ -363,6 +363,19 @@ private:
   StringMap<RefPtr<GlFrameBuffer>> m_frameBuffers;
 
   StringSet m_frameBufferBypass;
+  // Frame-pacing fence ring (mobile family; see finishFrame). Members so a
+  // renderer teardown/rebuild (return-to-launcher) can't leak stale syncs.
+  GLsync m_frameFences[2] = {nullptr, nullptr};
+  unsigned m_fenceIndex = 0;
+#ifdef STAR_SYSTEM_SWITCH
+  // GPU frame-time attribution via EXT_disjoint_timer_query (see start/
+  // finishFrame). Members, not statics, for the same relaunch-safety reason.
+  int m_gpuTimerState = 0; // 0 unchecked, 1 supported, -1 unsupported
+  GLuint m_gpuTimerQueries[3] = {0, 0, 0};
+  bool m_gpuTimerPending[3] = {false, false, false};
+  unsigned m_gpuTimerIndex = 0;
+  bool m_gpuTimerBegun = false;
+#endif
 
   bool m_skipNextScreenClear = false;
   RefPtr<GlFrameBuffer> m_currentFrameBuffer;

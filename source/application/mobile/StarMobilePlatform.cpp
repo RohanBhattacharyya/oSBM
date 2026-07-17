@@ -316,6 +316,7 @@ public:
     while (!m_quitRequested) {
       // Inner loop: show launcher on startup/config failures; break on success.
       while (!m_quitRequested) {
+        relaunchBreadcrumb("prepare-boot-config");
         if (!prepareBootConfig(launcher, launcher.lastError)) {
           if (launcher.lastError.empty())
             launcher.lastError = launcherText("runtime.prepareBootConfigFailed", "Failed to prepare runtime boot configuration.");
@@ -341,7 +342,12 @@ public:
 
       m_runtimeExitReason.clear();
       try {
+        relaunchBreadcrumb("game-loop-enter");
         androidLogInfo("Entering game loop");
+#ifdef STAR_SYSTEM_SWITCH
+        // In-game only (the launcher shouldn't burn battery at boost clocks).
+        switchApplyClockBoost();
+#endif
         runGameLoop();
       } catch (std::exception const& e) {
         auto message = strf("{}", outputException(e, true));
@@ -362,6 +368,10 @@ public:
         launcher.lastStatus = launcherText("runtime.returnedToLauncher", "Returned to launcher.");
       }
       shutdownApplication();
+#ifdef STAR_SYSTEM_SWITCH
+      switchRestoreClocks();
+#endif
+      relaunchBreadcrumb("shutdown-application-done");
       androidLogInfo("Returning to launcher after shutdown");
       m_runtimeExitReason.clear();
       m_softQuitRequested = false;
@@ -392,6 +402,24 @@ private:
 
     void setMaxFrameSkip(unsigned maxFrameSkip) override {
       parent->m_maxFrameSkip = maxFrameSkip;
+    }
+
+    void setMaxFrameRate(float maxFrameRate) override {
+      parent->m_maxFrameRate = maxFrameRate;
+      if (maxFrameRate > 0.0f)
+        parent->m_framePacer.setTargetTickRate(maxFrameRate);
+    }
+
+    float updateTickFraction() const override {
+      // Live phase: the accumulator residual plus time elapsed since it was
+      // sampled, read at the moment the render snapshot consumes it. Using
+      // the loop-start residual alone leaves a per-frame error equal to the
+      // (variable) delay between loop start and snapshot, visible as
+      // alternating sub-tick judder when frame times vary.
+      double live = parent->m_tickAccum;
+      if (parent->m_lastLoopTime > 0.0)
+        live += (Time::monotonicTime() - parent->m_lastLoopTime) * parent->m_updateTicker.targetTickRate();
+      return (float)clamp(live, 0.0, 1.0);
     }
 
     void setApplicationTitle(String title) override {
@@ -627,7 +655,11 @@ private:
     // SDL3 to request both portrait and landscape families.
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait PortraitUpsideDown LandscapeLeft LandscapeRight");
 #endif
-#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
+    // Synthesize mouse events from touch (and vice versa). On Switch this is
+    // what makes the launcher's ImGui UI tappable: the raw finger events are
+    // never translated to clicks by the ImGui SDL3 backend on their own, so
+    // touches only ever moved the gamepad-nav highlight without activating.
 #if defined(SDL_HINT_TOUCH_MOUSE_EVENTS)
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
 #endif
@@ -723,13 +755,16 @@ private:
       throw ApplicationException::format("Could not create GLES context: {}", SDL_GetError());
 
 #ifdef STAR_SYSTEM_SWITCH
-    // Disable vsync-driven present backpressure: the loop paces itself to the
-    // 30Hz update rate with sleepPrecise.  With the default swap interval of 1
-    // a single long stall (loading burst, host contention) phase-locks every
-    // subsequent frame into waiting ~27ms for the next-next 60Hz vsync slot
-    // inside startFrame -- the loop wedges at ~26fps with zero sleep and can
-    // never recover on its own.
-    SDL_GL_SetSwapInterval(0);
+    // Present-paced to the panel: with the frame target now 60fps (a clean
+    // divisor of the 60Hz panel and of Ryujinx's 120Hz custom vsync), vsync
+    // pacing gives perfectly even displayed cadence. The old swap-interval-0
+    // workaround targeted the non-divisor 30/45fps eras, where a stall
+    // phase-locked presents into the next-next vsync slot -- with two
+    // free-running 60Hz clocks (sleepPrecise vs panel) it instead caused a
+    // continuous slow drift of dropped/doubled frames, i.e. visible motion
+    // judder on hardware. Stall recovery is covered by the tick-backlog
+    // forgiveness and the GPU fence ring.
+    SDL_GL_SetSwapInterval(1);
 #endif
 
     // Avoid touching swap interval at startup on Android. Some devices crash
@@ -1104,6 +1139,18 @@ private:
         };
       }
     }
+    m_perfSimRate = config.queryInt("performance.simRate", 60) == 30 ? 30 : 60;
+    m_perfFpsCap = std::max(0, (int)config.queryInt("performance.fpsCap", 0));
+#ifdef STAR_SYSTEM_SWITCH
+    // The Switch panel is fixed 60Hz: rendering past it can't be displayed
+    // and only beats against the panel (a ~5Hz judder at the 62-69fps this
+    // hardware reaches uncapped) while costing battery. Map "unlimited"
+    // (including configs saved by earlier builds whose default was 0) to a
+    // 60fps cap; explicit lower caps are honored as-is.
+    if (m_perfFpsCap == 0)
+      m_perfFpsCap = 60;
+#endif
+
     String savedLocale = config.queryString("launcherUi.locale", SystemLocaleMarker);
     state.locale = savedLocale.empty() || savedLocale == SystemLocaleMarker ? String(SystemLocaleMarker) : normalizeLauncherLocale(savedLocale);
     state.systemLocale = loadPreferredLauncherLocale();
@@ -2233,6 +2280,64 @@ private:
       applyLauncherUiConfig(state.uiConfig);
     }
 
+    ImGui::Dummy(ImVec2(0.0f, 8.0f));
+    ImGui::TextUnformatted(launcherText("uiSettings.performance", "Performance").utf8Ptr());
+    ImGui::Separator();
+
+    // Simulation tick rate: 60 Hz matches vanilla physics/animation
+    // granularity; 30 Hz halves per-second sim cost for weaker devices
+    // (gameplay speed is identical -- rate * timestep = 1 either way).
+    {
+      int simIndex = m_perfSimRate == 30 ? 0 : 1;
+      char const* simLabels[] = {"30 Hz", "60 Hz"};
+      if (ImGui::BeginCombo(launcherText("uiSettings.simRate", "Simulation rate").utf8Ptr(), simLabels[simIndex])) {
+        for (int i = 0; i < 2; ++i) {
+          bool selected = simIndex == i;
+          if (ImGui::Selectable(simLabels[i], selected)) {
+            m_perfSimRate = i == 0 ? 30 : 60;
+            persistLauncherState(state);
+          }
+          if (selected)
+            ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::TextDisabled("%s", launcherText("uiSettings.simRateHint", "60 Hz = smoother physics; 30 Hz = lighter on weak devices. Game speed is the same.").utf8Ptr());
+    }
+
+    // Rendered-FPS cap, independent of the simulation rate. Unlimited lets a
+    // powerful device render as fast as it can; a cap saves battery/thermals.
+    {
+#ifdef STAR_SYSTEM_SWITCH
+      // No "Unlimited" on Switch: the panel is 60Hz (see loadLauncherState).
+      static int const fpsCapChoices[] = {30, 45, 60};
+#else
+      static int const fpsCapChoices[] = {0, 30, 45, 60, 90, 120, 144, 240};
+#endif
+      int capIndex = 0;
+      for (int i = 0; i < (int)(sizeof(fpsCapChoices) / sizeof(fpsCapChoices[0])); ++i) {
+        if (fpsCapChoices[i] == m_perfFpsCap) {
+          capIndex = i;
+          break;
+        }
+      }
+      auto capLabel = [&](int cap) {
+        return cap == 0 ? launcherText("uiSettings.fpsCapUnlimited", "Unlimited") : strf("{}", cap);
+      };
+      if (ImGui::BeginCombo(launcherText("uiSettings.fpsCap", "FPS cap").utf8Ptr(), capLabel(fpsCapChoices[capIndex]).utf8Ptr())) {
+        for (int i = 0; i < (int)(sizeof(fpsCapChoices) / sizeof(fpsCapChoices[0])); ++i) {
+          bool selected = capIndex == i;
+          if (ImGui::Selectable(capLabel(fpsCapChoices[i]).utf8Ptr(), selected)) {
+            m_perfFpsCap = fpsCapChoices[i];
+            persistLauncherState(state);
+          }
+          if (selected)
+            ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+    }
+
     ImGui::EndChild();
   }
 
@@ -2525,6 +2630,9 @@ private:
       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar
     );
     beginLauncherContentArea("LauncherContent", displaySize);
+    // Visible build identity: makes "which binary am I actually running?"
+    // answerable at a glance when iterating over slow transfer channels.
+    ImGui::TextDisabled("Build %s %s", __DATE__, __TIME__);
 
     auto runLauncherAction = [this, &state](String const& actionName, std::function<void()> const& fn) {
       try {
@@ -3112,6 +3220,10 @@ private:
         {"gyroInvertY", state.touchConfig.gyroInvertY},
         {"elements", jsonFromTouchElements(state.touchElements)}
       }},
+      {"performance", JsonObject{
+        {"simRate", m_perfSimRate},
+        {"fpsCap", m_perfFpsCap}
+      }},
       {"gamepad", JsonObject{
         {"enabled", state.gamepadConfig.enabled},
         {"triggerThreshold", state.gamepadConfig.triggerThreshold},
@@ -3219,6 +3331,7 @@ private:
 
   bool startApplication(String& errorMessage) {
     try {
+      relaunchBreadcrumb("start-application-enter");
       androidLogInfo("startApplication begin");
       m_runtimeArgs.clear();
       m_runtimeArgs.append("-bootconfig");
@@ -3238,8 +3351,10 @@ private:
               *startupStatus = launcherText("startup.loadingAssets", "Loading game assets and configuration...");
             }
             setMobileStartupStatus(launcherText("startup.loadingAssets", "Loading game assets and configuration..."));
+            relaunchBreadcrumb("worker-startup-begin");
             androidLogInfo("startApplication(worker): application->startup begin");
             m_application->startup(m_runtimeArgs);
+            relaunchBreadcrumb("worker-startup-done");
             androidLogInfo("startApplication(worker): application->startup done");
             {
               MutexLocker locker(*startupStatusMutex);
@@ -3394,19 +3509,30 @@ private:
     SDL_GL_SwapWindow(m_window);
   }
 
+  void applyPerformanceSettings() {
+    // Launcher-selected sim rate and FPS cap win over starbound.config pacing
+    // keys on the mobile family (the launcher UI is the settings surface the
+    // user actually sees). Re-asserted whenever they drift so the application
+    // layer's own config-driven startup can't override them mid-boot.
+    // rate * timestep = 1.0, so gameplay speed is unchanged at either rate.
+    float simRate = (float)m_perfSimRate;
+    if (GlobalTimestep != 1.0f / simRate) {
+      GlobalTimestep = 1.0f / simRate;
+      ServerGlobalTimestep = 1.0f / simRate;
+      m_updateTicker.setTargetTickRate(simRate);
+    }
+    if (m_maxFrameRate != (float)m_perfFpsCap) {
+      m_maxFrameRate = (float)m_perfFpsCap;
+      if (m_maxFrameRate > 0.0f)
+        m_framePacer.setTargetTickRate(m_maxFrameRate);
+    }
+  }
+
   void runGameLoop() {
-#ifdef STAR_SYSTEM_SWITCH
-    // 45Hz simulation: with the engine-wide allocator fix the per-update tick
-    // dropped from ~31ms to ~2ms, so the old 30Hz floor no longer applies.
-    // 45Hz brings physics/animation granularity closer to vanilla 60Hz while
-    // keeping ample per-frame headroom under emulation; rate * timestep = 1.0
-    // so gameplay speed is unchanged.
-    GlobalTimestep = 1.0f / 45.0f;
-    ServerGlobalTimestep = 1.0f / 45.0f;
-    m_updateTicker.setTargetTickRate(45.0f);
-#endif
+    applyPerformanceSettings();
     m_updateTicker.reset();
     m_renderTicker.reset();
+    m_framePacer.reset();
 
 #if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
     // Notify the game of the canvas size before the first frame.  syncWindowMetrics
@@ -3450,21 +3576,32 @@ private:
         setAndroidImGuiTextInputActive(false);
       }
 
-      int updatesBehind = std::max<int>(round(m_updateTicker.ticksBehind()), 1);
-      updatesBehind = std::min<int>(updatesBehind, (int)m_maxFrameSkip + 1);
-#ifdef STAR_SYSTEM_SWITCH
-      // On Switch the per-tick update cost (~37ms) far exceeds the 16.6ms target,
-      // so the loop perpetually maxes out catch-up (running the heavy update tick
-      // 3+ times per rendered frame), a death spiral that tanks the frame rate
-      // without meaningfully advancing sim time. Cap catch-up to 2 ticks/frame:
-      // this still permits a full 60Hz sim once the frame budget reaches ~30 FPS
-      // (60/30 = 2 ticks), but eliminates the wasted extra ticks while struggling.
-      // With the 30Hz sim above, one tick per rendered frame keeps the game at
-      // real-time as long as we render >=30 FPS, and at lower FPS it slow-mos
-      // gracefully rather than burning a second heavy tick. This is the actual
-      // frame-rate lever: it halves the per-frame update cost vs a 2-tick cap.
-      updatesBehind = std::min<int>(updatesBehind, 1);
-#endif
+      // Re-assert launcher pacing settings if the application layer's own
+      // config-driven startup overrode them (cheap no-op compare otherwise).
+      applyPerformanceSettings();
+      // The render rate is decoupled from the update rate: frames may run
+      // zero updates (re-rendering the latest state when rendering faster
+      // than the sim rate) or several (catch-up after a slow frame). The
+      // tick-backlog forgiveness below prevents catch-up death spirals; the
+      // old hard 1-update/frame cap is gone (a sustained sub-60 frame rate
+      // at a 60Hz sim would otherwise run the game in permanent slow motion).
+      // Fixed-timestep accumulator: the tick count and the interpolation
+      // fraction both come from m_tickAccum, so the render alpha cannot
+      // drift out of phase with tick execution. (The previous scheme
+      // measured alpha against a wall-clock tick schedule while ticks were
+      // scheduled by the windowed-rate ticker; the two clocks disagree
+      // slightly, the schedule ratchets behind real time, and alpha sits
+      // clamped at 1.0 -- interpolation silently off. Observed on Switch
+      // hardware as persistent walk jitter with alpha=[1.00,1.00].)
+      double loopNow = Time::monotonicTime();
+      double tickRate = m_updateTicker.targetTickRate();
+      if (m_lastLoopTime > 0.0 && loopNow > m_lastLoopTime) {
+        // Stall forgiveness: write off anything beyond a quarter second so
+        // a world load or app pause doesn't trigger a fast-forward burst.
+        m_tickAccum += std::min(loopNow - m_lastLoopTime, 0.25) * tickRate;
+      }
+      m_lastLoopTime = loopNow;
+      int updatesBehind = std::min<int>((int)m_tickAccum, (int)m_maxFrameSkip + 1);
 #ifdef STAR_SYSTEM_SWITCH
       lpLap(s_lpEvents);
 #endif
@@ -3478,6 +3615,14 @@ private:
         m_application->update();
         m_updateRate = m_updateTicker.tick();
       }
+      m_tickAccum -= updatesBehind;
+      // If the frame-skip cap truncated a large backlog, drop the excess
+      // instead of carrying slow-motion debt into future frames.
+      if (m_tickAccum > m_maxFrameSkip + 1)
+        m_tickAccum = 1.0;
+      // Render-only frame: ImGui still needs exactly one open frame.
+      if (overlayEnabled && updatesBehind == 0)
+        ImGui::NewFrame();
 #ifdef STAR_SYSTEM_SWITCH
       lpLap(s_lpUpdate);
 #endif
@@ -3514,21 +3659,33 @@ private:
         m_quitRequested = true;
       }
 
-      double spareSeconds = m_updateTicker.spareTime();
-      // Forgive large tick backlogs: after a stall (world load, app pause,
-      // host contention under emulation) the approacher would otherwise
-      // demand a long catch-up -- with the 1-update-per-frame cap that means
-      // minutes of never sleeping (and with an uncapped loop it would
-      // fast-forward the game).  Brief hitches still catch up smoothly;
-      // anything beyond a quarter second is written off and pacing restarts
-      // from now.
-      if (spareSeconds < -0.25) {
-        m_updateTicker.reset();
-        spareSeconds = 0.0;
+      // Frame pacing: with a cap, sleep to the next frame slot (updates run
+      // on their own schedule within whatever frames occur). Uncapped, the
+      // loop free-runs and the platform's swap behavior is the only limiter.
+#ifdef STAR_SYSTEM_SWITCH
+      // At the panel rate, vsync (swap interval 1) owns the cadence; a
+      // software pacer on top would just phase-jitter against it. Lower caps
+      // still sleep (swap won't block when running under the vsync rate).
+      bool presentPaced = m_maxFrameRate >= 59.0f;
+#else
+      constexpr bool presentPaced = false;
+#endif
+      if (m_maxFrameRate > 0.0f && !presentPaced) {
+        m_framePacer.tick();
+        double frameSpare = m_framePacer.spareTime();
+        if (frameSpare < -0.25) {
+          m_framePacer.reset();
+          frameSpare = 0.0;
+        }
+        int64_t spare = round(frameSpare * 1000.0);
+        if (spare > 0)
+          Thread::sleepPrecise(spare);
+      } else {
+        // Uncapped: never sleep, but yield once per frame so same-core
+        // threads (audio, driver callbacks, workers) aren't starved by a
+        // loop that otherwise never leaves the run queue.
+        Thread::yield();
       }
-      int64_t spare = round(spareSeconds * 1000.0);
-      if (spare > 0)
-        Thread::sleepPrecise(spare);
 #ifdef STAR_SYSTEM_SWITCH
       if (m_quitRequested || m_softQuitRequested)
         Logger::info("GAME LOOP EXITING: quitRequested={} softQuitRequested={}", m_quitRequested, m_softQuitRequested);
@@ -3861,6 +4018,16 @@ private:
     ImVec2 pos = launcherTouchPosition(event.tfinger.x, event.tfinger.y);
     uint64_t finger = event.tfinger.fingerID;
 
+#ifdef STAR_SYSTEM_SWITCH
+    // Touch pipeline diagnostics: launcher taps are rare, log them all so a
+    // pulled log shows exactly what the driver delivered.
+    Logger::info("[touch] type={} finger={} pos=({:.1f},{:.1f}) active={} trackedFinger={}",
+        event.type == SDL_EVENT_FINGER_DOWN ? "down"
+            : event.type == SDL_EVENT_FINGER_UP ? "up"
+            : event.type == SDL_EVENT_FINGER_CANCELED ? "cancel" : "motion",
+        finger, pos.x, pos.y, m_launcherTouchActive, m_launcherTouchFinger);
+#endif
+
     if (event.type == SDL_EVENT_FINGER_DOWN) {
       if (!m_launcherTouchActive) {
         m_launcherTouchActive = true;
@@ -3870,6 +4037,24 @@ private:
         io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
         io.AddMousePosEvent(pos.x, pos.y);
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+      }
+      return true;
+    }
+
+    if (event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) {
+      // Release on ANY finger-up while a touch is active: some touch drivers
+      // (Switch hid) report a different fingerID on release than on press.
+      // Discarding the mismatched UP wedged this state machine with the ImGui
+      // mouse button held down forever -- the first tap stayed "highlighted"
+      // and every later tap was ignored.
+      if (m_launcherTouchActive) {
+        io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+        io.AddMousePosEvent(pos.x, pos.y);
+        if (!m_launcherImGuiClickConsumed)
+          io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        m_launcherTouchActive = false;
+        m_launcherTouchFinger = 0;
+        m_launcherTouchDragDistance = 0.0f;
       }
       return true;
     }
@@ -3892,18 +4077,24 @@ private:
       return true;
     }
 
-    if (event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) {
-      io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
-      io.AddMousePosEvent(pos.x, pos.y);
-      if (!m_launcherImGuiClickConsumed)
-        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
-      m_launcherTouchActive = false;
-      m_launcherTouchFinger = 0;
-      m_launcherTouchDragDistance = 0.0f;
-      return true;
-    }
-
     return true;
+  }
+
+  // Crash-window tracer for the quit->relaunch path: session 2 of an
+  // in-process relaunch can die before the game log opens, leaving no
+  // evidence. Each stage is appended + fsync'd so the trace survives a hard
+  // fault. Read /switch/oSBM/relaunch-trace.txt after a crash.
+  void relaunchBreadcrumb(char const* stage) {
+#ifdef STAR_SYSTEM_SWITCH
+    if (FILE* f = fopen("/switch/oSBM/relaunch-trace.txt", "a")) {
+      fprintf(f, "%lld %s\n", (long long)Time::monotonicMilliseconds(), stage);
+      fflush(f);
+      fsync(fileno(f));
+      fclose(f);
+    }
+#else
+    (void)stage;
+#endif
   }
 
   void resetLauncherQuickStart() {
@@ -4307,6 +4498,17 @@ private:
   LauncherUiConfig m_launcherUiConfig;
 
   TickRateApproacher m_updateTicker{60.0f, 1.0f};
+  float m_maxFrameRate = 0.0f; // 0 = unlimited
+  TickRateApproacher m_framePacer{60.0f, 1.0f};
+  // Fixed-timestep accumulator (in ticks) driving both tick execution and
+  // the render interpolation fraction; see the game loop.
+  double m_tickAccum = 0.0;
+  double m_lastLoopTime = 0.0;
+  // Launcher performance settings (persisted in the launcher config; these
+  // override starbound.config pacing keys on the mobile family, since the
+  // launcher UI is the settings surface users actually see here).
+  int m_perfSimRate = 60; // simulation tick rate: 30 or 60
+  int m_perfFpsCap = 0;   // rendered FPS cap; 0 = unlimited
   TickRateMonitor m_renderTicker{1.0f};
   float m_updateRate = 0.0f;
   float m_renderRate = 0.0f;

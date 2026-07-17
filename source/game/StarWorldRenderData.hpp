@@ -40,6 +40,11 @@ struct WorldRenderData {
   // copies genuinely expensive at ~100 entities/frame). Consumers must treat
   // entries as immutable.
   List<shared_ptr<EntityDrawables const>> entityDrawables;
+  // Index-matched with entityDrawables: per-entity world-space render offset
+  // for sub-tick interpolation (drawables are baked at the entity's latest
+  // tick position; this shifts them toward the previous tick's position when
+  // rendering between sim ticks). Zero when interpolation is inactive.
+  List<Vec2F> entityDrawableOffsets;
   List<Particle> const* particles;
 
   List<OverheadBar> overheadBars;
@@ -64,6 +69,7 @@ inline void WorldRenderData::clear() {
   tiles.resize({0, 0}); // keep reserved
 
   entityDrawables.clear();
+  entityDrawableOffsets.clear();
   particles = nullptr;
   overheadBars.clear();
   nametags.clear();

@@ -385,6 +385,8 @@ private:
 
   EntityMapPtr m_entityMap;
   ServerTileSectorArrayPtr m_tileArray;
+  // See WorldClient::m_nullCollisionScratch.
+  mutable List<CollisionBlock> m_nullCollisionScratch;
   ServerTileGetter m_tileGetterFunction;
   WorldStoragePtr m_worldStorage;
   WorldServerFidelity m_fidelity;

@@ -36,6 +36,14 @@ public:
   // Maximum number of calls to update() that can occur before we force
   // 'render()' to be called, even if we are still behind on our update rate.
   virtual void setMaxFrameSkip(unsigned maxFrameSkip) = 0;
+  // Maximum hz at which render() will be called, independent of the update
+  // rate (frames between updates re-render the latest state). 0 = unlimited:
+  // the loop renders as fast as vsync / the platform allows.
+  virtual void setMaxFrameRate(float maxFrameRate) = 0;
+  // Fraction of the current update tick that has elapsed at this moment,
+  // clamped to [0, 1]. Render paths use it to interpolate motion on frames
+  // rendered between update ticks. Returns 1.0 when no update has run yet.
+  virtual float updateTickFraction() const { return 1.0f; }
 
   virtual void setApplicationTitle(String title) = 0;
   virtual void setFullscreenWindow(Vec2U fullScreenResolution) = 0;

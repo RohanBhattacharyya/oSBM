@@ -159,6 +159,12 @@ private:
   float m_cameraOffsetDownTime = 0.f;
   Vec2F m_cameraPositionSmoother;
   Vec2F m_cameraSmoothDelta;
+  // Sub-tick render interpolation: camera positions from the last two sim
+  // ticks (see updateCamera / render).
+  Vec2F m_cameraPrevPosition;
+  Vec2F m_cameraCurPosition;
+  bool m_cameraHistoryValid = false;
+  bool m_renderInterpolation = true;
   int m_cameraZoomDirection = 0;
 
   unsigned m_framesSkipped = 0;

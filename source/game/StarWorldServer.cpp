@@ -785,6 +785,14 @@ void WorldServer::update(float dt) {
     m_worldStorage->tick(*delta * GlobalTimestep, &m_worldId);
 
   if (auto delta = shouldRunThisStep("worldStorageGenerate")) {
+#ifdef STAR_SYSTEM_SWITCH
+    // Bound background pregeneration to a slice of the 16.7ms tick budget:
+    // unbounded bursts stall the whole tick for hundreds of ms, freezing
+    // every remote entity on the (local) client until updates resume.
+    Maybe<double> generationTimeBudget = 0.006;
+#else
+    Maybe<double> generationTimeBudget = {};
+#endif
     m_worldStorage->generateQueue(m_fidelityConfig.optUInt("worldStorageGenerationLevelLimit"), [this](WorldStorage::Sector a, WorldStorage::Sector b) {
         auto distanceToClosestPlayer = [this](WorldStorage::Sector sector) {
           Vec2F sectorCenter = RectF(*m_worldStorage->regionForSector(sector)).center();
@@ -797,7 +805,7 @@ void WorldServer::update(float dt) {
         };
 
         return distanceToClosestPlayer(a) < distanceToClosestPlayer(b);
-      });
+      }, generationTimeBudget);
   }
 
   for (EntityId entityId : toRemove)
@@ -957,12 +965,19 @@ bool WorldServer::getTileCollisionBlocks(RectI const& region, List<CollisionBloc
   // default tile used for unloaded positions, whose dirty flag is always set)
   // contribute no blocks and cannot go stale, so they never force the slow
   // path.  This runs for every movement substep of every entity.
+  // Null tiles must contribute a solid full-tile block; see the client twin
+  // (WorldClient::getTileCollisionBlocks) for the full story -- dropping them
+  // let entities fall through not-yet-generated/loaded space.
+  m_nullCollisionScratch.clear();
+  m_nullCollisionScratch.reserve((size_t)region.volume());
   size_t mark = output.size();
   bool sawDirty = false;
-  m_tileArray->tileEach(region, [&](Vec2I const&, ServerTile const& tile) {
-      if (tile.collisionCacheDirty) {
-        if (tile.getCollision() != CollisionKind::Null)
-          sawDirty = true;
+  m_tileArray->tileEach(region, [&](Vec2I const& pos, ServerTile const& tile) {
+      if (tile.getCollision() == CollisionKind::Null) {
+        m_nullCollisionScratch.append(CollisionBlock::nullBlock(pos));
+        output.append(&m_nullCollisionScratch.last());
+      } else if (tile.collisionCacheDirty) {
+        sawDirty = true;
       } else {
         for (auto const& block : tile.collisionCache)
           output.append(&block);
@@ -972,10 +987,16 @@ bool WorldServer::getTileCollisionBlocks(RectI const& region, List<CollisionBloc
     return false;
 
   output.resize(mark);
+  m_nullCollisionScratch.clear();
   const_cast<WorldServer*>(this)->freshenCollision(region);
-  m_tileArray->tileEach(region, [&output](Vec2I const&, ServerTile const& tile) {
-      for (auto const& block : tile.collisionCache)
-        output.append(&block);
+  m_tileArray->tileEach(region, [&](Vec2I const& pos, ServerTile const& tile) {
+      if (tile.getCollision() == CollisionKind::Null) {
+        m_nullCollisionScratch.append(CollisionBlock::nullBlock(pos));
+        output.append(&m_nullCollisionScratch.last());
+      } else {
+        for (auto const& block : tile.collisionCache)
+          output.append(&block);
+      }
     });
   return true;
 }

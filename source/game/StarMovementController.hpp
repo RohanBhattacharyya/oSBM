@@ -309,6 +309,9 @@ private:
   // Collision-query memo (see queryCollisions).
   RectI m_lastQueryRegion = RectI::null();
   uint64_t m_lastQueryEpoch = 0;
+  // Static (tile) polys occupy [0, m_workingStaticCount) of the working set;
+  // moving collisions sit after and are rebuilt on every query.
+  size_t m_workingStaticCount = 0;
   // Reused scratch poly for the collision substep hot path (avoids a per-step
   // vertex-list heap allocation building the world-space body).
   PolyF m_workingBody;

@@ -157,7 +157,10 @@ public:
   // increases of SectorGenerationLevel by the sectorGenerationLevelLimit, if
   // given.  If sectorOrdering is given, then it will be used to prioritize the
   // queued sectors.
-  void generateQueue(Maybe<size_t> sectorGenerationLevelLimit, function<bool(Sector, Sector)> sectorOrdering = {});
+  // timeBudget (seconds), when given, stops draining the queue once exceeded
+  // (checked between generation steps): background pregeneration runs inside
+  // the server tick and must not stall it for a whole burst.
+  void generateQueue(Maybe<size_t> sectorGenerationLevelLimit, function<bool(Sector, Sector)> sectorOrdering = {}, Maybe<double> timeBudget = {});
   // Ticks down the TTL on sectors and generation queue entries, stores old
   // sectors, expires old generation queue entries, and unloads any zombie
   // entities.

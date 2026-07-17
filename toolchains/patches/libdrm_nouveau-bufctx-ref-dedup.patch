@@ -1,0 +1,30 @@
+diff --git a/source/bufctx.c b/source/bufctx.c
+index 4f76e5d..a78d7d6 100644
+--- a/source/bufctx.c
++++ b/source/bufctx.c
+@@ -123,8 +123,24 @@ nouveau_bufctx_refn(struct nouveau_bufctx *bctx, int bin,
+ {
+ 	struct nouveau_bufctx_priv *pctx = nouveau_bufctx(bctx);
+ 	struct nouveau_bufbin_priv *pbin = &pctx->bins[bin];
+-	struct nouveau_bufref_priv *pref = pctx->free;
++	struct nouveau_bufref_priv *pref;
++
++	/* Dedup plain refs of the same bo within a bin.  Mesa's nvc0 texture
++	 * validation re-refs bound textures whenever they are marked dirty
++	 * WITHOUT resetting the bin (e.g. nvc0_blit_3d dirties every bound
++	 * fragment-texture slot but only resets the two bins it binds itself),
++	 * so the bin and pending/current lists grow without bound: every
++	 * pushbuf submission walks an ever-longer list (linear per-frame
++	 * slowdown) and the refs leak heap until exhaustion.  Reusing an
++	 * existing identical ref is semantically a no-op: refs exist only to
++	 * keep the bo on the submission list. */
++	for (pref = pbin->list; pref; pref = pref->next) {
++		if (pref->base.bo == bo && !pref->base.packet
++		    && pref->base.flags == flags)
++			return &pref->base;
++	}
+ 
++	pref = pctx->free;
+ 	if (!pref)
+ 		pref = malloc(sizeof(*pref));
+ 	else

@@ -114,8 +114,17 @@ Root::Root(Settings settings) : RootBase() {
     if (!File::isDirectory(oldLogDirectory))
       File::makeDirectory(oldLogDirectory);
 
-    File::backupFileInSequence(logFile, File::relativeTo(oldLogDirectory, *m_settings.logFile), m_settings.logFileBackups);
-    Logger::addSink(make_shared<FileLogSink>(logFile, m_settings.logLevel, true));
+    // Rotation failure must not kill startup: on an in-process relaunch a
+    // stale sink (or platform rename semantics -- HOS refuses to overwrite)
+    // can make the backup chain fail, and on the Switch startup worker an
+    // escaping exception cannot unwind and becomes a process-fatal abort.
+    try {
+      File::backupFileInSequence(logFile, File::relativeTo(oldLogDirectory, *m_settings.logFile), m_settings.logFileBackups);
+    } catch (std::exception const& e) {
+      Logger::warn("Root: log rotation failed, continuing with existing log: {}", e.what());
+    }
+    m_logSink = make_shared<FileLogSink>(logFile, m_settings.logLevel, true);
+    Logger::addSink(m_logSink);
   }
   Logger::stdoutSink()->setLevel(m_settings.logLevel);
 
@@ -189,6 +198,11 @@ Root::Root(Settings settings) : RootBase() {
 
 Root::~Root() {
   Logger::info("Root: Shutting down Root");
+  // The file sink must not outlive the Root that opened it: on an in-process
+  // relaunch (mobile launcher) a leftover sink keeps the log file open and
+  // duplicates output, and the next Root's log rotation then renames a file
+  // this process still has open. Removed via deferred flag so the remaining
+  // teardown below still logs to the file; see end of this destructor.
 
   {
     MutexLocker locker(m_maintenanceStopMutex);
@@ -200,6 +214,11 @@ Root::~Root() {
   m_reloadListeners.clearAllListeners();
 
   writeConfig();
+
+  if (m_logSink) {
+    Logger::removeSink(m_logSink);
+    m_logSink.reset();
+  }
 
   s_singleton.store(nullptr);
 }

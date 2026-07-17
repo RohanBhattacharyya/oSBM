@@ -38,6 +38,10 @@ void WorldPainter::renderInit(RendererPtr renderer) {
   m_environmentPainter = make_shared<EnvironmentPainter>(m_renderer);
 }
 
+void WorldPainter::setRenderInterpolationAlpha(float alpha) {
+  m_renderInterpolationAlpha = alpha;
+}
+
 void WorldPainter::setCameraPosition(WorldGeometry const& geometry, Vec2F const& position) {
   m_camera.setWorldGeometry(geometry);
   m_camera.setCenterWorldPosition(position);
@@ -100,8 +104,14 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
     // refresh (22Hz) is imperceptible while halving the largest constant
     // GPU fill cost -- decisive when the host GPU is power-managed to its
     // floor clock.  Deeper intervals engage under real load as before.
+    // Refresh every frame by default: the reduced cadence was a crutch for a
+    // host GPU parked at floor clocks under emulation, and re-blitting a
+    // stale background while the camera interpolates per frame makes the
+    // parallax visibly stutter against the smoothly-scrolling terrain
+    // (reported on hardware). Under genuine struggle (sub-13fps) the old
+    // half-rate refresh returns.
     bool wpUnderLoad = true;
-    int64_t bgInterval = gapUs > 75000 ? 4 : 3;
+    int64_t bgInterval = gapUs > 75000 ? 2 : 1;
     m_bgLastRenderTimeUs = nowUs;
     ++m_bgFrameCounter;
     Vec2U screenSize = m_renderer->screenSize();
@@ -259,10 +269,12 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
   // Entries reference (not steal) the render data's drawable lists: entries
   // may be shared with WorldClient's entity render cache across frames, so
   // they must be treated as immutable here.
-  Map<EntityRenderLayer, List<pair<EntityHighlightEffect, List<Drawable> const*>>> entityDrawables;
-  for (auto& ed : renderData.entityDrawables) {
+  Map<EntityRenderLayer, List<tuple<EntityHighlightEffect, List<Drawable> const*, Vec2F>>> entityDrawables;
+  for (size_t i = 0; i < renderData.entityDrawables.size(); ++i) {
+    auto& ed = renderData.entityDrawables[i];
+    Vec2F offset = i < renderData.entityDrawableOffsets.size() ? renderData.entityDrawableOffsets[i] : Vec2F();
     for (auto& p : ed->layers)
-      entityDrawables[p.first].append({ed->highlightEffect, &p.second});
+      entityDrawables[p.first].append({ed->highlightEffect, &p.second, offset});
   }
 
   auto entityDrawableIterator = entityDrawables.begin();
@@ -273,7 +285,7 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
       if (until && entityDrawableIterator->first >= *until)
         break;
       for (auto& edl : entityDrawableIterator->second)
-        drawEntityLayer(*edl.second, edl.first);
+        drawEntityLayer(*get<1>(edl), get<0>(edl), get<2>(edl));
       ++entityDrawableIterator;
     }
 
@@ -339,11 +351,19 @@ void WorldPainter::renderParticles(WorldRenderData& renderData, Particle::Layer 
   if (!renderData.particles)
     return;
 
+  // Sub-tick interpolation: particle positions are baked at the latest sim
+  // tick; back-extrapolate along their velocity so they track the smoothly
+  // interpolated world instead of stepping once per tick. (Exact history
+  // isn't tracked per particle -- velocity extrapolation is exact for the
+  // straight-line motion that dominates a particle's frame-to-frame path.)
+  float const particleLagSeconds = (m_renderInterpolationAlpha - 1.0f) * GlobalTimestep;
+
   for (Particle const& particle : *renderData.particles) {
     if (layer != particle.layer)
       continue;
 
-    Vec2F position = m_camera.worldToScreen(particle.position);
+    Vec2F particlePosition = particle.position + particle.velocity * particleLagSeconds;
+    Vec2F position = m_camera.worldToScreen(particlePosition);
 
     if (!particleRenderWindow.contains(position))
       continue;
@@ -386,11 +406,11 @@ void WorldPainter::renderParticles(WorldRenderData& renderData, Particle::Layer 
       drawable.color = particle.color;
       drawable.rotate(particle.rotation);
       drawable.scale(particle.size);
-      drawable.translate(particle.position);
+      drawable.translate(particlePosition);
       drawDrawable(std::move(drawable));
 
     } else if (particle.type == Particle::Type::Text) {
-      Vec2F position = m_camera.worldToScreen(particle.position);
+      Vec2F position = m_camera.worldToScreen(particlePosition);
       int size = min(128.0f, round((float)textParticleFontSize * m_camera.pixelRatio() * particle.size));
       if (size > 0) {
         m_textPainter->setFontSize(size);
@@ -429,7 +449,7 @@ void WorldPainter::renderBars(WorldRenderData& renderData) {
   m_renderer->flush();
 }
 
-void WorldPainter::drawEntityLayer(List<Drawable> const& drawables, EntityHighlightEffect highlightEffect) {
+void WorldPainter::drawEntityLayer(List<Drawable> const& drawables, EntityHighlightEffect highlightEffect, Vec2F const& worldOffset) {
   highlightEffect.level *= m_highlightConfig.getFloat("maxHighlightLevel", 1.0);
   if (m_highlightDirectives.contains(highlightEffect.type) && highlightEffect.level > 0) {
     // first pass, draw underlay
@@ -441,7 +461,7 @@ void WorldPainter::drawEntityLayer(List<Drawable> const& drawables, EntityHighli
           underlayDrawable.fullbright = true;
           underlayDrawable.color = Color::rgbaf(1, 1, 1, highlightEffect.level * d.color.alphaF());
           underlayDrawable.imagePart().addDirectives(underlayDirectives, true);
-          drawDrawable(std::move(underlayDrawable));
+          drawDrawable(std::move(underlayDrawable), false, worldOffset);
         }
       }
     }
@@ -449,22 +469,22 @@ void WorldPainter::drawEntityLayer(List<Drawable> const& drawables, EntityHighli
     // second pass, draw main drawables and overlays
     auto overlayDirectives = m_highlightDirectives[highlightEffect.type].second;
     for (auto const& d : drawables) {
-      drawDrawable(d, true);
+      drawDrawable(d, true, worldOffset);
       if (!overlayDirectives.empty() && d.isImage()) {
         auto overlayDrawable = Drawable(d);
         overlayDrawable.fullbright = true;
         overlayDrawable.color = Color::rgbaf(1, 1, 1, highlightEffect.level * d.color.alphaF());
         overlayDrawable.imagePart().addDirectives(overlayDirectives, true);
-        drawDrawable(std::move(overlayDrawable));
+        drawDrawable(std::move(overlayDrawable), false, worldOffset);
       }
     }
   } else {
     for (auto const& d : drawables)
-      drawDrawable(d, true);
+      drawDrawable(d, true, worldOffset);
   }
 }
 
-void WorldPainter::drawDrawable(Drawable const& drawable, bool skipOnScreenCheck) {
+void WorldPainter::drawDrawable(Drawable const& drawable, bool skipOnScreenCheck, Vec2F const& worldOffset) {
   // Non-mutating equivalent of the old copy-transform-draw path: the camera
   // transform (worldToScreen + uniform scale about the screen position) is an
   // affine map, so it's composed at primitive-emit time inside
@@ -472,7 +492,7 @@ void WorldPainter::drawDrawable(Drawable const& drawable, bool skipOnScreenCheck
   // matters because Drawable copies carry AssetPath strings/directives and
   // the entity drawable lists are now SHARED with WorldClient's render cache
   // (mutating them would corrupt the cache).
-  Vec2F screenPos = m_camera.worldToScreen(drawable.position);
+  Vec2F screenPos = m_camera.worldToScreen(drawable.position + worldOffset);
   float scale = m_camera.pixelRatio() * TilePixels;
 
   if (!skipOnScreenCheck) {

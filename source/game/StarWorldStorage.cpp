@@ -5,6 +5,7 @@
 #include "StarDataStreamExtra.hpp"
 #include "StarIterator.hpp"
 #include "StarLogging.hpp"
+#include "StarTime.hpp"
 #include "StarRoot.hpp"
 #include "StarEntityMap.hpp"
 #include "StarEntityFactory.hpp"
@@ -248,7 +249,7 @@ EntityId WorldStorage::loadUniqueEntity(String const& uniqueId) {
   return {};
 }
 
-void WorldStorage::generateQueue(Maybe<size_t> sectorGenerationLevelLimit, function<bool(Sector, Sector)> sectorOrdering) {
+void WorldStorage::generateQueue(Maybe<size_t> sectorGenerationLevelLimit, function<bool(Sector, Sector)> sectorOrdering, Maybe<double> timeBudget) {
   try {
     if (sectorOrdering) {
       m_generationQueue.sort([&sectorOrdering](auto const& a, auto const& b) {
@@ -256,6 +257,7 @@ void WorldStorage::generateQueue(Maybe<size_t> sectorGenerationLevelLimit, funct
         });
     }
 
+    double deadline = timeBudget ? Time::monotonicTime() + *timeBudget : 0.0;
     while (!m_generationQueue.empty()) {
       if (sectorGenerationLevelLimit && *sectorGenerationLevelLimit == 0)
         break;
@@ -265,6 +267,14 @@ void WorldStorage::generateQueue(Maybe<size_t> sectorGenerationLevelLimit, funct
         m_generationQueue.removeFirst();
       if (sectorGenerationLevelLimit)
         *sectorGenerationLevelLimit -= p.second;
+
+      // Time box: background pregeneration runs inside the server tick, and
+      // an unbounded drain stalls the tick for the whole burst -- the world
+      // stops sending entity/step updates and every remote entity visibly
+      // freezes. Spreading the same work over consecutive ticks is invisible
+      // (the queue exists precisely because this work is not urgent).
+      if (timeBudget && Time::monotonicTime() >= deadline)
+        break;
     }
   } catch (std::exception const& e) {
     m_db.rollback();

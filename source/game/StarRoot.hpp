@@ -199,6 +199,10 @@ private:
 
   Settings m_settings;
 
+  // File log sink owned by this Root; removed in ~Root so an in-process
+  // relaunch doesn't leave a stale sink holding the log file open.
+  LogSinkPtr m_logSink;
+
   Mutex m_modsMutex;
   StringList m_modDirectories;
 

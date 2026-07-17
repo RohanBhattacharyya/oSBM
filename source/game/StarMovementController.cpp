@@ -709,8 +709,19 @@ void MovementController::tickMaster(float dt) {
 
   // If original movement was entirely (almost) in the direction of gravity
   // and was entirely (almost) cancelled by collision correction, put the
-  // entity into rest for restDuration
-  if (!m_resting &&
+  // entity into rest for restDuration.
+  //
+  // DISABLED: rest skips the whole collision pass (steps = 0 above),
+  // including the overlap separation. A player logging in against tiles that
+  // haven't streamed in yet (treated as solid) has their gravity step fully
+  // cancelled, latches into rest, and the separation that would free them
+  // once real tiles arrive never runs -- stuck half-embedded in the ship
+  // floor on first login (real-hardware repro). The mobile perf experiment
+  // that enabled this via a restDuration asset patch bought only a small
+  // server-side win; embedded packs may still carry the data key, so the
+  // mechanism is turned off here in code rather than re-patched in data.
+  if (false &&
+      !m_resting &&
       abs(originalMovement[0]) < 0.0001 &&
       originalMovement[1] * gravity() <= 0.0 &&
       abs(originalMovement[1] + m_collisionCorrection[1]) < 0.0001) {
@@ -1157,24 +1168,48 @@ void MovementController::updatePositionInterpolators() {
 
 void MovementController::queryCollisions(RectF const& region) {
   RectI integralRegion = RectI::integral(region.padded(1));
-  bool physicsEntities = world()->hasPhysicsEntities();
 
-  // Memoized reuse: the working set is a pure function of the integral query
-  // region and the world's collision geometry.  Every collision-geometry
-  // writer (dirtyCollision, generation, sector loads, freshen regeneration)
-  // records its changed region with the world, so if this controller queried
-  // the same integral region last time, nothing recorded since intersects
-  // that region, and there are no moving collisions to merge, the previous
-  // working set is still exact -- skipping the entire query, which runs for
-  // every movement substep of every entity.
+  auto appendMovingCollisions = [&]() {
+    forEachMovingCollision(region, [&](MovingCollisionId id, PhysicsMovingCollision mc, PolyF poly, RectF bounds) {
+      CollisionPoly& collisionPoly = m_collisionBuffers.empty()
+          ? m_workingCollisions.emplaceAppend(CollisionPoly{})
+          : m_workingCollisions.emplaceAppend(CollisionPoly{m_collisionBuffers.takeLast(), {}, {}, {}, {}, {}});
+      collisionPoly.poly = std::move(poly);
+      collisionPoly.polyBounds = bounds;
+      collisionPoly.sortPosition = collisionPoly.poly.center();
+      collisionPoly.movingCollisionId = id;
+      collisionPoly.collisionKind = mc.collisionKind;
+      return true;
+    });
+  };
+
+  // Memoized reuse: the STATIC part of the working set is a pure function of
+  // the integral query region and the world's collision geometry.  Every
+  // collision-geometry writer (dirtyCollision, generation, sector loads,
+  // freshen regeneration) records its changed region with the world, so if
+  // this controller queried the same integral region last time and nothing
+  // recorded since intersects it, the previous static polys are still exact
+  // -- skipping the tile query, which runs for every movement substep of
+  // every entity.  Moving collisions (physics entities) shift without epoch
+  // tracking, so they sit at the tail of the working set and are dropped and
+  // rebuilt on every query, hit or miss.  (A previous version disabled the
+  // memo whenever ANY physics entity existed in the world -- on modded
+  // worlds that is effectively always, and the memo never hit.)
 #ifdef STAR_SYSTEM_SWITCH
   static int64_t s_qcHits = 0, s_qcMisses = 0;
 #endif
-  if (!physicsEntities && integralRegion == m_lastQueryRegion
+  if (integralRegion == m_lastQueryRegion
       && !world()->collisionRegionsChangedSince(m_lastQueryEpoch, integralRegion)) {
 #ifdef STAR_SYSTEM_SWITCH
     ++s_qcHits;
 #endif
+    // Nothing relevant changed up to the current epoch, so re-baseline to it:
+    // otherwise the epoch gap eventually exceeds the tracker ring and forces
+    // a spurious miss every RingSize records.
+    m_lastQueryEpoch = world()->collisionChangeEpoch();
+    while (m_workingCollisions.size() > m_workingStaticCount)
+      m_collisionBuffers.append(m_workingCollisions.takeLast().poly);
+    appendMovingCollisions();
     return;
   }
 #ifdef STAR_SYSTEM_SWITCH
@@ -1224,18 +1259,11 @@ void MovementController::queryCollisions(RectF const& region) {
     }
   }
 
-  m_lastQueryRegion = physicsEntities ? RectI::null() : integralRegion;
+  m_lastQueryRegion = integralRegion;
   m_lastQueryEpoch = world()->collisionChangeEpoch();
+  m_workingStaticCount = m_workingCollisions.size();
 
-  forEachMovingCollision(region, [&](MovingCollisionId id, PhysicsMovingCollision mc, PolyF poly, RectF bounds) {
-    CollisionPoly& collisionPoly = newCollisionPoly();
-    collisionPoly.poly = std::move(poly);
-    collisionPoly.polyBounds = bounds;
-    collisionPoly.sortPosition = collisionPoly.poly.center();
-    collisionPoly.movingCollisionId = id;
-    collisionPoly.collisionKind = mc.collisionKind;
-    return true;
-  });
+  appendMovingCollisions();
 }
 
 float MovementController::gravity() {

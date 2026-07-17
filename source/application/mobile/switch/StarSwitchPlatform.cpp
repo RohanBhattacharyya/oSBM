@@ -374,6 +374,89 @@ void switchInstallLogSink() {
   std::set_terminate(&switchTerminateHandler);
 }
 
+namespace {
+  struct ClockBoostState {
+    bool active = false;
+    u32 prevCpu = 0;
+    u32 prevGpu = 0;
+    u32 prevEmc = 0;
+  };
+  ClockBoostState g_clockBoost;
+
+  // Sets a pcv module clock, but only ever RAISES it (docked profiles are
+  // already above the targets and must not be pulled down). Returns the rate
+  // that was in effect before the call, 0 on failure.
+  u32 clockRaise(PcvModuleId module, u32 targetHz, char const* name) {
+    ClkrstSession session;
+    Result rc = clkrstOpenSession(&session, module, 3);
+    char buf[160];
+    if (R_FAILED(rc)) {
+      snprintf(buf, sizeof(buf), "clockRaise: %s open session failed (0x%x)", name, rc);
+      switchDebugLog(buf);
+      return 0;
+    }
+    u32 before = 0;
+    clkrstGetClockRate(&session, &before);
+    if (targetHz > before)
+      rc = clkrstSetClockRate(&session, targetHz);
+    u32 after = 0;
+    clkrstGetClockRate(&session, &after);
+    clkrstCloseSession(&session);
+    snprintf(buf, sizeof(buf), "clockRaise: %s %u -> %u MHz (rc=0x%x)",
+        name, before / 1000000u, after / 1000000u, rc);
+    switchDebugLog(buf);
+    Logger::info("[switch-clk] {}: {} -> {} MHz", name, before / 1000000u, after / 1000000u);
+    return before;
+  }
+}
+
+void switchApplyClockBoost() {
+  if (g_clockBoost.active)
+    return;
+  Result rc = clkrstInitialize();
+  if (R_FAILED(rc)) {
+    switchDebugLog("switchApplyClockBoost: clkrst unavailable");
+    Logger::info("[switch-clk] clkrst unavailable (0x{:x}); running at system clocks", rc);
+    return;
+  }
+  // Top official handheld-legal profile: CPU 1224MHz (vs 1020 default), GPU
+  // 460.8MHz (vs 307/384 handheld default), EMC 1600MHz (vs 1331). Docked
+  // rates are already at or above these and are left untouched (raise-only).
+  // Walking on a planet is CPU- and GPU-bound at handheld floor clocks
+  // (measured: ~22ms CPU frame + pacing-fence waits); these rates are what
+  // boost-mode games use and are well within the console's cooling envelope.
+  g_clockBoost.prevCpu = clockRaise(PcvModuleId_CpuBus, 1224000000u, "cpu");
+  g_clockBoost.prevGpu = clockRaise(PcvModuleId_GPU, 460800000u, "gpu");
+  g_clockBoost.prevEmc = clockRaise(PcvModuleId_EMC, 1600000000u, "mem");
+  g_clockBoost.active = true;
+  clkrstExit();
+}
+
+void switchRestoreClocks() {
+  if (!g_clockBoost.active)
+    return;
+  g_clockBoost.active = false;
+  if (R_FAILED(clkrstInitialize()))
+    return;
+  auto restore = [](PcvModuleId module, u32 prevHz) {
+    if (prevHz == 0)
+      return;
+    ClkrstSession session;
+    if (R_FAILED(clkrstOpenSession(&session, module, 3)))
+      return;
+    u32 cur = 0;
+    clkrstGetClockRate(&session, &cur);
+    if (cur > prevHz)
+      clkrstSetClockRate(&session, prevHz);
+    clkrstCloseSession(&session);
+  };
+  restore(PcvModuleId_CpuBus, g_clockBoost.prevCpu);
+  restore(PcvModuleId_GPU, g_clockBoost.prevGpu);
+  restore(PcvModuleId_EMC, g_clockBoost.prevEmc);
+  clkrstExit();
+  switchDebugLog("switchRestoreClocks: restored pre-boost clocks");
+}
+
 void switchSyncBundledAssets(String const& storageRoot) {
   switchPlatformInit();
   if (!g_romfsMounted) {
@@ -402,6 +485,8 @@ void switchSyncBundledAssets(String const&) {}
 String switchDefaultStorageRoot() { return {}; }
 void switchDebugLog(char const*) {}
 void switchInstallLogSink() {}
+void switchApplyClockBoost() {}
+void switchRestoreClocks() {}
 
 #endif
 

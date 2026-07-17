@@ -304,12 +304,27 @@ bool WorldClient::getTileCollisionBlocks(RectI const& region, List<CollisionBloc
     return false;
 
   // Fused single pass; see WorldServer::getTileCollisionBlocks.
+  //
+  // Null-collision tiles (world edges and, critically, positions whose
+  // sectors haven't STREAMED IN yet) must contribute a solid full-tile block
+  // -- DefaultCollisionSet includes Null exactly so entities can't move
+  // through unloaded space. An earlier version of this fusion dropped them
+  // ("contribute no blocks"), so during the first seconds of a world load a
+  // player fell straight through not-yet-loaded terrain and was left
+  // embedded when the real tiles arrived (reproduced on Switch hardware,
+  // where SD streaming is slow). Their block lives in a per-world scratch
+  // list (reserved to the region size, so pointers stay stable) because the
+  // shared default tile can't cache per-position blocks.
+  m_nullCollisionScratch.clear();
+  m_nullCollisionScratch.reserve((size_t)region.volume());
   size_t mark = output.size();
   bool sawDirty = false;
-  m_tileArray->tileEach(region, [&](Vec2I const&, ClientTile const& tile) {
-      if (tile.collisionCacheDirty) {
-        if (tile.getCollision() != CollisionKind::Null)
-          sawDirty = true;
+  m_tileArray->tileEach(region, [&](Vec2I const& pos, ClientTile const& tile) {
+      if (tile.getCollision() == CollisionKind::Null) {
+        m_nullCollisionScratch.append(CollisionBlock::nullBlock(pos));
+        output.append(&m_nullCollisionScratch.last());
+      } else if (tile.collisionCacheDirty) {
+        sawDirty = true;
       } else {
         for (auto const& block : tile.collisionCache)
           output.append(&block);
@@ -319,10 +334,16 @@ bool WorldClient::getTileCollisionBlocks(RectI const& region, List<CollisionBloc
     return false;
 
   output.resize(mark);
+  m_nullCollisionScratch.clear();
   const_cast<WorldClient*>(this)->freshenCollision(region);
-  m_tileArray->tileEach(region, [&output](Vec2I const&, ClientTile const& tile) {
-      for (auto const& block : tile.collisionCache)
-        output.append(&block);
+  m_tileArray->tileEach(region, [&](Vec2I const& pos, ClientTile const& tile) {
+      if (tile.getCollision() == CollisionKind::Null) {
+        m_nullCollisionScratch.append(CollisionBlock::nullBlock(pos));
+        output.append(&m_nullCollisionScratch.last());
+      } else {
+        for (auto const& block : tile.collisionCache)
+          output.append(&block);
+      }
     });
   return true;
 }
@@ -651,6 +672,80 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
       if (m_startupHiddenEntities.contains(entity->entityId()))
         continue;
 
+      // Sub-tick interpolation offset: drawables below are baked at the
+      // entity's current tick position; render lerp(prev, cur, alpha) by
+      // offsetting them backward along the last tick's motion. Exactly one
+      // offset is appended per entityDrawables entry (all emit paths below).
+      Vec2F renderOffset;
+      if (m_renderInterpolationAlpha < 1.0f) {
+        auto& hist = m_renderPositionHistory[entity->entityId()];
+        if (hist.stamp != m_renderTickStamp) {
+          uint64_t gap = m_renderTickStamp - hist.stamp;
+          Vec2F newPos = entity->position();
+          if (hist.stamp != 0 && gap <= 3) {
+            // Catch-up frames advance several ticks between snapshots; the
+            // intermediate positions are gone, but the average per-tick
+            // motion keeps interpolation smooth -- snapping instead popped
+            // visibly on exactly the frames that already hitched.
+            hist.prev = newPos - m_geometry.diff(newPos, hist.cur) / (float)gap;
+          } else {
+            // Just spawned, was off-screen, or history swept: snap.
+            hist.prev = newPos;
+          }
+          hist.cur = newPos;
+          hist.stamp = m_renderTickStamp;
+        }
+        Vec2F delta = m_geometry.diff(hist.cur, hist.prev);
+        if (delta != Vec2F() && delta.magnitude() < 8.0f) // teleports snap
+          renderOffset = delta * (m_renderInterpolationAlpha - 1.0f);
+      }
+      renderData.entityDrawableOffsets.append(renderOffset);
+
+#ifdef STAR_SYSTEM_SWITCH
+      // [perf-interp]: measure rendered-motion smoothness of the focal
+      // entity. jerk = mean |second difference| of the player's rendered
+      // world position across frames; near zero when interpolation delivers
+      // even per-frame steps, large when motion stutters.
+      if (entity == m_mainPlayer) {
+        static Vec2F s_pp[2];
+        static int s_ppN = 0;
+        static double s_jerkAccum = 0;
+        static int64_t s_jerkFrames = 0;
+        static float s_alphaMin = 1.0f, s_alphaMax = 0.0f;
+        Vec2F rendered = entity->position() + renderOffset;
+        if (s_ppN >= 2) {
+          Vec2F d1 = m_geometry.diff(s_pp[1], s_pp[0]);
+          Vec2F d2 = m_geometry.diff(rendered, s_pp[1]);
+          if (d1.magnitude() < 4.0f && d2.magnitude() < 4.0f) // skip warps
+            s_jerkAccum += (d2 - d1).magnitude();
+        }
+        s_pp[0] = s_pp[1];
+        s_pp[1] = rendered;
+        if (s_ppN < 2) ++s_ppN;
+        s_alphaMin = std::min(s_alphaMin, m_renderInterpolationAlpha);
+        s_alphaMax = std::max(s_alphaMax, m_renderInterpolationAlpha);
+        // Motion trace: per-frame keyframe detail while the player moves
+        // (budgeted), to attribute uneven rendered motion to its component --
+        // sim positions per tick (px/py per stamp), interpolation phase
+        // (alpha), or the offset math. One log pull settles it.
+        static int s_ptrBudget = 400;
+        if (s_ptrBudget > 0 && renderOffset != Vec2F()) {
+          --s_ptrBudget;
+          Logger::info("[perf-ptr] stamp={} a={:.4f} px={:.4f} py={:.4f} ox={:.4f} oy={:.4f}",
+              m_renderTickStamp, m_renderInterpolationAlpha,
+              entity->position()[0], entity->position()[1], renderOffset[0], renderOffset[1]);
+        }
+        if (++s_jerkFrames >= 300) {
+          Logger::info("[perf-interp] playerJerk={:.4f} tiles/f2 alpha=[{:.2f},{:.2f}]",
+              s_jerkAccum / s_jerkFrames, s_alphaMin, s_alphaMax);
+          s_jerkAccum = 0;
+          s_jerkFrames = 0;
+          s_alphaMin = 1.0f;
+          s_alphaMax = 0.0f;
+        }
+      }
+#endif
+
       EntityType entityType = entity->entityType();
       bool isPeripheral = underLoad
           && entity->entityId() != playerAimInteractive // aim highlight pulses per-frame, keep it live
@@ -777,6 +872,10 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
     for (auto const& id : m_peripheralRenderCache.keys()) {
       if (!stillVisible.contains(id))
         m_peripheralRenderCache.remove(id);
+    }
+    for (auto const& id : m_renderPositionHistory.keys()) {
+      if (!stillVisible.contains(id))
+        m_renderPositionHistory.remove(id);
     }
   }
 #ifdef STAR_SYSTEM_SWITCH
@@ -1352,7 +1451,14 @@ List<PacketPtr> WorldClient::getOutgoingPackets() {
   return std::move(m_outgoingPackets);
 }
 
+void WorldClient::setRenderInterpolationAlpha(float alpha) {
+  m_renderInterpolationAlpha = alpha;
+}
+
 void WorldClient::update(float dt) {
+  // Advances once per sim tick; WorldClient::render uses it to detect fresh
+  // ticks when maintaining per-entity position history for interpolation.
+  ++m_renderTickStamp;
   if (!inWorld())
     return;
 
@@ -2106,6 +2212,10 @@ void WorldClient::initWorld(WorldStartPacket const& startPacket) {
   // entity-update rate on Switch (see WorldServer::queueUpdatePackets), and
   // interpolation is what keeps entity motion smooth between the sparser
   // authoritative updates -- exactly as it does for real remote play.
+  // (Extrapolation stays at the stock hint: a longer dead-reckoning window
+  // was tried for server generation stalls and looked worse than a brief
+  // freeze -- the stalls themselves are bounded by the generation time
+  // budget in WorldServer::update instead.)
   m_interpolationTracker = InterpolationTracker(m_clientConfig.query("interpolationSettings.normal"));
 #else
   if (startPacket.localInterpolationMode)
