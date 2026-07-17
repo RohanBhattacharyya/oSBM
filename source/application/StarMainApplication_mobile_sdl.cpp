@@ -13,6 +13,10 @@
 #include "mobile/switch/StarSwitchPlatform.hpp"
 #endif
 
+#ifdef STAR_SYSTEM_IOS
+extern "C" void StarIosBridge_launchTrace(char const* msg);
+#endif
+
 namespace Star {
 
 int runMainApplication(ApplicationUPtr application, StringList cmdLineArgs) {
@@ -30,6 +34,9 @@ int runMainApplication(ApplicationUPtr application, StringList cmdLineArgs) {
 #ifdef STAR_SYSTEM_SWITCH
     switchDebugLog((String("FATAL exception in runMainApplication: ") + message).utf8Ptr());
 #endif
+#ifdef STAR_SYSTEM_IOS
+    StarIosBridge_launchTrace((String("FATAL exception: ") + message).utf8Ptr());
+#endif
     // Avoid modal SDL message boxes on iOS fatal paths; they can deadlock app
     // shutdown if a UIKit presenter is unavailable.
 #if !defined(STAR_SYSTEM_IOS) && !defined(STAR_SYSTEM_SWITCH)
@@ -45,6 +52,9 @@ int runMainApplication(ApplicationUPtr application, StringList cmdLineArgs) {
     Logger::error("{}", message);
 #ifdef STAR_SYSTEM_SWITCH
     switchDebugLog("FATAL: unknown exception in runMainApplication");
+#endif
+#ifdef STAR_SYSTEM_IOS
+    StarIosBridge_launchTrace("FATAL: unknown exception in runMainApplication");
 #endif
     // Avoid modal SDL message boxes on iOS fatal paths; they can deadlock app
     // shutdown if a UIKit presenter is unavailable.

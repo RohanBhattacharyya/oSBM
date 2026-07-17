@@ -20,6 +20,9 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 // Installs native UIScreenEdgePanGestureRecognizers on the SDL window so that a
 // true iOS left/right screen-edge swipe drives launcher back/forward navigation.
 extern "C" void StarIosBridge_installLauncherEdgeSwipes();
+// Appends a line to Documents/launch-trace.txt (user-retrievable via the
+// Files app even when the app dies instantly at launch).
+extern "C" void StarIosBridge_launchTrace(char const* msg);
 #elif STAR_SYSTEM_SWITCH
 #include "mobile/switch/StarSwitchPlatform.hpp"
 #endif
@@ -279,6 +282,20 @@ struct LauncherState {
 };
 
 
+// Launch-stage breadcrumb. On iOS a crash during launcher init is otherwise
+// completely silent: the engine log only starts once the game Root exists,
+// and the in-app diagnostics exporter needs a running app. The trace names
+// the last stage reached so an instant close is attributable from the Files
+// app without a Mac. No-op elsewhere (Android has logcat, Switch has its own
+// relaunch trace).
+static void launchBreadcrumb(char const* stage) {
+#ifdef STAR_SYSTEM_IOS
+  StarIosBridge_launchTrace(stage);
+#else
+  _unused(stage);
+#endif
+}
+
 class MobilePlatform {
 public:
   MobilePlatform(ApplicationUPtr application, StringList cmdLineArgs)
@@ -291,18 +308,26 @@ public:
 
   int run() {
     androidLogInfo("Mobile run() start");
+    launchBreadcrumb("run start");
     setupSdl();
+    launchBreadcrumb("sdl initialized");
     setupWindowAndRenderer();
+    launchBreadcrumb("window + gl context ready");
 
     m_legacyStorageRoot = defaultMobileStorageRoot();
     m_storageRoot = writableMobileStorageRoot(m_legacyStorageRoot);
+    launchBreadcrumb("storage root ready");
     m_platformServices = MobilePlatformServices::create(m_storageRoot);
+    launchBreadcrumb("platform services ready");
     syncLauncherBundledAssets();
+    launchBreadcrumb("bundled assets synced");
     reloadLauncherLocalization();
     setupImGui();
+    launchBreadcrumb("imgui ready");
 
     LauncherState launcher;
     loadLauncherState(launcher);
+    launchBreadcrumb("launcher state loaded; entering launcher");
 
     while (!m_quitRequested && !runLauncher(launcher)) {
       Thread::sleepPrecise(4);

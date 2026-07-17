@@ -17,6 +17,8 @@
 
 #include <dispatch/dispatch.h>
 #include <algorithm>
+#include <ctime>
+#include <unistd.h>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -1666,6 +1668,35 @@ extern "C" bool StarIosBridge_openAppSettings() {
   } @catch (NSException* exception) {
     NSLog(@"[OpenStarbound][iOSBridge] openAppSettings exception: %@ (%@)", exception.name, exception.reason);
     return false;
+  }
+}
+
+// Appends a timestamped line to Documents/launch-trace.txt. The Documents
+// directory is user-visible in the Files app (UIFileSharingEnabled), so this
+// trace survives -- and is retrievable after -- an instant crash at launch,
+// where neither the in-app diagnostics exporter nor the engine log (which
+// only starts writing once the game Root exists) is available. fsync so the
+// line lands even if the process dies immediately afterwards.
+extern "C" void StarIosBridge_launchTrace(const char* msg) {
+  @autoreleasepool {
+    @try {
+      NSArray* dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+      if (dirs.count == 0)
+        return;
+      NSString* path = [dirs[0] stringByAppendingPathComponent:@"launch-trace.txt"];
+      FILE* f = fopen(path.fileSystemRepresentation, "a");
+      if (!f)
+        return;
+      time_t now = time(NULL);
+      struct tm tmv;
+      localtime_r(&now, &tmv);
+      fprintf(f, "[%02d:%02d:%02d] %s\n", tmv.tm_hour, tmv.tm_min, tmv.tm_sec, msg ? msg : "");
+      fflush(f);
+      fsync(fileno(f));
+      fclose(f);
+    } @catch (NSException* exception) {
+      NSLog(@"[OpenStarbound][iOSBridge] launchTrace exception: %@ (%@)", exception.name, exception.reason);
+    }
   }
 }
 
