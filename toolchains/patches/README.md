@@ -63,6 +63,29 @@ keyboard with the textbox's current content and replace (rather than append)
 it on submit. The SDL path in this patch still matters for the ImGui
 launcher's text fields.
 
+## libgcc GCS scrub (script step, no .patch file)
+
+`apply-toolchain-patches.sh` also binary-patches every multilib variant of
+devkitA64's `libgcc.a` (top-level, `pic/`, `large/` — note `-fPIE` links
+`pic/`): gcc 16's aarch64 unwinder probes for the ARM Guarded Control Stack
+feature with `mov x16,#1; chkfeat x16; cbnz x16, skip` and reads
+`gcspr_el0` when present. Real hardware (Cortex-A57) executes the
+unallocated `chkfeat` hint as a NOP, so the GCS path is skipped — but
+Ryujinx mis-implements the hint as "feature present" and then rejects the
+unknown `gcspr_el0` register at JIT **translation** time (so even the dead
+instruction crashes it). The script NOPs both the `chkfeat` probes and the
+`mrs gcspr_el0` reads; Horizon has no GCS, so this changes nothing real.
+
+Related, in the game link itself (not a toolchain patch): libgcc's
+registered-object FDE search returns NULL for valid PCs in a binary this
+large, which turned EVERY C++ `throw` into an abort ("The software was
+closed because an error occurred") — first surfaced by FrackinUniverse's
+json-patch `test` operations, which throw as control flow. The game wraps
+`_Unwind_Find_FDE` (see `StarSwitchPlatform.cpp` and
+`source/client/CMakeLists.txt`) and falls back to binary-searching ld's own
+`.eh_frame_hdr` table. A boot-time "unwind self-check" line in the log /
+crash.txt reports FDE lookup + throw/catch health every launch.
+
 ## Applying manually
 
 ```sh

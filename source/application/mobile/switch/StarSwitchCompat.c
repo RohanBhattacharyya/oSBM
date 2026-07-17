@@ -179,6 +179,17 @@ char* dirname(char* path) {
 #include <stdio.h>
 #include <stdatomic.h>
 
+#ifndef STAR_SWITCH_ALLOC_ATTRIBUTION
+/* Attribution disabled (the default): the 16-byte tag header the wrappers
+ * prepend to every newlib allocation breaks libgcc's DWARF unwinder state,
+ * turning every C++ throw into an abort. Keep only the report stub so callers
+ * link; enable STAR_SWITCH_ALLOC_ATTRIBUTION (cmake option + the matching
+ * --wrap link flags) for a dedicated leak-hunt build. */
+void starAllocTrackReport(char* buf, size_t bufSize) {
+  if (buf && bufSize)
+    snprintf(buf, bufSize, " alloc attribution disabled");
+}
+#else
 extern void* __real_malloc(size_t);
 extern void __real_free(void*);
 extern void* __real_realloc(void*, size_t);
@@ -313,3 +324,4 @@ void starAllocTrackReport(char* buf, size_t bufSize) {
       atomic_store_explicit(&s_atTable[i].live, -lv, memory_order_relaxed);
   }
 }
+#endif /* STAR_SWITCH_ALLOC_ATTRIBUTION */

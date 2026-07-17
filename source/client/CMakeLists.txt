@@ -68,12 +68,26 @@ IF (STAR_SYSTEM_SWITCH)
   TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=exit")
   TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=_exit")
   TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=appletExit")
+  # C++ exception unwinding repair: libgcc's registered-object FDE search
+  # returns NULL for valid PCs in a binary of this size, so every `throw`
+  # aborted the process. The wrap falls back to searching ld's own
+  # .eh_frame_hdr binary-search table (see StarSwitchPlatform.cpp).
+  TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=_Unwind_Find_FDE")
 
-  # Diagnostic: per-caller allocation attribution (StarSwitchCompat.c).
-  TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=malloc")
-  TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=calloc")
-  TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=realloc")
-  TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=free")
+  # Diagnostic per-caller allocation attribution (StarSwitchCompat.c) --
+  # DISABLED: kept for opt-in leak hunts only. The 16-byte tag header the
+  # wrappers prepend to every newlib allocation breaks libgcc's DWARF
+  # unwinder state, turning EVERY C++ throw into an abort/_exit(1) ("The
+  # software was closed because an error occurred"). Vanilla assets rarely
+  # throw so it went unnoticed; FrackinUniverse's json-patch test operations
+  # throw constantly and crashed the boot. Re-enable all four together only
+  # for a diagnostic build.
+  IF (STAR_SWITCH_ALLOC_ATTRIBUTION)
+    TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=malloc")
+    TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=calloc")
+    TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=realloc")
+    TARGET_LINK_OPTIONS (starbound PRIVATE "-Wl,--wrap=free")
+  ENDIF ()
 ENDIF ()
 
 IF (STAR_PRECOMPILED_HEADERS)

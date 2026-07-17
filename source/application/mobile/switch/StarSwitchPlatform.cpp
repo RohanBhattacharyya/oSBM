@@ -10,6 +10,84 @@
 // the faulting PC/LR as module-relative offsets before libnx's fatal path
 // runs -- Ryujinx's own fatal report often carries a zeroed context, which
 // makes crashes on worker threads undiagnosable without this.
+#include <fcntl.h>
+#include <unistd.h>
+
+extern "C" char __start__; // module base (libnx runtime symbol)
+
+// ---- C++ exception unwinding repair -----------------------------------------
+// libgcc's FDE lookup (registered-object search in unwind-dw2-fde) returns
+// NULL for valid PCs in this binary (verified: the FDE table is complete and
+// well-formed via readelf, a manual __register_frame_info + lookup still
+// misses, while a minimal NRO with a small table works). The unwinder then
+// fails its gcc_assert in uw_init_context_1 and abort()s -- every single
+// C++ `throw` killed the process ("The software was closed because an error
+// occurred"), first noticed when FrackinUniverse's json-patch test operations
+// (throw-as-control-flow) crashed the boot.
+//
+// Repair: wrap _Unwind_Find_FDE (--wrap intercepts even libgcc-internal
+// calls, same as the fatalThrow wrap). Try the real lookup first; when it
+// misses, binary-search the linker's own .eh_frame_hdr table (built by ld
+// --eh-frame-hdr; correct by construction) between the linker-script bounds
+// __eh_frame_hdr_start/__eh_frame_hdr_end.
+struct StarDwarfEhBases { void* tbase; void* dbase; void* func; };
+extern "C" void* __real__Unwind_Find_FDE(void*, StarDwarfEhBases*);
+extern "C" char __eh_frame_hdr_start[];
+extern "C" char __eh_frame_hdr_end[];
+
+extern "C" void* __wrap__Unwind_Find_FDE(void* pc, StarDwarfEhBases* bases) {
+  if (void* fde = __real__Unwind_Find_FDE(pc, bases))
+    return fde;
+
+  unsigned char const* hdr = (unsigned char const*)__eh_frame_hdr_start;
+  if (__eh_frame_hdr_end - __eh_frame_hdr_start < 16)
+    return nullptr;
+  // Layout emitted by GNU ld: version 1; eh_frame_ptr encoded pcrel|sdata4
+  // (0x1b); fde_count udata4 (0x03); table datarel|sdata4 (0x3b) sorted by
+  // initial location. Bail on anything else rather than misparse.
+  if (hdr[0] != 1 || hdr[1] != 0x1b || hdr[2] != 0x03 || hdr[3] != 0x3b)
+    return nullptr;
+  unsigned fdeCount;
+  memcpy(&fdeCount, hdr + 8, 4);
+  struct Entry { int32_t initialLoc; int32_t fde; };
+  Entry const* table = (Entry const*)(hdr + 12);
+  if (fdeCount == 0 || (unsigned char const*)(table + fdeCount) > (unsigned char const*)__eh_frame_hdr_end)
+    return nullptr;
+
+  intptr_t rel = (intptr_t)pc - (intptr_t)hdr; // pc as datarel offset
+  if (rel < table[0].initialLoc)
+    return nullptr;
+  unsigned lo = 0, hi = fdeCount;
+  while (hi - lo > 1) {
+    unsigned mid = lo + (hi - lo) / 2;
+    if (table[mid].initialLoc <= rel)
+      lo = mid;
+    else
+      hi = mid;
+  }
+  if (bases) {
+    bases->tbase = nullptr;
+    bases->dbase = (void*)hdr;
+    bases->func = (void*)(hdr + table[lo].initialLoc);
+  }
+  return (void*)(hdr + table[lo].fde);
+}
+
+// Best-effort persistent crash breadcrumb: svcOutputDebugString is invisible
+// on real hardware ("The software was closed because an error occurred" with
+// no report), so mirror crash-handler output to a file the user can pull.
+// Raw fd I/O only -- no stdio buffering, no engine types, crash-context safe
+// as far as the fs layer allows.
+static void starSwitchCrashLog(char const* msg, size_t len) {
+  int fd = open("/switch/oSBM/crash.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+  if (fd < 0)
+    return;
+  write(fd, msg, len);
+  write(fd, "\n", 1);
+  fsync(fd);
+  close(fd);
+}
+
 extern "C" {
 alignas(16) unsigned char __nx_exception_stack[0x8000];
 u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
@@ -26,20 +104,26 @@ void NX_NORETURN __real_fatalThrow(Result err);
 extern "C" void __stack_chk_fail(void) {
   const char* m = "ABORT: __stack_chk_fail (stack buffer overflow detected)";
   svcOutputDebugString(m, strlen(m));
+  starSwitchCrashLog(m, strlen(m));
   for (;;) svcSleepThread(1000000000ull);
 }
 static void starSwitchTerminateHandler() {
   const char* m = "ABORT: std::terminate";
   svcOutputDebugString(m, strlen(m));
+  starSwitchCrashLog(m, strlen(m));
   if (auto ex = std::current_exception()) {
     try { std::rethrow_exception(ex); }
     catch (std::exception const& e) {
       char buf[256];
       int len = snprintf(buf, sizeof(buf), "ABORT: uncaught exception: %s", e.what());
-      if (len > 0) svcOutputDebugString(buf, (size_t)len);
+      if (len > 0) {
+        svcOutputDebugString(buf, (size_t)len);
+        starSwitchCrashLog(buf, (size_t)len);
+      }
     } catch (...) {
       const char* m2 = "ABORT: uncaught non-std exception";
       svcOutputDebugString(m2, strlen(m2));
+      starSwitchCrashLog(m2, strlen(m2));
     }
   }
   for (;;) svcSleepThread(1000000000ull);
@@ -57,8 +141,10 @@ void NX_NORETURN __wrap_fatalThrow(Result err) {
   int len = snprintf(buf, sizeof(buf), "FATALTHROW: result=0x%x (%u-%u) caller=0x%llx (mod+0x%llx)",
       err, (unsigned)(2000 + R_MODULE(err)), (unsigned)R_DESCRIPTION(err),
       (unsigned long long)caller, (unsigned long long)(caller - base));
-  if (len > 0)
+  if (len > 0) {
     svcOutputDebugString(buf, (size_t)len);
+    starSwitchCrashLog(buf, (size_t)len);
+  }
   __real_fatalThrow(err);
   for (;;) svcSleepThread(1000000000ull);
 }
@@ -81,8 +167,10 @@ extern "C" void __wrap_diagAbortWithResult(Result res) {
       "DIAGABORT (swallowed): result=0x%x (%u-%u) caller=0x%llx (mod+0x%llx)",
       res, (unsigned)(2000 + R_MODULE(res)), (unsigned)R_DESCRIPTION(res),
       (unsigned long long)c0, (unsigned long long)(c0 - base));
-  if (len > 0)
+  if (len > 0) {
     svcOutputDebugString(buf, (size_t)len);
+    starSwitchCrashLog(buf, (size_t)len);
+  }
   // mini frame-pointer backtrace for the abort site
   u64 fp = (u64)__builtin_frame_address(0);
   for (int i = 0; i < 5 && fp >= 0x1000; ++i) {
@@ -161,8 +249,10 @@ void __libnx_exception_handler(ThreadExceptionDump* ctx) {
       (unsigned long long)ctx->far.x, (unsigned long long)ctx->sp.x,
       (unsigned long long)ctx->cpu_gprs[0].x, (unsigned long long)ctx->cpu_gprs[8].x,
       (unsigned long long)ctx->cpu_gprs[19].x);
-  if (len > 0)
+  if (len > 0) {
     svcOutputDebugString(buf, (size_t)len);
+    starSwitchCrashLog(buf, (size_t)len);
+  }
   // Also walk a few stack frames via the frame pointer for a mini backtrace.
   u64 fp = ctx->fp.x;
   for (int i = 0; i < 6 && fp >= 0x1000; ++i) {
@@ -174,8 +264,10 @@ void __libnx_exception_handler(ThreadExceptionDump* ctx) {
     memcpy(frame, (void*)fp, sizeof(frame));
     len = snprintf(buf, sizeof(buf), "GUEST EXCEPTION FRAME %d: lr=0x%llx (mod+0x%llx)", i,
         (unsigned long long)frame[1], (unsigned long long)(frame[1] - base));
-    if (len > 0)
+    if (len > 0) {
       svcOutputDebugString(buf, (size_t)len);
+      starSwitchCrashLog(buf, (size_t)len);
+    }
     fp = frame[0];
   }
 }
@@ -220,6 +312,54 @@ namespace {
 void switchPlatformInit() {
   if (g_initStarted.test_and_set())
     return;
+
+  {
+    // Boot marker in the crash file so any handler entries that follow can be
+    // attributed to a specific launch/build. Also record the runtime address
+    // of a known function: crash-handler backtraces print raw addresses, and
+    // subtracting this anchor (vs its ELF vaddr from nm) symbolizes them even
+    // when __start__ resolves uselessly under a given loader.
+    char b[192];
+    int l = snprintf(b, sizeof(b), "---- boot %s %s ---- anchor switchPlatformInit=%p __start__=%p",
+        __DATE__, __TIME__, (void*)&switchPlatformInit, (void*)&__start__);
+    if (l > 0) {
+      starSwitchCrashLog(b, (size_t)l);
+      svcOutputDebugString(b, (size_t)l);
+    }
+  }
+
+  // Unwinder self-check: exercise a real throw/catch once at boot and record
+  // the result. If exception unwinding regresses again (toolchain update,
+  // link-flag change), this makes it visible in crash.txt/logs immediately
+  // instead of as an unexplained crash on the first gameplay throw.
+  {
+    StarDwarfEhBases bases{};
+    void* pc = (void*)((char*)&switchPlatformInit + 8);
+    void* fde = __wrap__Unwind_Find_FDE(pc, &bases);
+    bool caught = false;
+    try {
+      throw std::runtime_error("probe");
+    } catch (std::exception const&) {
+      caught = true;
+    }
+    char b[96];
+    int l = snprintf(b, sizeof(b), "unwind self-check: fde=%p throw=%s",
+        fde, caught ? "OK" : "NOT CAUGHT");
+    if (l > 0) {
+      svcOutputDebugString(b, (size_t)l);
+      starSwitchCrashLog(b, (size_t)l);
+    }
+  }
+
+  // Capture newlib stderr/stdout: mesa (the statically linked GL driver), C
+  // assert(), and other third-party fatal paths print their reason there and
+  // then _exit(1) -- without this redirect those messages vanish and a driver
+  // fatal presents as a silent crash with no report. stderr is unbuffered so
+  // the message survives an _exit that skips stdio flushing.
+  if (freopen("/switch/oSBM/stderr.txt", "w", stderr))
+    setvbuf(stderr, nullptr, _IONBF, 0);
+  if (freopen("/switch/oSBM/stdout.txt", "w", stdout))
+    setvbuf(stdout, nullptr, _IOLBF, 0);
 
   Result rc = romfsInit();
   g_romfsMounted = R_SUCCEEDED(rc);

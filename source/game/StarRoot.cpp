@@ -54,6 +54,9 @@
 #include "StarCollectionDatabase.hpp"
 
 #include <sstream>
+#ifdef STAR_SYSTEM_SWITCH
+#include <malloc.h>
+#endif
 
 namespace Star {
 
@@ -66,7 +69,16 @@ namespace {
 #endif
 
   String processMemorySummary() {
-#if defined(STAR_SYSTEM_ANDROID)
+#if defined(STAR_SYSTEM_SWITCH)
+    // newlib heap view: covers BOTH rpmalloc span growth (engine) and direct
+    // newlib users (the mesa/nouveau GL driver). Boot-stage deltas show which
+    // load phase eats the ~3GB application pool when a big mod pushes the
+    // console toward OOM.
+    struct mallinfo mi = mallinfo();
+    return strf("newlibUsed={}MB newlibFree={}MB arena={}MB",
+        (uint64_t)(unsigned)mi.uordblks >> 20, (uint64_t)(unsigned)mi.fordblks >> 20,
+        (uint64_t)(unsigned)mi.arena >> 20);
+#elif defined(STAR_SYSTEM_ANDROID)
     try {
       auto status = File::readFileString("/proc/self/status");
       std::istringstream stream(status.utf8());

@@ -71,15 +71,27 @@ void PackedAssetSource::build(DirectoryAssetSource& directorySource, String cons
 PackedAssetSource::PackedAssetSource(String const& filename) {
   m_packedFile = File::open(filename, IOMode::Read);
 
-  DataStreamIODevice ds(m_packedFile);
-  if (ds.readBytes(8) != ByteArray("SBAsset6", 8))
+  // Read the header and the whole index region with two bulk reads and parse
+  // from memory. Parsing through DataStreamIODevice issues a device read PER
+  // BYTE (varints, string lengths); a large mod pak's index is megabytes, and
+  // on devices where every read is a real syscall against slow storage (SD
+  // card on console targets) that turned each pak open into tens of seconds.
+  char header[16];
+  m_packedFile->readFullAbsolute(0, header, sizeof(header));
+  if (ByteArray(header, 8) != ByteArray("SBAsset6", 8))
     throw AssetSourceException("Packed assets file format unrecognized!");
+  uint64_t indexStart;
+  memcpy(&indexStart, header + 8, sizeof(indexStart));
+  indexStart = fromBigEndian(indexStart);
 
-  uint64_t indexStart = ds.read<uint64_t>();
+  StreamOffset fileSize = m_packedFile->size();
+  if (indexStart + 5 > (uint64_t)fileSize)
+    throw AssetSourceException("No index header found!");
+  ByteArray indexData((size_t)(fileSize - indexStart), 0);
+  m_packedFile->readFullAbsolute(indexStart, indexData.ptr(), indexData.size());
 
-  ds.seek(indexStart);
-  ByteArray header = ds.readBytes(5);
-  if (header != ByteArray("INDEX", 5))
+  DataStreamBuffer ds(std::move(indexData));
+  if (ds.readBytes(5) != ByteArray("INDEX", 5))
     throw AssetSourceException("No index header found!");
   ds.read(m_metadata);
   ds.read(m_index);
