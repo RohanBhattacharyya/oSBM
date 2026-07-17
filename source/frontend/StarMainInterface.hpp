@@ -153,6 +153,7 @@ private:
     Codex,
     QuestLog,
     Collections,
+    Chat,
     MatterManipulator,
     SwapHotbar,
     Deploy,

@@ -2047,6 +2047,7 @@ List<MainInterface::ActionWheelItem> MainInterface::actionWheelItems() const {
   items.append({ActionWheelAction::Codex, {}, "Codex", m_config->codexImage, {}, {}, true});
   items.append({ActionWheelAction::QuestLog, {}, "Quests", m_config->questLogImage, {}, {}, true});
   items.append({ActionWheelAction::Collections, {}, "Collections", m_config->collectionsImage, {}, {}, true});
+  items.append({ActionWheelAction::Chat, {}, "Chat", "/interface/osbm/chaticon.png", {}, {}, true});
 
   bool hasMatterManipulator = (bool)m_client->mainPlayer()->inventory()->essentialItem(EssentialItem::BeamAxe);
   items.append({ActionWheelAction::MatterManipulator, {}, "Matter Manipulator", hasMatterManipulator ? m_config->mmUpgradeImage : m_config->mmUpgradeImageDisabled, {}, {}, hasMatterManipulator});
@@ -2158,6 +2159,9 @@ void MainInterface::activateActionWheelAction(ActionWheelAction action) {
       break;
     case ActionWheelAction::Collections:
       m_paneManager.toggleRegisteredPane(MainInterfacePanes::Collections);
+      break;
+    case ActionWheelAction::Chat:
+      m_chat->startChat();
       break;
     case ActionWheelAction::MatterManipulator:
       if (m_client->mainPlayer()->inventory()->essentialItem(EssentialItem::BeamAxe))
