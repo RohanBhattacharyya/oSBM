@@ -624,13 +624,28 @@ void switchSyncBundledAssets(String const& storageRoot) {
     return;
   }
   String target = File::relativeTo(storageRoot, "bundled_assets");
-  // Only the launcher lang dir + font are needed before the launcher renders;
-  // they are already present, so a repeat sync is a cheap no-op (copy skips
-  // existing files). The first run copies the bundled assets and can take a few
-  // seconds on the SD card, so bracket it with log lines for visibility.
+  // The recursive copy skips files that already exist -- a cheap no-op on
+  // repeat launches, but it silently leaves stale copies of files a NEW BUILD
+  // changed (the engine then runs against old bundled configs/scripts).
+  // Detect a build change via a stamp file and wipe + recopy when it moves;
+  // the full copy only costs a few SD-card seconds once per build.
   switchDebugLog("switchSyncBundledAssets: start (romfs:/bundled_assets -> SD)");
   try {
+    String stamp = String(__DATE__) + " " + __TIME__;
+    String stampPath = File::relativeTo(storageRoot, "bundled_assets.stamp");
+    String existing;
+    try {
+      if (File::isFile(stampPath))
+        existing = File::readFileString(stampPath);
+    } catch (std::exception const&) {}
+    if (existing != stamp) {
+      switchDebugLog("switchSyncBundledAssets: build changed, refreshing bundled assets");
+      if (File::isDirectory(target))
+        File::removeDirectoryRecursive(target);
+    }
     copyDirectoryRecursive("romfs:/bundled_assets", target);
+    if (existing != stamp)
+      File::writeFile(stamp.utf8Ptr(), stamp.utf8Size(), stampPath);
     switchDebugLog("switchSyncBundledAssets: done");
   } catch (std::exception const& e) {
     Logger::error("switchSyncBundledAssets failed: {}", e.what());

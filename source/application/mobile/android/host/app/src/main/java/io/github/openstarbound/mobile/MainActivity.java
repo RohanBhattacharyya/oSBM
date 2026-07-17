@@ -1748,9 +1748,43 @@ public final class MainActivity extends SDLActivity {
                 return null;
             }
 
+            // The per-file copy below only fills in MISSING files, which
+            // silently leaves stale copies of files an app update CHANGED.
+            // Detect updates via the apk's lastUpdateTime and force a fresh
+            // copy of the bundled trees when it moves.
+            String stamp = "unknown";
+            try {
+                stamp = Long.toString(activity.getPackageManager()
+                    .getPackageInfo(activity.getPackageName(), 0).lastUpdateTime);
+            } catch (Throwable ignored) {
+            }
+            File stampFile = new File(targetRoot, ".bundle-sync-stamp");
+            String existingStamp = null;
+            try {
+                if (stampFile.isFile()) {
+                    byte[] raw = new byte[(int) Math.min(stampFile.length(), 128)];
+                    try (InputStream in = new java.io.FileInputStream(stampFile)) {
+                        int read = in.read(raw);
+                        existingStamp = new String(raw, 0, Math.max(read, 0), "UTF-8").trim();
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            boolean needsRefresh = existingStamp == null || !existingStamp.equals(stamp);
+            if (needsRefresh) {
+                deleteRecursively(new File(targetRoot, "opensb"));
+                deleteRecursively(new File(targetRoot, "lang"));
+                new File(targetRoot, "hobo.ttf").delete();
+            }
+
             boolean opensbOk = copyAssetTreeIfMissing(activity, "opensb", new File(targetRoot, "opensb"));
             boolean langOk = copyAssetTreeIfMissing(activity, "lang", new File(targetRoot, "lang"));
             boolean fontOk = copyAssetTreeIfMissing(activity, "opensb/hobo.ttf", new File(targetRoot, "hobo.ttf"));
+            if (needsRefresh && opensbOk) {
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(stampFile)) {
+                    out.write(stamp.getBytes("UTF-8"));
+                }
+            }
             Log.i(TAG, "syncBundledAssets: root=" + targetRoot.getAbsolutePath()
                 + " opensbOk=" + opensbOk
                 + " langOk=" + langOk

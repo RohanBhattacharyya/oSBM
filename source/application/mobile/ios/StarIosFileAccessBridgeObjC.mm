@@ -1195,6 +1195,20 @@ extern "C" int StarIosBridge_getInterfaceOrientation() {
   return result;
 }
 
+// Identifies the installed app build: executable mtime + size. Sideloaded
+// builds often keep the same CFBundleVersion, so version strings alone can't
+// detect an update -- the executable itself always changes.
+static NSString* currentBundleSyncStamp() {
+  NSString* execPath = NSBundle.mainBundle.executablePath;
+  if (!execPath)
+    return @"unknown";
+  NSDictionary* attrs = [NSFileManager.defaultManager attributesOfItemAtPath:execPath error:nil];
+  if (!attrs)
+    return @"unknown";
+  return [NSString stringWithFormat:@"%@|%@",
+      attrs[NSFileModificationDate] ?: @"?", attrs[NSFileSize] ?: @"?"];
+}
+
 extern "C" char* StarIosBridge_syncBundledAssets(char const* targetRootDirectory) {
   @try {
     @autoreleasepool {
@@ -1206,7 +1220,21 @@ extern "C" char* StarIosBridge_syncBundledAssets(char const* targetRootDirectory
       if (!sourceOpensb)
         return nullptr;
 
+      // The per-file copy below only fills in MISSING files (cheap no-op on
+      // every later launch), which silently leaves stale copies of files the
+      // update CHANGED -- the engine then runs against old configs/scripts.
+      // Detect an app update via the executable stamp and force a fresh copy.
+      NSFileManager* fm = NSFileManager.defaultManager;
+      NSString* stampPath = [targetRoot stringByAppendingPathComponent:@".bundle-sync-stamp"];
+      NSString* stamp = currentBundleSyncStamp();
+      NSString* existingStamp = [NSString stringWithContentsOfFile:stampPath encoding:NSUTF8StringEncoding error:nil];
+      bool needsRefresh = !existingStamp || ![existingStamp isEqualToString:stamp];
+
       NSString* targetOpensb = [targetRoot stringByAppendingPathComponent:@"opensb"];
+      if (needsRefresh) {
+        [fm removeItemAtPath:targetOpensb error:nil];
+        [fm removeItemAtPath:[targetRoot stringByAppendingPathComponent:@"lang"] error:nil];
+      }
       if (!copyBundleTreeIfMissing(sourceOpensb, targetOpensb))
         return nullptr;
 
@@ -1224,6 +1252,9 @@ extern "C" char* StarIosBridge_syncBundledAssets(char const* targetRootDirectory
           break;
         }
       }
+
+      if (needsRefresh)
+        [stamp writeToFile:stampPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
       return copyCString(targetRoot);
     }
