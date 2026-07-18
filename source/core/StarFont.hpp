@@ -43,8 +43,13 @@ private:
   ByteArrayConstPtr m_fontBuffer;
   unsigned m_pixelSize;
   uint8_t m_alphaThreshold;
+  bool m_loadFailureLogged = false;
 
   void loadFontImpl();
+  // A font that fails to load (e.g. FreeType allocation failure under memory
+  // pressure) renders blank glyphs instead of throwing out of the render
+  // loop and taking the whole session down. Logged once per font.
+  bool tryLoadFontImpl();
   HashMap<pair<String::Char, unsigned>, unsigned> m_widthCache;
 };
 

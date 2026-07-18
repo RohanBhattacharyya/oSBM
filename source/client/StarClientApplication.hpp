@@ -146,6 +146,11 @@ private:
   int64_t m_hudSyncCounter = 0;
   bool m_hudFbValid = false;
   bool m_autopilotActive = false;
+  // Optional autopilot.flag contents: "stay" keeps the player on the ship
+  // (no auto-beam), "warp=<action>" warps once to the parsed WarpAction
+  // (e.g. warp=instanceworld:outpost) after arrival. Test infra only.
+  bool m_autopilotStayOnShip = false;
+  String m_autopilotWarpTarget;
   float m_pendingInterfaceDt = 0.0f;
   unsigned m_interfaceUpdateCounter = 0;
   float m_simTickDt = 0.0f;

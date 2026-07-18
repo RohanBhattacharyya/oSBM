@@ -1,6 +1,7 @@
 #include "StarFont.hpp"
 #include "StarFile.hpp"
 #include "StarFormat.hpp"
+#include "StarLogging.hpp"
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -62,8 +63,15 @@ void Font::setPixelSize(unsigned pixelSize) {
   if (m_pixelSize == pixelSize)
     return;
 
-  if (m_fontImpl && FT_Set_Pixel_Sizes(m_fontImpl->face, m_pixelSize = pixelSize, 0))
-    throw FontException(strf("Cannot set font pixel size to: {}", m_pixelSize));
+  if (m_fontImpl && FT_Set_Pixel_Sizes(m_fontImpl->face, m_pixelSize = pixelSize, 0)) {
+    // Non-fatal for the same reason as tryLoadFontImpl: a mid-session
+    // FreeType failure must not unwind the render loop. Glyphs render at the
+    // previous size until a retry succeeds.
+    if (!m_loadFailureLogged) {
+      m_loadFailureLogged = true;
+      Logger::error("Font pixel size change to {} failed, keeping previous size", m_pixelSize);
+    }
+  }
 }
 
 void Font::setAlphaThreshold(uint8_t alphaThreshold) {
@@ -78,7 +86,8 @@ unsigned Font::width(String::Char c) {
   if (auto width = m_widthCache.maybe({c, m_pixelSize})) {
     return *width;
   } else {
-    loadFontImpl();
+    if (!tryLoadFontImpl())
+      return 0;
     FT_Load_Char(m_fontImpl->face, c, FontLoadFlags);
     unsigned newWidth = (m_fontImpl->face->glyph->linearHoriAdvance + 32768) / 65536;
     m_widthCache.insert({c, m_pixelSize}, newWidth);
@@ -93,7 +102,7 @@ void Font::loadFontImpl() {
 
     shared_ptr<FontImpl> fontImpl = make_shared<FontImpl>();
     if (FT_New_Memory_Face(ftContext.library, (FT_Byte const*)m_fontBuffer->ptr(), m_fontBuffer->size(), 0, &fontImpl->face))
-      throw FontException::format("Could not load font from buffer");
+      throw FontException::format("Could not load font from buffer ({} bytes)", m_fontBuffer->size());
 
     if (FT_Set_Pixel_Sizes(fontImpl->face, m_pixelSize, 0))
       throw FontException::format("Cannot set font pixel size to: {}", m_pixelSize);
@@ -102,8 +111,28 @@ void Font::loadFontImpl() {
   }
 }
 
+bool Font::tryLoadFontImpl() {
+  // Lazy FT face creation can fail long after asset load (e.g. FreeType
+  // allocation failure once a heavily-modded session nears the platform
+  // memory ceiling). Letting that exception escape here unwinds the entire
+  // render loop and ends the session; degrading to blank glyphs keeps it
+  // alive, and the load is retried on later glyphs in case the failure was
+  // transient pressure.
+  try {
+    loadFontImpl();
+    return true;
+  } catch (std::exception const& e) {
+    if (!m_loadFailureLogged) {
+      m_loadFailureLogged = true;
+      Logger::error("Font load failed, rendering blank glyphs: {}", e.what());
+    }
+    return false;
+  }
+}
+
 tuple<Image, Vec2I, bool> Font::render(String::Char c) {
-  loadFontImpl();
+  if (!tryLoadFontImpl())
+    return {};
 
   FT_Face face = m_fontImpl->face;
   if (FT_Load_Glyph(face, FT_Get_Char_Index(face, c), FontLoadFlags) != 0)
@@ -163,7 +192,8 @@ tuple<Image, Vec2I, bool> Font::render(String::Char c) {
 }
 
 bool Font::exists(String::Char c) {
-  loadFontImpl();
+  if (!tryLoadFontImpl())
+    return false;
   return FT_Get_Char_Index(m_fontImpl->face, c);
 }
 

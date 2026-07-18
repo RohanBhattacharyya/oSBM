@@ -1482,8 +1482,23 @@ void ClientApplication::updateTitle(float dt) {
     // the main thread intermittently crashed in opendir (null strchr). One
     // check at title time is enough; the flag doesn't change mid-run.
     static int s_autopilotFlagCached = -1;
-    if (s_autopilotFlagCached < 0 && m_titleScreen->currentState() == TitleState::Main)
+    if (s_autopilotFlagCached < 0 && m_titleScreen->currentState() == TitleState::Main) {
       s_autopilotFlagCached = File::isFile("/switch/oSBM/autopilot.flag") ? 1 : 0;
+      if (s_autopilotFlagCached == 1) {
+        // The flag's contents select optional behaviors (empty file = classic
+        // beam-down-and-walk): "stay" idles on the ship, "warp=<action>"
+        // warps once to any parseWarpAction target (e.g. instanceworld:outpost).
+        try {
+          auto contents = String(File::readFileString("/switch/oSBM/autopilot.flag"));
+          m_autopilotStayOnShip = contents.contains("stay");
+          for (auto const& line : contents.split('\n')) {
+            auto trimmed = line.trim();
+            if (trimmed.beginsWith("warp="))
+              m_autopilotWarpTarget = trimmed.substr(5).trim();
+          }
+        } catch (std::exception const&) {}
+      }
+    }
     if (!s_autopilotStarted && m_titleScreen->currentState() == TitleState::Main
         && m_playerStorage && m_playerStorage->playerUuidAt(0)
         && s_autopilotFlagCached == 1) {
@@ -1576,9 +1591,29 @@ void ClientApplication::updateRunning(float dt) {
       if (m_mainInterface && (nowSecs - s_lastAutoBeam > 60.0)
           && m_universeClient->playerWorld().is<ClientShipWorldId>()
           && !m_universeClient->flying() && m_universeClient->clientContext()->orbitWarpAction()
-          && m_autopilotActive) {
+          && m_autopilotActive && !m_autopilotStayOnShip && m_autopilotWarpTarget.empty()) {
         s_lastAutoBeam = nowSecs;
         m_universeClient->warpPlayer(WarpAlias::OrbitedWorld, true, "beam");
+      }
+
+      // Autopilot warp target: one-shot warp to an arbitrary destination
+      // (e.g. warp=instanceworld:outpost for the #39 parallax scene) once the
+      // player is settled in their arrival world.
+      static bool s_autopilotWarpDone = false;
+      static double s_autopilotWarpArmAt = 0;
+      if (m_autopilotActive && !s_autopilotWarpDone && !m_autopilotWarpTarget.empty()
+          && m_player && m_player->inWorld()) {
+        if (s_autopilotWarpArmAt == 0)
+          s_autopilotWarpArmAt = nowSecs + 10.0;
+        else if (nowSecs > s_autopilotWarpArmAt) {
+          s_autopilotWarpDone = true;
+          try {
+            m_universeClient->warpPlayer(parseWarpAction(m_autopilotWarpTarget), true, "beam");
+            Logger::info("[autopilot] warping to {}", m_autopilotWarpTarget);
+          } catch (std::exception const& e) {
+            Logger::error("[autopilot] warp to '{}' failed: {}", m_autopilotWarpTarget, e.what());
+          }
+        }
       }
 
       // Autopilot walk: exercise REAL gameplay load (camera scroll, tile
