@@ -11,13 +11,23 @@ on:
           - Release
           - Debug
         default: Release
+      arch:
+        description: Target architecture (universal builds all ABIs into one APK plus the per-ABI APKs)
+        required: true
+        type: choice
+        options:
+          - arm64
+          - armv7
+          - x86_64
+          - universal
+        default: arm64
 
 permissions:
   contents: read
 
 jobs:
   build_android:
-    name: Build Android ARM64 APK
+    name: Build Android APK (${{ inputs.arch }})
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -70,27 +80,64 @@ jobs:
           vcpkgJsonGlob: "**/source/vcpkg.json"
           vcpkgConfigurationJsonGlob: "**/source/vcpkg-configuration.json"
 
-      - name: Select CMake preset
+      - name: Select CMake presets
         run: |
+          echo "OSBM_VERSION=$(tr -d ' \n' < VERSION)" >> "${GITHUB_ENV}"
+
           if [ "${{ inputs.build_type }}" = "Debug" ]; then
-            echo "CMAKE_PRESET=android-arm64-debug" >> "${GITHUB_ENV}"
-            echo "APK_PATH=source/application/mobile/android/host/app/build/outputs/apk/debug/app-debug.apk" >> "${GITHUB_ENV}"
+            SUFFIX=debug
+            if [ "${{ inputs.arch }}" = "universal" ]; then
+              echo "Universal APKs are release-only; pick a single arch for Debug builds." >&2
+              exit 1
+            fi
           else
-            echo "CMAKE_PRESET=android-arm64-release" >> "${GITHUB_ENV}"
-            echo "APK_PATH=source/application/mobile/android/host/app/build/outputs/apk/release/app-release.apk" >> "${GITHUB_ENV}"
+            SUFFIX=release
           fi
 
-      - name: Configure CMake
-        working-directory: source
-        run: cmake --preset "${CMAKE_PRESET}"
+          case "${{ inputs.arch }}" in
+            arm64)
+              echo "CMAKE_PRESETS=android-arm64-${SUFFIX}" >> "${GITHUB_ENV}"
+              ;;
+            armv7)
+              echo "CMAKE_PRESETS=android-armv7-${SUFFIX}" >> "${GITHUB_ENV}"
+              ;;
+            x86_64)
+              echo "CMAKE_PRESETS=android-x64-${SUFFIX}" >> "${GITHUB_ENV}"
+              ;;
+            universal)
+              echo "CMAKE_PRESETS=android-armv7-release android-arm64-release android-x64-release" >> "${GITHUB_ENV}"
+              ;;
+          esac
 
-      - name: Build APK
+      # Each gradle run clears other APKs from the variant outputs dir, so
+      # stage every APK immediately after the build that produced it.
+      - name: Build per-ABI APKs
         working-directory: source
-        run: cmake --build --preset "${CMAKE_PRESET}" --target android_apk --parallel
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/apk-staging"
+          if [ "${{ inputs.build_type }}" = "Debug" ]; then
+            APK_DIR=application/mobile/android/host/app/build/outputs/apk/debug
+          else
+            APK_DIR=application/mobile/android/host/app/build/outputs/apk/release
+          fi
+          for PRESET in ${CMAKE_PRESETS}; do
+            echo "::group::${PRESET}"
+            cmake --preset "${PRESET}" -DVCPKG_INSTALL_OPTIONS=--clean-after-build
+            cmake --build --preset "${PRESET}" --target android_apk --parallel
+            cp -v "${APK_DIR}"/oSBM-*.apk "${GITHUB_WORKSPACE}/apk-staging/"
+            echo "::endgroup::"
+          done
 
-      - name: Upload APK
+      - name: Build universal APK
+        if: ${{ inputs.arch == 'universal' }}
+        working-directory: source
+        run: |
+          cmake --build --preset android-universal-release
+          cp -v application/mobile/android/host/app/build/outputs/apk/release/oSBM-*.apk "${GITHUB_WORKSPACE}/apk-staging/"
+
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: OpenStarbound-Android-${{ inputs.build_type }}-arm64
-          path: ${{ env.APK_PATH }}
+          name: oSBM-${{ env.OSBM_VERSION }}-android-${{ inputs.arch }}-${{ inputs.build_type }}
+          path: apk-staging/oSBM-*.apk
           if-no-files-found: error

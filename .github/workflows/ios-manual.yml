@@ -187,7 +187,13 @@ jobs:
           IPA_DIR="${GITHUB_WORKSPACE}/build/ios-arm64-ipa/ipa"
           PAYLOAD_DIR="${IPA_DIR}/Payload"
           APP_BASENAME="$(basename "${APP_PATH}")"
-          IPA_PATH="${IPA_DIR}/OpenStarbound-iOS-${IOS_CONFIG}-unsigned.ipa"
+          OSBM_VERSION="$(tr -d ' \n' < "${GITHUB_WORKSPACE}/VERSION")"
+          echo "OSBM_VERSION=${OSBM_VERSION}" >> "${GITHUB_ENV}"
+          if [ "${IOS_CONFIG}" = "Release" ]; then
+            IPA_PATH="${IPA_DIR}/oSBM-${OSBM_VERSION}-ios.ipa"
+          else
+            IPA_PATH="${IPA_DIR}/oSBM-${OSBM_VERSION}-ios-debug.ipa"
+          fi
 
           rm -rf "${IPA_DIR}"
           mkdir -p "${PAYLOAD_DIR}"
@@ -204,7 +210,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OpenStarbound-iOS-${{ inputs.configuration }}-unsigned-ipa
+          name: oSBM-${{ env.OSBM_VERSION }}-ios-${{ inputs.configuration }}-unsigned-ipa
           path: ${{ env.IPA_PATH }}
           if-no-files-found: error
 

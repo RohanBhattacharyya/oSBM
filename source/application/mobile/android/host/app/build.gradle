@@ -5,6 +5,25 @@ plugins {
 def sdlJar = System.getenv("STAR_SDL3_JAR")
 def useExternalSdlJar = sdlJar != null && !sdlJar.isEmpty() && file(sdlJar).exists() && System.getenv("STAR_USE_EXTERNAL_SDL3_JAR") == "1"
 
+// Single source of truth for the release version: the VERSION file at the
+// repository root (also read by CMake and the CI workflows).
+def osbmVersionFile = new File(projectDir, "../../../../../../VERSION").canonicalFile
+def osbmVersion = osbmVersionFile.exists() ? osbmVersionFile.text.trim() : "0.0.0"
+def osbmVersionParts = (osbmVersion.tokenize('.') + ['0', '0', '0']).take(3).collect { it.isInteger() ? it.toInteger() : 0 }
+def osbmVersionCode = osbmVersionParts[0] * 10000 + osbmVersionParts[1] * 100 + osbmVersionParts[2]
+
+// ABIs to package, driven by the CMake android_apk / android_apk_universal
+// targets. Each android-*-release preset drops its libmain.so into
+// src/main/jniLibs/<abi>/ and requests only its own ABI here; the universal
+// target requests all of them.
+def osbmAbis = (System.getenv("STAR_ANDROID_ABIS") ?: "arm64-v8a").split(",")*.trim().findAll { !it.isEmpty() }
+def osbmMissingAbis = osbmAbis.findAll { !new File(projectDir, "src/main/jniLibs/${it}/libmain.so").exists() }
+if (!osbmMissingAbis.isEmpty()) {
+    throw new GradleException("Missing libmain.so for ABI(s): ${osbmMissingAbis.join(', ')}. " +
+        "Build the matching android-*-release CMake preset(s) first so each ABI's native library exists in src/main/jniLibs/.")
+}
+def osbmAbiSuffix = osbmAbis.size() > 1 ? "universal" : osbmAbis[0]
+
 android {
     namespace 'com.devoflife.osbm.android'
     compileSdk 35
@@ -13,11 +32,11 @@ android {
         applicationId "com.devoflife.osbm.android"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode osbmVersionCode
+        versionName osbmVersion
 
         ndk {
-            abiFilters 'arm64-v8a'
+            osbmAbis.each { abiFilters it }
         }
     }
 
@@ -41,6 +60,15 @@ android {
         jniLibs {
             // Compress native libraries in APK to reduce distribution size.
             useLegacyPackaging true
+        }
+    }
+
+    // Name APKs oSBM-<version>-android-<abi>.apk (or -universal for
+    // multi-ABI builds); debug builds get a -debug suffix.
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            def typeSuffix = variant.buildType.name == "release" ? "" : "-${variant.buildType.name}"
+            outputFileName = "oSBM-${osbmVersion}-android-${osbmAbiSuffix}${typeSuffix}.apk"
         }
     }
 

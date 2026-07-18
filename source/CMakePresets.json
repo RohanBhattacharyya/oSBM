@@ -171,6 +171,50 @@
       }
     },
     {
+      "inherits": "android-arm64-debug",
+      "name": "android-armv7-debug",
+      "displayName": "Android ARMv7 Debug",
+      "binaryDir": "${sourceParentDir}/build/android-armv7-debug",
+      "cacheVariables": {
+        "CMAKE_ANDROID_ARCH_ABI": "armeabi-v7a",
+        "CMAKE_ANDROID_ARM_NEON": "ON",
+        "VCPKG_TARGET_TRIPLET": "arm-neon-android-mixed"
+      }
+    },
+    {
+      "inherits": "android-arm64-debug",
+      "name": "android-x64-debug",
+      "displayName": "Android x86_64 Debug",
+      "binaryDir": "${sourceParentDir}/build/android-x64-debug",
+      "cacheVariables": {
+        "CMAKE_ANDROID_ARCH_ABI": "x86_64",
+        "VCPKG_TARGET_TRIPLET": "x64-android-mixed"
+      }
+    },
+    {
+      "inherits": "android-arm64-release",
+      "name": "android-armv7-release",
+      "displayName": "Android ARMv7 Release",
+      "description": "32-bit ARM release preset for devices shipping a 32-bit-only Android userspace (e.g. Galaxy A13 5G).",
+      "binaryDir": "${sourceParentDir}/build/android-armv7-release",
+      "cacheVariables": {
+        "CMAKE_ANDROID_ARCH_ABI": "armeabi-v7a",
+        "CMAKE_ANDROID_ARM_NEON": "ON",
+        "VCPKG_TARGET_TRIPLET": "arm-neon-android-mixed"
+      }
+    },
+    {
+      "inherits": "android-arm64-release",
+      "name": "android-x64-release",
+      "displayName": "Android x86_64 Release",
+      "description": "x86_64 release preset for emulators and Chromebooks.",
+      "binaryDir": "${sourceParentDir}/build/android-x64-release",
+      "cacheVariables": {
+        "CMAKE_ANDROID_ARCH_ABI": "x86_64",
+        "VCPKG_TARGET_TRIPLET": "x64-android-mixed"
+      }
+    },
+    {
       "inherits": "base",
       "name": "ios-arm64-debug",
       "displayName": "iOS ARM64 compile-only (experimental)",
@@ -244,6 +288,27 @@
     {
       "name": "android-arm64-release",
       "configurePreset": "android-arm64-release"
+    },
+    {
+      "name": "android-armv7-debug",
+      "configurePreset": "android-armv7-debug"
+    },
+    {
+      "name": "android-x64-debug",
+      "configurePreset": "android-x64-debug"
+    },
+    {
+      "name": "android-armv7-release",
+      "configurePreset": "android-armv7-release"
+    },
+    {
+      "name": "android-x64-release",
+      "configurePreset": "android-x64-release"
+    },
+    {
+      "name": "android-universal-release",
+      "configurePreset": "android-arm64-release",
+      "targets": [ "android_apk_universal" ]
     },
     {
       "name": "ios-arm64-debug",

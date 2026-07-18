@@ -29,6 +29,13 @@ endif()
 project(starbound)
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/../cmake)
 
+# Single source of truth for the release version. The Android host gradle
+# build and the CI workflows read the same file, so bumping the release only
+# requires editing VERSION at the repository root.
+file(READ "${PROJECT_SOURCE_DIR}/../VERSION" OSBM_VERSION)
+string(STRIP "${OSBM_VERSION}" OSBM_VERSION)
+message(STATUS "oSBM version: ${OSBM_VERSION}")
+
 set(CMAKE_CONFIGURATION_TYPES Debug RelWithAsserts RelWithDebInfo Release)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE INTERNAL "")
 set(CMAKE_EXE_LINKER_FLAGS_RELWITHASSERTS "" CACHE STRING "" FORCE)
@@ -173,6 +180,11 @@ endif()
 
 if(STAR_SYSTEM_ANDROID)
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+  if(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
+    # 32-bit bionic defaults to a 32-bit off_t; the game seeks within paks
+    # that can exceed 2GB, so force 64-bit file offsets (fine on minSdk 26).
+    add_definitions(-D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE)
+  endif()
 endif()
 
 if(DEFINED STAR_ENABLE_STATIC_LIBGCC_LIBSTDCXX)
@@ -836,33 +848,61 @@ if(STAR_BUILD_GUI)
       set(STAR_ANDROID_SDL3_JAR "")
     endif()
 
+    # The launch script is kept in a variable and expanded QUOTED below so its
+    # embedded semicolons survive (unquoted expansion would split it into list
+    # elements and hand bash/cmd a truncated script).
     if(CMAKE_HOST_WIN32)
-      add_custom_target(android_apk ALL
-        COMMAND ${CMAKE_COMMAND} -E env
-          ANDROID_NDK_HOME=$ENV{ANDROID_NDK_HOME}
-          ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
-          GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
-          STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
-          cmd /c "if exist \"${STAR_ANDROID_GRADLE_WRAPPER_BAT}\" (call \"${STAR_ANDROID_GRADLE_WRAPPER_BAT}\" -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}) else (gradle.bat -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK})"
-        DEPENDS starbound
-        WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
-        COMMENT "Building Android APK (${STAR_ANDROID_APK_GRADLE_TASK})"
-        VERBATIM
+      set(STAR_ANDROID_SHELL cmd /c)
+      set(STAR_ANDROID_GRADLE_SCRIPT
+        "if exist \"${STAR_ANDROID_GRADLE_WRAPPER_BAT}\" (call \"${STAR_ANDROID_GRADLE_WRAPPER_BAT}\" -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}) else (gradle.bat -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK})"
       )
     else()
-      add_custom_target(android_apk ALL
-        COMMAND ${CMAKE_COMMAND} -E env
-          ANDROID_NDK_HOME=$ENV{ANDROID_NDK_HOME}
-          ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
-          GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
-          STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
-          bash -lc "if [ -z \"${JAVA_HOME}\" ]; then export JAVA_HOME=\"$(dirname \"$(dirname \"$(readlink -f \"$(command -v javac)\")\")\")\"; fi; if [ -x \"${STAR_ANDROID_GRADLE_WRAPPER}\" ]; then \"${STAR_ANDROID_GRADLE_WRAPPER}\" -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; elif command -v gradle >/dev/null 2>&1; then gradle -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; else echo \"Android packaging requires Gradle. Install 'gradle' or add a wrapper at ${STAR_ANDROID_GRADLE_WRAPPER}.\" >&2; exit 1; fi"
-        DEPENDS starbound
-        WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
-        COMMENT "Building Android APK (${STAR_ANDROID_APK_GRADLE_TASK})"
-        VERBATIM
+      set(STAR_ANDROID_SHELL bash -lc)
+      set(STAR_ANDROID_GRADLE_SCRIPT
+        "if [ -z \"${JAVA_HOME}\" ]; then export JAVA_HOME=\"$(dirname \"$(dirname \"$(readlink -f \"$(command -v javac)\")\")\")\"; fi; if [ -x \"${STAR_ANDROID_GRADLE_WRAPPER}\" ]; then \"${STAR_ANDROID_GRADLE_WRAPPER}\" -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; elif command -v gradle >/dev/null 2>&1; then gradle -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; else echo \"Android packaging requires Gradle. Install 'gradle' or add a wrapper at ${STAR_ANDROID_GRADLE_WRAPPER}.\" >&2; exit 1; fi"
       )
     endif()
+
+    # Per-ABI APK: packages only the ABI this build tree targets. Gradle reads
+    # STAR_ANDROID_ABIS to set abiFilters and the output APK name.
+    add_custom_target(android_apk ALL
+      COMMAND ${CMAKE_COMMAND} -E env
+        ANDROID_NDK_HOME=$ENV{ANDROID_NDK_HOME}
+        ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
+        GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
+        STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
+        STAR_ANDROID_ABIS=${CMAKE_ANDROID_ARCH_ABI}
+        ${STAR_ANDROID_SHELL} "${STAR_ANDROID_GRADLE_SCRIPT}"
+      DEPENDS starbound
+      WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
+      COMMENT "Building Android APK (${STAR_ANDROID_APK_GRADLE_TASK}, ${CMAKE_ANDROID_ARCH_ABI})"
+      VERBATIM
+    )
+
+    # Universal APK: packages every ABI listed below into a single APK. The
+    # per-ABI libmain.so files must already exist in the host jniLibs tree, so
+    # build each android-*-release preset first; gradle fails with a clear
+    # error naming any ABI whose libmain.so is missing.
+    set(STAR_ANDROID_UNIVERSAL_ABIS "armeabi-v7a,arm64-v8a,x86_64" CACHE STRING
+      "Comma-separated ABI list packaged into the universal Android APK")
+    # Package from a clean slate: AGP's incremental packaging can fail when the
+    # requested ABI set changes between runs in the same app/build tree. Note
+    # this also removes previously packaged per-ABI APKs from the outputs dir.
+    string(REPLACE "${STAR_ANDROID_APK_GRADLE_TASK}" ":app:clean ${STAR_ANDROID_APK_GRADLE_TASK}"
+      STAR_ANDROID_GRADLE_SCRIPT_UNIVERSAL "${STAR_ANDROID_GRADLE_SCRIPT}")
+    add_custom_target(android_apk_universal
+      COMMAND ${CMAKE_COMMAND} -E env
+        ANDROID_NDK_HOME=$ENV{ANDROID_NDK_HOME}
+        ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
+        GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
+        STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
+        STAR_ANDROID_ABIS=${STAR_ANDROID_UNIVERSAL_ABIS}
+        ${STAR_ANDROID_SHELL} "${STAR_ANDROID_GRADLE_SCRIPT_UNIVERSAL}"
+      DEPENDS starbound
+      WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
+      COMMENT "Building universal Android APK (${STAR_ANDROID_APK_GRADLE_TASK}, ${STAR_ANDROID_UNIVERSAL_ABIS})"
+      VERBATIM
+    )
   endif()
 
   if(STAR_SYSTEM_SWITCH)
@@ -908,10 +948,10 @@ if(STAR_BUILD_GUI)
     nx_generate_nacp("${CMAKE_BINARY_DIR}/oSBM.nacp"
       NAME "OpenStarbound Mobile"
       AUTHOR "OpenStarbound Mobile"
-      VERSION "1.0.3"
+      VERSION "${OSBM_VERSION}"
     )
     nx_create_nro(starbound
-      OUTPUT "${CMAKE_BINARY_DIR}/oSBM.nro"
+      OUTPUT "${CMAKE_BINARY_DIR}/oSBM-${OSBM_VERSION}-switch.nro"
       NACP "${CMAKE_BINARY_DIR}/oSBM.nacp"
       ROMFS "${STAR_SWITCH_ROMFS}"
     )
