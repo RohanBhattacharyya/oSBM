@@ -1043,10 +1043,17 @@ void OpenGlRenderer::startFrame() {
   // this frame (world render + background blit cover the full viewport), the
   // clear is redundant fill.  The flag re-arms every frame, so any path that
   // does not explicitly skip (title screens, menus) always clears.
-  if (m_skipNextScreenClear)
-    m_skipNextScreenClear = false;
-  else
+  //
+  // The guarantee only holds when the VIEWPORT covers the whole surface: on
+  // iOS the viewport is inset by the safe area, and skipping the clear lets
+  // anything rasterized into the margins (the ImGui touch overlay renders
+  // with a full-window clip) persist forever -- dragging the joystick into
+  // the notch bar literally finger-painted permanent smears there.
+  bool viewportCoversSurface = m_screenOffset == Vec2U(0, 0)
+      && (m_windowSurfaceSize == Vec2U(0, 0) || m_windowSurfaceSize == m_screenViewportSize);
+  if (!(m_skipNextScreenClear && viewportCoversSurface))
     glClear(GL_COLOR_BUFFER_BIT);
+  m_skipNextScreenClear = false;
 
   if (m_scissorRect)
     glEnable(GL_SCISSOR_TEST);

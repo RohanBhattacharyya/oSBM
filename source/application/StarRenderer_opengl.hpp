@@ -134,6 +134,12 @@ public:
   // within the rounded-corner / cutout-free region. Defaults to (0, 0).
   void setScreenOffset(Vec2U offset) { m_screenOffset = offset; }
   Vec2U screenOffset() const { return m_screenOffset; }
+  // Full default-framebuffer size in pixels. Lets startFrame tell whether the
+  // viewport covers the whole surface: when it does not (iOS safe-area
+  // margins), the skip-clear fast path must not run or the uncovered margins
+  // accumulate stale pixels. (0,0) = unknown, treated as covered when the
+  // offset is zero (desktop/Switch behavior).
+  void setWindowSurfaceSize(Vec2U size) { m_windowSurfaceSize = size; }
 
   // Physical-pixel size of the final viewport. This normally matches
   // screenSize(), but mobile can render a smaller logical canvas and upscale it
@@ -342,6 +348,7 @@ private:
   Vec2U m_screenSize = {0, 0};
   Vec2U m_screenOffset = {0, 0};
   Vec2U m_screenViewportSize = {0, 0};
+  Vec2U m_windowSurfaceSize = {0, 0};
   GLuint m_screenFbo = 0;
 
   GLuint m_program = 0;

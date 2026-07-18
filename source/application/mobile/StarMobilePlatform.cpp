@@ -4390,6 +4390,10 @@ private:
         m_renderer->setScreenOffset(Vec2U(m_safeArea.left, m_safeArea.bottom));
         m_renderer->setScreenViewportSize(physicalCanvas);
         m_renderer->setScreenSize(renderCanvas);
+        // Full drawable size: startFrame needs it to know whether safe-area
+        // margins exist outside the viewport (they must be cleared per frame
+        // or overlay pixels smear into the notch bar).
+        m_renderer->setWindowSurfaceSize(m_windowSize);
       }
 
       if (notifyApplication && m_application)
