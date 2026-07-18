@@ -6,6 +6,7 @@
 #include "StarJsonExtra.hpp"
 #include "StarLogging.hpp"
 #include "StarTime.hpp"
+#include "StarFile.hpp"
 
 namespace Star {
 
@@ -117,9 +118,25 @@ void WorldPainter::render(WorldRenderData& renderData, function<bool()> lightWai
     Vec2U screenSize = m_renderer->screenSize();
     if (wpUnderLoad && m_bgValidSize == screenSize && (m_bgFrameCounter % bgInterval != 0))
       bgReuse = true;
-    else if ((bgScaled = m_renderer->switchFrameBuffer("background")))
+    else if ((bgScaled = m_renderer->switchFrameBuffer("background"))) {
+      // "preserve" exempts this buffer from the startFrame clear (so skip
+      // frames can re-blit it), which means refresh frames must clear it
+      // themselves. The sky does NOT fully overdraw it: space/atmosphereless
+      // skies are transparent where stars show, so without this clear every
+      // refresh accumulates over the last one and moving parallax/stars smear
+      // into trails (rotating stars become circles -- GH issue #39).
+#ifdef STAR_SYSTEM_SWITCH
+      // Test hook (same family as screenshot.ctl): nobgclear.flag restores
+      // the pre-fix accumulation so the #39 ghosting can be reproduced on
+      // demand for before/after captures. Checked once at startup.
+      static bool const s_noBgClear = File::isFile("/switch/oSBM/nobgclear.flag");
+      if (!s_noBgClear)
+        m_renderer->clearCurrentFrameBuffer();
+#else
+      m_renderer->clearCurrentFrameBuffer();
+#endif
       m_bgValidSize = screenSize;
-    else
+    } else
       m_bgValidSize = Vec2U();
   }
 #endif
