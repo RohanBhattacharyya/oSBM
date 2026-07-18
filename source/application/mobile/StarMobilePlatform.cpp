@@ -2205,6 +2205,14 @@ private:
     } else if (element.kind == MobileTouchElementKind::Joystick || element.kind == MobileTouchElementKind::AimJoystick) {
       draw->AddCircle(center, radius, base, 48, thickness);
       draw->AddCircleFilled(center, radius * 0.34f, fill, 32);
+    } else if (element.kind == MobileTouchElementKind::PerformanceCounter) {
+      // No shape at runtime (it's a passive display, not a touch target) --
+      // show representative placeholder text instead, so the preview looks
+      // like what actually renders in-game while positioning it.
+      String placeholder = element.perfCounterMode == PerformanceCounterMode::Detailed
+          ? String("60 FPS\n60.00Hz\n00512µs\n00048µs")
+          : String("60 FPS");
+      labels.push_back({ImVec2(center.x - radius * 0.55f, center.y - radius * 0.4f), placeholder});
     } else {
       draw->AddCircleFilled(center, radius * 0.55f, fill, 32);
       draw->AddCircle(center, radius * 0.55f, base, 48, thickness);
@@ -2224,16 +2232,39 @@ private:
 
     ImGui::SetCursorScreenPos(ImVec2(min.x + 16.0f, min.y + 16.0f));
     auto const& style = ImGui::GetStyle();
+    bool selectedIsPerfCounter = state.selectedTouchElement >= 0 && state.selectedTouchElement < (int)state.touchElements.size()
+        && state.touchElements[state.selectedTouchElement].kind == MobileTouchElementKind::PerformanceCounter;
     float toolbarHeight = style.WindowPadding.y * 2.0f
         + ImGui::GetTextLineHeightWithSpacing() * 2.0f
         + ImGui::GetFrameHeightWithSpacing()
-        + ImGui::GetFrameHeight();
+        + ImGui::GetFrameHeight()
+        + (selectedIsPerfCounter ? ImGui::GetFrameHeightWithSpacing() : 0.0f);
     ImGui::BeginChild("TouchPreviewToolbar", ImVec2(std::min(520.0f, displaySize.x - 32.0f), toolbarHeight), true);
     ImGui::TextUnformatted(launcherText("touchPreview.title", "Touch Layout Preview").utf8Ptr());
     if (state.selectedTouchElement >= 0 && state.selectedTouchElement < (int)state.touchElements.size()) {
       auto& selected = state.touchElements[state.selectedTouchElement];
       ImGui::Text("%s: %s", launcherText("touchPreview.selectedLabel", "Selected").utf8Ptr(), selected.label.utf8Ptr());
       ImGui::SliderFloat(launcherText("touchPreview.selectedSize", "Selected size").utf8Ptr(), &selected.size, 0.45f, 2.4f);
+      if (selected.kind == MobileTouchElementKind::PerformanceCounter) {
+        bool detailed = selected.perfCounterMode == PerformanceCounterMode::Detailed;
+        char const* modeLabel = detailed
+            ? launcherText("touchManager.perfCounterModeDetailed", "Detailed").utf8Ptr()
+            : launcherText("touchManager.perfCounterModeFps", "FPS").utf8Ptr();
+        if (ImGui::BeginCombo(launcherText("touchManager.perfCounterMode", "Display mode").utf8Ptr(), modeLabel)) {
+          for (int i = 0; i < 2; ++i) {
+            bool isDetailed = i == 1;
+            bool itemSelected = detailed == isDetailed;
+            char const* label = isDetailed
+                ? launcherText("touchManager.perfCounterModeDetailed", "Detailed").utf8Ptr()
+                : launcherText("touchManager.perfCounterModeFps", "FPS").utf8Ptr();
+            if (ImGui::Selectable(label, itemSelected))
+              selected.perfCounterMode = isDetailed ? PerformanceCounterMode::Detailed : PerformanceCounterMode::Fps;
+            if (itemSelected)
+              ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+      }
     }
     if (ImGui::Button(launcherText("common.done", "Done").utf8Ptr()))
       state.touchPreviewOpen = false;
@@ -2538,6 +2569,25 @@ private:
               ImGui::TextDisabled("%s", launcherText("touchManager.preciseAimHint", "Precise aim moves the virtual cursor.").utf8Ptr());
             else
               ImGui::TextDisabled("%s", launcherText("touchManager.directionalAimHint", "Directional aim points around the player.").utf8Ptr());
+          } else if (element.kind == MobileTouchElementKind::PerformanceCounter) {
+            bool detailed = element.perfCounterMode == PerformanceCounterMode::Detailed;
+            char const* modeLabel = detailed
+                ? launcherText("touchManager.perfCounterModeDetailed", "Detailed").utf8Ptr()
+                : launcherText("touchManager.perfCounterModeFps", "FPS").utf8Ptr();
+            if (ImGui::BeginCombo(launcherText("touchManager.perfCounterMode", "Display mode").utf8Ptr(), modeLabel)) {
+              for (int i = 0; i < 2; ++i) {
+                bool isDetailed = i == 1;
+                bool itemSelected = detailed == isDetailed;
+                char const* label = isDetailed
+                    ? launcherText("touchManager.perfCounterModeDetailed", "Detailed").utf8Ptr()
+                    : launcherText("touchManager.perfCounterModeFps", "FPS").utf8Ptr();
+                if (ImGui::Selectable(label, itemSelected))
+                  element.perfCounterMode = isDetailed ? PerformanceCounterMode::Detailed : PerformanceCounterMode::Fps;
+                if (itemSelected)
+                  ImGui::SetItemDefaultFocus();
+              }
+              ImGui::EndCombo();
+            }
           } else {
             ImGui::TextDisabled("%s", launcherText("touchManager.joystickHint", "Joystick sends movement keys.").utf8Ptr());
           }
@@ -3716,7 +3766,7 @@ private:
 #endif
 
       if (overlayEnabled) {
-        m_touchAdapter->drawOverlay();
+        m_touchAdapter->drawOverlay(m_renderRate);
         ImGui::Render();
         setAndroidImGuiTextInputActive(ImGui::GetIO().WantTextInput);
       }

@@ -75,7 +75,14 @@ enum class MobileTouchElementKind {
   Joystick,
   AimJoystick,
   Button,
-  DPad
+  DPad,
+  // Passive display, not a touch target: skipped entirely by hit-testing.
+  PerformanceCounter
+};
+
+enum class PerformanceCounterMode {
+  Fps,
+  Detailed
 };
 
 enum class MobileTouchActionKind {
@@ -125,6 +132,8 @@ struct MobileTouchElement {
   MobileTouchPressMode pressMode = MobileTouchPressMode::Hold;
   float aimSensitivity = 1.0f;
   bool preciseAim = false;
+  // Only meaningful for kind == PerformanceCounter.
+  PerformanceCounterMode perfCounterMode = PerformanceCounterMode::Fps;
 };
 
 struct MobileGamepadBinding {
@@ -150,6 +159,8 @@ MobileTouchAction uiNavigationAction(UiNavigationDirection direction);
 MobileTouchAction noneAction();
 String pressModeName(MobileTouchPressMode mode);
 MobileTouchPressMode pressModeFromName(String const& name, MobileTouchPressMode def = MobileTouchPressMode::Hold);
+String perfCounterModeName(PerformanceCounterMode mode);
+PerformanceCounterMode perfCounterModeFromName(String const& name, PerformanceCounterMode def = PerformanceCounterMode::Fps);
 std::vector<MobileTouchElement> defaultTouchElements();
 std::vector<MobileGamepadBinding> defaultGamepadBindings();
 String elementKindName(MobileTouchElementKind kind);
@@ -190,7 +201,7 @@ public:
   void setGyroInput(std::array<float, 3> const& data, bool hasData, SDL_DisplayOrientation orientation);
   bool processSdlEvent(SDL_Event const& event);
   void cancelAll();
-  void drawOverlay();
+  void drawOverlay(float fps);
   bool overlayEnabled() const;
 
 private:

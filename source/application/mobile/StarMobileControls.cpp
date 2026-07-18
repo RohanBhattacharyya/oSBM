@@ -177,6 +177,23 @@ MobileTouchPressMode pressModeFromName(String const& name, MobileTouchPressMode 
   return def;
 }
 
+String perfCounterModeName(PerformanceCounterMode mode) {
+  switch (mode) {
+    case PerformanceCounterMode::Detailed:
+      return "detailed";
+    default:
+      return "fps";
+  }
+}
+
+PerformanceCounterMode perfCounterModeFromName(String const& name, PerformanceCounterMode def) {
+  if (name.equals("detailed", String::CaseInsensitive))
+    return PerformanceCounterMode::Detailed;
+  if (name.equals("fps", String::CaseInsensitive))
+    return PerformanceCounterMode::Fps;
+  return def;
+}
+
 std::vector<MobileTouchElement> defaultTouchElements() {
   return {
     {"joystick", launcherTextStatic("touchElement.joystick", "Joystick"), MobileTouchElementKind::Joystick, true, {0.14f, 0.78f}, 1.15f, keyAction(Key::Space), {}, {}, {}, {}},
@@ -192,7 +209,8 @@ std::vector<MobileTouchElement> defaultTouchElements() {
     {"ctrl", launcherTextStatic("touchElement.ctrl", "Ctrl"), MobileTouchElementKind::Button, false, {0.58f, 0.88f}, 0.82f, keyAction(Key::LCtrl), {}, {}, {}, {}},
     {"gyroToggle", launcherTextStatic("touchElement.gyro", "Gyro"), MobileTouchElementKind::Button, false, {0.74f, 0.88f}, 0.82f, gyroToggleAction(), {}, {}, {}, {}, MobileTouchPressMode::SinglePress},
     {"dpad", launcherTextStatic("touchElement.dpad", "D-PAD"), MobileTouchElementKind::DPad, false, {0.16f, 0.74f}, 1.05f, keyAction(Key::Space),
-      keyAction(Key::W), keyAction(Key::S), keyAction(Key::A), keyAction(Key::D)}
+      keyAction(Key::W), keyAction(Key::S), keyAction(Key::A), keyAction(Key::D)},
+    {"perfCounter", launcherTextStatic("touchElement.perfCounter", "Perf"), MobileTouchElementKind::PerformanceCounter, false, {0.02f, 0.98f}, 1.0f, noneAction(), {}, {}, {}, {}}
   };
 }
 
@@ -232,6 +250,8 @@ String elementKindName(MobileTouchElementKind kind) {
       return "aimJoystick";
     case MobileTouchElementKind::DPad:
       return "dpad";
+    case MobileTouchElementKind::PerformanceCounter:
+      return "perfCounter";
     default:
       return "button";
   }
@@ -244,6 +264,8 @@ MobileTouchElementKind elementKindFromName(String const& name) {
     return MobileTouchElementKind::AimJoystick;
   if (name.equals("dpad", String::CaseInsensitive))
     return MobileTouchElementKind::DPad;
+  if (name.equals("perfCounter", String::CaseInsensitive))
+    return MobileTouchElementKind::PerformanceCounter;
   return MobileTouchElementKind::Button;
 }
 
@@ -354,6 +376,8 @@ Json jsonFromTouchElement(MobileTouchElement const& element) {
     out["leftAction"] = jsonFromTouchAction(element.leftAction);
     out["rightAction"] = jsonFromTouchAction(element.rightAction);
   }
+  if (element.kind == MobileTouchElementKind::PerformanceCounter)
+    out["perfCounterMode"] = perfCounterModeName(element.perfCounterMode);
   return out;
 }
 
@@ -366,6 +390,7 @@ MobileTouchElement touchElementFromJson(Json const& json, MobileTouchElement def
   def.pressMode = pressModeFromName(json.getString("pressMode", pressModeName(def.pressMode)), def.pressMode);
   def.aimSensitivity = json.getFloat("aimSensitivity", def.aimSensitivity);
   def.preciseAim = json.getBool("preciseAim", def.preciseAim);
+  def.perfCounterMode = perfCounterModeFromName(json.getString("perfCounterMode", perfCounterModeName(def.perfCounterMode)), def.perfCounterMode);
   if (auto pos = json.optArray("position")) {
     if (pos->size() >= 2)
       def.position = Vec2F(pos->get(0).toFloat(), pos->get(1).toFloat());
@@ -708,9 +733,43 @@ public:
     m_secondaryFinger = 0;
   }
 
-  void drawOverlay() {
+  static String perfCounterText(PerformanceCounterMode mode, float fps) {
+    String text = strf("{:.0f} FPS", fps);
+    if (mode == PerformanceCounterMode::Detailed) {
+      // Reuses the same per-frame stats the vanilla debug HUD (F3-style
+      // overlay, see MainInterface::renderDebug) already computes every
+      // frame via LogMap::set -- no new instrumentation needed, just read
+      // it back. Falls back to just the FPS line if a key isn't populated
+      // yet (e.g. the very first frames, or before a world is loaded).
+      auto appendIfPresent = [&text](String const& key) {
+        String value = LogMap::getValue(key);
+        if (!value.empty())
+          text += strf("\n{}", value);
+      };
+      appendIfPresent("client_update_rate");
+      appendIfPresent("client_render_world_total");
+      appendIfPresent("client_render_interface");
+    }
+    return text;
+  }
+
+  void drawOverlay(float fps) {
     if (!m_config.enabled)
       return;
+
+    // At least one enabled PerformanceCounter element needs LogMap populated
+    // for its "Detailed" tier; LogMap::set() calls are near-free early-outs
+    // elsewhere in the engine when nothing observes the map, so only pay for
+    // it while a detailed counter is actually on screen.
+    bool wantsDetailedPerf = false;
+    for (auto const& element : m_elements) {
+      if (element.enabled && element.kind == MobileTouchElementKind::PerformanceCounter
+          && element.perfCounterMode == PerformanceCounterMode::Detailed) {
+        wantsDetailedPerf = true;
+        break;
+      }
+    }
+    LogMap::setObserved(wantsDetailedPerf);
 
     float radius = controlRadius();
 
@@ -777,6 +836,10 @@ public:
           draw->AddCircleFilled(ip(m_aimJoystickCurrent), drawRadius * 0.35f, fill, 32);
       } else if (element.kind == MobileTouchElementKind::DPad) {
         drawDPad(draw, ip(center), drawRadius, element.id, base, fill, thickness, labels);
+      } else if (element.kind == MobileTouchElementKind::PerformanceCounter) {
+        // Passive display, not a touch target: no shape, just queued text
+        // drawn in the un-blended text pass below (same as other labels).
+        labels.push_back({ip(center), perfCounterText(element.perfCounterMode, fps)});
       } else {
         bool held = heldElement(element.id)
             || (element.action.kind == MobileTouchActionKind::GyroToggle && m_gyroAvailable && m_config.gyroEnabled && m_gyroRuntimeEnabled);
@@ -2420,7 +2483,7 @@ bool MobileTouchInputAdapter::gyroSensorRequested() const { return m_impl->gyroS
 void MobileTouchInputAdapter::setGyroInput(std::array<float, 3> const& data, bool hasData, SDL_DisplayOrientation orientation) { m_impl->setGyroInput(data, hasData, orientation); }
 bool MobileTouchInputAdapter::processSdlEvent(SDL_Event const& event) { return m_impl->processSdlEvent(event); }
 void MobileTouchInputAdapter::cancelAll() { m_impl->cancelAll(); }
-void MobileTouchInputAdapter::drawOverlay() { m_impl->drawOverlay(); }
+void MobileTouchInputAdapter::drawOverlay(float fps) { m_impl->drawOverlay(fps); }
 bool MobileTouchInputAdapter::overlayEnabled() const { return m_impl->overlayEnabled(); }
 
 MobileGamepadInputAdapter::MobileGamepadInputAdapter(Vec2U* renderCanvasSize)
