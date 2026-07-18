@@ -2247,17 +2247,22 @@ private:
       ImGui::SliderFloat(launcherText("touchPreview.selectedSize", "Selected size").utf8Ptr(), &selected.size, 0.45f, 2.4f);
       if (selected.kind == MobileTouchElementKind::PerformanceCounter) {
         bool detailed = selected.perfCounterMode == PerformanceCounterMode::Detailed;
-        char const* modeLabel = detailed
-            ? launcherText("touchManager.perfCounterModeDetailed", "Detailed").utf8Ptr()
-            : launcherText("touchManager.perfCounterModeFps", "FPS").utf8Ptr();
-        if (ImGui::BeginCombo(launcherText("touchManager.perfCounterMode", "Display mode").utf8Ptr(), modeLabel)) {
+        // Store as String, not char const*: .utf8Ptr() on a launcherText()
+        // temporary dangles the instant the initializer statement ends, since
+        // the String owning that buffer is destroyed right there -- BeginCombo
+        // below would read freed memory (this was the "dropdown shows its own
+        // label instead of the selected value" bug).
+        String modeLabel = detailed
+            ? launcherText("touchManager.perfCounterModeDetailed", "Detailed")
+            : launcherText("touchManager.perfCounterModeFps", "FPS");
+        if (ImGui::BeginCombo(launcherText("touchManager.perfCounterMode", "Display mode").utf8Ptr(), modeLabel.utf8Ptr())) {
           for (int i = 0; i < 2; ++i) {
             bool isDetailed = i == 1;
             bool itemSelected = detailed == isDetailed;
-            char const* label = isDetailed
-                ? launcherText("touchManager.perfCounterModeDetailed", "Detailed").utf8Ptr()
-                : launcherText("touchManager.perfCounterModeFps", "FPS").utf8Ptr();
-            if (ImGui::Selectable(label, itemSelected))
+            String label = isDetailed
+                ? launcherText("touchManager.perfCounterModeDetailed", "Detailed")
+                : launcherText("touchManager.perfCounterModeFps", "FPS");
+            if (ImGui::Selectable(label.utf8Ptr(), itemSelected))
               selected.perfCounterMode = isDetailed ? PerformanceCounterMode::Detailed : PerformanceCounterMode::Fps;
             if (itemSelected)
               ImGui::SetItemDefaultFocus();
@@ -2445,18 +2450,20 @@ private:
     ImGui::Checkbox(launcherText("touchManager.enableDirectGestures", "Enable direct screen touch gestures").utf8Ptr(), &state.touchConfig.directTouchGestures);
     if (state.touchConfig.directTouchGestures) {
       bool touchpad = state.touchConfig.directTouchGestureMode == DirectTouchGestureMode::Touchpad;
-      char const* modeLabel = touchpad
-          ? launcherText("touchManager.gestureModeTouchpad", "Touchpad").utf8Ptr()
-          : launcherText("touchManager.gestureModeTouchscreen", "Touchscreen").utf8Ptr();
+      // Store as String, not char const*: .utf8Ptr() on a launcherText()
+      // temporary dangles the instant this initializer statement ends.
+      String modeLabel = touchpad
+          ? launcherText("touchManager.gestureModeTouchpad", "Touchpad")
+          : launcherText("touchManager.gestureModeTouchscreen", "Touchscreen");
       ImGui::Indent();
-      if (ImGui::BeginCombo(launcherText("touchManager.gestureMode", "Gesture mode").utf8Ptr(), modeLabel)) {
+      if (ImGui::BeginCombo(launcherText("touchManager.gestureMode", "Gesture mode").utf8Ptr(), modeLabel.utf8Ptr())) {
         for (int i = 0; i < 2; ++i) {
           bool isTouchpad = i == 1;
           bool selected = touchpad == isTouchpad;
-          char const* label = isTouchpad
-              ? launcherText("touchManager.gestureModeTouchpad", "Touchpad").utf8Ptr()
-              : launcherText("touchManager.gestureModeTouchscreen", "Touchscreen").utf8Ptr();
-          if (ImGui::Selectable(label, selected))
+          String label = isTouchpad
+              ? launcherText("touchManager.gestureModeTouchpad", "Touchpad")
+              : launcherText("touchManager.gestureModeTouchscreen", "Touchscreen");
+          if (ImGui::Selectable(label.utf8Ptr(), selected))
             state.touchConfig.directTouchGestureMode = isTouchpad ? DirectTouchGestureMode::Touchpad : DirectTouchGestureMode::Touchscreen;
           if (selected)
             ImGui::SetItemDefaultFocus();
@@ -2571,17 +2578,19 @@ private:
               ImGui::TextDisabled("%s", launcherText("touchManager.directionalAimHint", "Directional aim points around the player.").utf8Ptr());
           } else if (element.kind == MobileTouchElementKind::PerformanceCounter) {
             bool detailed = element.perfCounterMode == PerformanceCounterMode::Detailed;
-            char const* modeLabel = detailed
-                ? launcherText("touchManager.perfCounterModeDetailed", "Detailed").utf8Ptr()
-                : launcherText("touchManager.perfCounterModeFps", "FPS").utf8Ptr();
-            if (ImGui::BeginCombo(launcherText("touchManager.perfCounterMode", "Display mode").utf8Ptr(), modeLabel)) {
+            // Store as String, not char const*: .utf8Ptr() on a launcherText()
+            // temporary dangles the instant this initializer statement ends.
+            String modeLabel = detailed
+                ? launcherText("touchManager.perfCounterModeDetailed", "Detailed")
+                : launcherText("touchManager.perfCounterModeFps", "FPS");
+            if (ImGui::BeginCombo(launcherText("touchManager.perfCounterMode", "Display mode").utf8Ptr(), modeLabel.utf8Ptr())) {
               for (int i = 0; i < 2; ++i) {
                 bool isDetailed = i == 1;
                 bool itemSelected = detailed == isDetailed;
-                char const* label = isDetailed
-                    ? launcherText("touchManager.perfCounterModeDetailed", "Detailed").utf8Ptr()
-                    : launcherText("touchManager.perfCounterModeFps", "FPS").utf8Ptr();
-                if (ImGui::Selectable(label, itemSelected))
+                String label = isDetailed
+                    ? launcherText("touchManager.perfCounterModeDetailed", "Detailed")
+                    : launcherText("touchManager.perfCounterModeFps", "FPS");
+                if (ImGui::Selectable(label.utf8Ptr(), itemSelected))
                   element.perfCounterMode = isDetailed ? PerformanceCounterMode::Detailed : PerformanceCounterMode::Fps;
                 if (itemSelected)
                   ImGui::SetItemDefaultFocus();
