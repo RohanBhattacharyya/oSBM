@@ -2429,7 +2429,7 @@ private:
     if (!gyroAvailable)
       state.touchConfig.gyroEnabled = false;
 
-    ImGui::TextUnformatted(launcherText("touchManager.title", "Controls").utf8Ptr());
+    ImGui::TextUnformatted(launcherText("touchManager.title", "Controls/Overlay").utf8Ptr());
     ImGui::Separator();
 
     beginLauncherScrollArea("TouchManagerScroll", state);
@@ -3237,8 +3237,8 @@ private:
       sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.uiSettings", "Settings").utf8Ptr()));
       if (ImGui::Button(launcherText("launcher.uiSettings", "Settings").utf8Ptr()))
         state.uiSettingsOpen = true;
-      sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.touchControls", "Controls").utf8Ptr()));
-      if (ImGui::Button(launcherText("launcher.touchControls", "Controls").utf8Ptr())) {
+      sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.touchControls", "Controls/Overlay").utf8Ptr()));
+      if (ImGui::Button(launcherText("launcher.touchControls", "Controls/Overlay").utf8Ptr())) {
         state.touchManagerOpen = true;
         state.gamepadManagerOpen = false;
         state.selectedTouchElement = std::clamp(state.selectedTouchElement, 0, (int)state.touchElements.size() - 1);
