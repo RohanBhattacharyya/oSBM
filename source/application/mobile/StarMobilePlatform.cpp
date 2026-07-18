@@ -1170,6 +1170,7 @@ private:
     }
     m_perfSimRate = config.queryInt("performance.simRate", 60) == 30 ? 30 : 60;
     m_perfFpsCap = std::max(0, (int)config.queryInt("performance.fpsCap", 0));
+    m_fullscreenRender = config.queryBool("display.fullscreenRender", false);
 #ifdef STAR_SYSTEM_SWITCH
     // The Switch panel is fixed 60Hz: rendering past it can't be displayed
     // and only beats against the panel (a ~5Hz judder at the 62-69fps this
@@ -2261,7 +2262,7 @@ private:
     static String lastLoggedLanguageLabel;
     beginLauncherScrollArea("LauncherUiSettingsScroll", state);
 
-    ImGui::TextUnformatted(launcherText("uiSettings.title", "Launcher UI Settings").utf8Ptr());
+    ImGui::TextUnformatted(launcherText("uiSettings.title", "Settings").utf8Ptr());
     ImGui::Separator();
 
     if (ImGui::Button(launcherText("common.backToLauncher", "Back to Launcher").utf8Ptr()))
@@ -2308,6 +2309,22 @@ private:
       state.uiConfig = LauncherUiConfig();
       applyLauncherUiConfig(state.uiConfig);
     }
+
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+    ImGui::Dummy(ImVec2(0.0f, 8.0f));
+    ImGui::TextUnformatted(launcherText("uiSettings.display", "Display").utf8Ptr());
+    ImGui::Separator();
+    {
+      bool fullscreen = m_fullscreenRender;
+      if (ImGui::Checkbox(launcherText("uiSettings.fullscreenRender", "Fullscreen rendering").utf8Ptr(), &fullscreen)) {
+        m_fullscreenRender = fullscreen;
+        persistLauncherState(state);
+        syncWindowMetrics(true);
+      }
+      ImGui::TextDisabled("%s", launcherText("uiSettings.fullscreenRenderHint",
+          "Off: the view avoids the notch / camera cutout (black bar). On: the game fills the whole screen and the cutout may cover content.").utf8Ptr());
+    }
+#endif
 
     ImGui::Dummy(ImVec2(0.0f, 8.0f));
     ImGui::TextUnformatted(launcherText("uiSettings.performance", "Performance").utf8Ptr());
@@ -3133,8 +3150,8 @@ private:
       sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.saveManager", "Save Manager").utf8Ptr()));
       if (ImGui::Button(launcherText("launcher.saveManager", "Save Manager").utf8Ptr()))
         state.saveManagerOpen = true;
-      sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.uiSettings", "UI Settings").utf8Ptr()));
-      if (ImGui::Button(launcherText("launcher.uiSettings", "UI Settings").utf8Ptr()))
+      sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.uiSettings", "Settings").utf8Ptr()));
+      if (ImGui::Button(launcherText("launcher.uiSettings", "Settings").utf8Ptr()))
         state.uiSettingsOpen = true;
       sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.touchControls", "Controls").utf8Ptr()));
       if (ImGui::Button(launcherText("launcher.touchControls", "Controls").utf8Ptr())) {
@@ -3255,6 +3272,9 @@ private:
       {"performance", JsonObject{
         {"simRate", m_perfSimRate},
         {"fpsCap", m_perfFpsCap}
+      }},
+      {"display", JsonObject{
+        {"fullscreenRender", m_fullscreenRender}
       }},
       {"gamepad", JsonObject{
         {"enabled", state.gamepadConfig.enabled},
@@ -4369,6 +4389,10 @@ private:
           (unsigned)std::round(saRight  * scale)
       };
 #endif
+      // Fullscreen rendering: ignore the insets entirely -- the viewport
+      // covers the whole panel and the cutout overlaps content.
+      if (m_fullscreenRender)
+        newSA = SafeAreaInsets{};
       if (!(newSA == m_safeArea)) {
         m_safeArea = newSA;
         sizeChanged = true;
@@ -4545,6 +4569,10 @@ private:
   // launcher UI is the settings surface users actually see here).
   int m_perfSimRate = 60; // simulation tick rate: 30 or 60
   int m_perfFpsCap = 0;   // rendered FPS cap; 0 = unlimited
+  // Fullscreen rendering ignores safe-area insets: the game fills the whole
+  // panel and the notch / camera cutout may overlap content. Default OFF so
+  // existing installs keep the inset (letterboxed) behavior they have today.
+  bool m_fullscreenRender = false;
   TickRateMonitor m_renderTicker{1.0f};
   float m_updateRate = 0.0f;
   float m_renderRate = 0.0f;
