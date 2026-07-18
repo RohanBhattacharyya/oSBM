@@ -2066,8 +2066,17 @@ void ClientApplication::runSwitchKeyboardSession(PaneManager* paneManager, bool 
     if (switchShowKeyboard(textBox->getText(), entered)) {
       textBox->setText(entered);
       // Keyboard OK doubles as Enter (console convention): commits the box
-      // (chat send, dialog confirm) through its own key handling.
-      textBox->sendEvent(KeyDownEvent{Key::Return, KeyMod::NoMod});
+      // (chat send, dialog confirm) the same way a physical Return keypress
+      // would. Route through processInput (not textBox->sendEvent directly):
+      // a plain sendEvent only reaches the widget's own onEnterKeyCallback
+      // (unset for chat), silently swallowing the event -- the actual
+      // "commit" logic (ChatSendLine action -> doChat()) lives one layer up
+      // in MainInterface::handleInputEvent, which only the full input
+      // pipeline reaches. This previously made chat (and any other
+      // onEnterKeyCallback-less textbox) discard the typed text and just
+      // close on keyboard confirm.
+      processInput(KeyDownEvent{Key::Return, KeyMod::NoMod});
+      processInput(KeyUpEvent{Key::Return});
       Logger::info("[swkbd] session submit ({} chars)", entered.size());
     } else {
       Logger::info("[swkbd] session canceled");
