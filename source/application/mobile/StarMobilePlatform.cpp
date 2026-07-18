@@ -28,7 +28,13 @@ extern "C" void StarIosBridge_launchTrace(char const* msg);
 #endif
 
 #include "SDL3/SDL.h"
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
+// Real mobile devices resolve GL entry points via EGL/SDL's GLES2 header.
+// On a desktop launcher build the GL symbols come from GLEW (pulled in via
+// StarRenderer_gles.hpp -> StarRenderer_opengl.hpp); including SDL_opengles2.h
+// there would clash with GLEW's function-pointer macros for the same names.
 #include "SDL3/SDL_opengles2.h"
+#endif
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -740,9 +746,20 @@ private:
   }
 
   void setupWindowAndRenderer() {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
+    // Real mobile devices: an OpenGL ES 3.0 context (resolved via EGL).
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#else
+    // Desktop launcher build: a Core 3.0 context, matching the standard
+    // desktop SDL entrypoint, so GLEW resolves entry points and the desktop
+    // ImGui OpenGL3 backend (built for desktop GL) works. The shared
+    // OpenGlRenderer targets the GL3/GLES3 common subset, so it runs on both.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
 
 #ifdef STAR_SYSTEM_ANDROID
     // Keep Android window mode stable to avoid Surface/VSync receiver races
@@ -834,7 +851,13 @@ private:
     applyLauncherUiStyle();
     refreshImGuiScale();
     ImGui_ImplSDL3_InitForOpenGL(m_window, m_glContext);
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
     ImGui_ImplOpenGL3_Init("#version 300 es");
+#else
+    // Desktop Core 3.0 context: GLSL 1.30 is the matching shader version for
+    // the desktop ImGui OpenGL3 backend.
+    ImGui_ImplOpenGL3_Init("#version 130");
+#endif
     if ((uintptr_t)io.Fonts->TexID != 0) {
       glBindTexture(GL_TEXTURE_2D, (GLuint)(uintptr_t)io.Fonts->TexID);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
@@ -1005,6 +1028,22 @@ private:
       m_launcherLangDirectory = bundledLangDirectory;
     if (File::isFile(bundledFontPath))
       m_launcherFontPath = bundledFontPath;
+#else
+    // Desktop launcher build: there is no app package to sync from. Try to
+    // locate the launcher font next to the game assets (../assets relative to
+    // the executable, matching prepareBootConfig's desktop asset root). If it
+    // isn't found the launcher falls back to ImGui's built-in font and the
+    // English fallback strings baked into every launcherText() call, so the
+    // UI still renders and functions.
+    if (auto basePath = SDL_GetBasePath()) {
+      String assetsRoot = File::convertDirSeparators(File::relativeTo(basePath, "../assets"));
+      auto candidateFont = File::relativeTo(assetsRoot, BundledLauncherFontPath);
+      if (File::isFile(candidateFont))
+        m_launcherFontPath = candidateFont;
+      auto candidateLang = File::relativeTo(assetsRoot, strf("opensb/{}", LauncherLangDirectory));
+      if (File::isDirectory(candidateLang))
+        m_launcherLangDirectory = candidateLang;
+    }
 #endif
   }
 
@@ -1225,9 +1264,24 @@ private:
           state.packedPakPath = sdPakPath;
       }
     }
+#elif !defined(STAR_SYSTEM_ANDROID) && !defined(STAR_SYSTEM_IOS)
+    // Desktop launcher build: auto-detect a packed.pak the user dropped at
+    // "<storage root>/assets/packed.pak" (the same location the file picker
+    // imports into), so it need not be re-picked every launch. The picker
+    // remains available for choosing one elsewhere.
+    if (state.packedPakPath.empty() || !File::isFile(state.packedPakPath)) {
+      auto localPakPath = File::relativeTo(m_storageRoot, "assets/packed.pak");
+      if (File::isFile(localPakPath))
+        state.packedPakPath = localPakPath;
+    }
 #endif
 
-#ifdef STAR_SYSTEM_SWITCH
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+    // Phones/tablets: touch overlay on and direct gestures on by default -- the
+    // touchscreen is the primary input.
+    state.touchConfig.enabled = config.queryBool("touch.enabled", true);
+    state.touchConfig.directTouchGestures = config.queryBool("touch.directTouchGestures", true);
+#elif defined(STAR_SYSTEM_SWITCH)
     // Default the on-screen touch control OVERLAY off on Switch: the d-pad/button
     // elements are unwanted on a console, but disabling the overlay still leaves
     // touch passthrough intact (finger taps fall through as mouse clicks, so the
@@ -1235,10 +1289,14 @@ private:
     // both sites must agree because this value is what gets persisted into the
     // launcher config that the adapter then reads back. Still user-togglable.
     state.touchConfig.enabled = config.queryBool("touch.enabled", false);
-#else
-    state.touchConfig.enabled = config.queryBool("touch.enabled", true);
-#endif
     state.touchConfig.directTouchGestures = config.queryBool("touch.directTouchGestures", true);
+#else
+    // Desktop PC launcher build: no touchscreen, so both the on-screen overlay
+    // and direct touch gestures default OFF (the user drives with mouse +
+    // keyboard + gamepad). Still user-togglable for touchscreen monitors.
+    state.touchConfig.enabled = config.queryBool("touch.enabled", false);
+    state.touchConfig.directTouchGestures = config.queryBool("touch.directTouchGestures", false);
+#endif
     state.touchConfig.directTouchGestureMode = directTouchGestureModeFromName(config.queryString("touch.directTouchGestureMode", "touchscreen"));
     state.touchConfig.directTouchSingleAction = touchActionFromJson(
         config.query("touch.directTouchSingleAction", jsonFromTouchAction(state.touchConfig.directTouchSingleAction)), state.touchConfig.directTouchSingleAction);
@@ -2764,6 +2822,19 @@ private:
       return true;
     }
 #endif
+    // Opt-in auto-launch: when STAR_LAUNCHER_AUTOLAUNCH is set in the
+    // environment and a valid packed.pak is already resolved, skip the
+    // launcher and boot straight into the game. Off unless explicitly set, so
+    // normal users always see the launcher; handy for desktop power users who
+    // want a one-step start and for automated testing.
+    {
+      static bool s_envAutoLaunched = false;
+      if (!s_envAutoLaunched && getenv("STAR_LAUNCHER_AUTOLAUNCH")
+          && !state.packedPakPath.empty() && File::isFile(state.packedPakPath)) {
+        s_envAutoLaunched = true;
+        return true;
+      }
+    }
     syncWindowMetrics(false);
     processWindowEvents();
     syncWindowMetrics(false);
@@ -3209,6 +3280,15 @@ private:
             "Copy packed.pak to this path on the SD card, then restart oSBM:").utf8Ptr());
         ImGui::TextWrapped("%s", File::relativeTo(m_storageRoot, "assets/packed.pak").utf8Ptr());
       }
+#elif !defined(STAR_SYSTEM_ANDROID) && !defined(STAR_SYSTEM_IOS)
+      // Desktop launcher: the in-app picker isn't wired to a native dialog, so
+      // guide the user to drop the file at the auto-detected location (see the
+      // desktop fallback in loadLauncherState).
+      if (state.packedPakPath.empty()) {
+        ImGui::TextWrapped("%s", launcherText("launcher.packedPakDesktopHint",
+            "Copy packed.pak to this path, then relaunch (or use Pick packed.pak):").utf8Ptr());
+        ImGui::TextWrapped("%s", File::relativeTo(m_storageRoot, "assets/packed.pak").utf8Ptr());
+      }
 #endif
       renderLauncherBusyIndicator(state);
 
@@ -3619,12 +3699,18 @@ private:
       if (auto configService = m_platformServices->launchConfigService()) {
         auto cfg = configService->loadLauncherConfig();
         MobileTouchConfig touch;
-#ifdef STAR_SYSTEM_SWITCH
-        touch.enabled = cfg.queryBool("touch.enabled", false);
-#else
+        // Defaults must match loadLauncherState (see the same #if there): the
+        // launcher persists these into the config this reads back.
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
         touch.enabled = cfg.queryBool("touch.enabled", true);
-#endif
         touch.directTouchGestures = cfg.queryBool("touch.directTouchGestures", true);
+#elif defined(STAR_SYSTEM_SWITCH)
+        touch.enabled = cfg.queryBool("touch.enabled", false);
+        touch.directTouchGestures = cfg.queryBool("touch.directTouchGestures", true);
+#else
+        touch.enabled = cfg.queryBool("touch.enabled", false);
+        touch.directTouchGestures = cfg.queryBool("touch.directTouchGestures", false);
+#endif
         touch.directTouchGestureMode = directTouchGestureModeFromName(cfg.queryString("touch.directTouchGestureMode", "touchscreen"));
         touch.directTouchSingleAction = touchActionFromJson(
             cfg.query("touch.directTouchSingleAction", jsonFromTouchAction(touch.directTouchSingleAction)), touch.directTouchSingleAction);

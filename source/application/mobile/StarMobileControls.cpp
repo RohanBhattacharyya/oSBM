@@ -19,7 +19,12 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #endif
 
 #include "SDL3/SDL.h"
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
+// See StarMobilePlatform.cpp: on a desktop launcher build the GL symbols come
+// from GLEW (via StarRenderer_gles.hpp), so SDL's GLES2 header must not be
+// pulled in here or its extern decls clash with GLEW's function-pointer macros.
 #include "SDL3/SDL_opengles2.h"
+#endif
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"

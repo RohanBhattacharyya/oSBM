@@ -165,6 +165,16 @@ option(STAR_USE_JEMALLOC "Use jemalloc allocators" OFF)
 option(STAR_USE_MIMALLOC "Use mimalloc allocators" OFF)
 option(STAR_USE_RPMALLOC "Use rpmalloc allocators" OFF)
 
+# Build the oSBM mobile-style app path (ImGui launcher + touch/gamepad
+# adapters + mobile platform services) on a desktop PC target. This flips
+# STAR_PLATFORM_MOBILE on (selecting the launcher app entry and the portable
+# mobile sources) WITHOUT setting STAR_SYSTEM_FAMILY_MOBILE or any
+# per-platform mobile macro -- so the desktop keeps its real GL/GLEW renderer
+# path, hardware cursor, full-resolution background, jemalloc, etc., and the
+# Android/iOS/Switch native code stays compiled out. Mobile devices set
+# STAR_PLATFORM_MOBILE via the family below regardless of this option.
+option(STAR_PC_MOBILE_LAUNCHER "Build the oSBM ImGui launcher / touch+gamepad app path on desktop PC" OFF)
+
 # Report all the discovered system / environment settings and all options.
 
 message(STATUS "Source ID: ${STAR_SOURCE_IDENTIFIER}")
@@ -174,7 +184,9 @@ message(STATUS "System: ${STAR_SYSTEM}")
 message(STATUS "System family: ${STAR_SYSTEM_FAMILY}")
 message(STATUS "C/C++ compiler: ${STAR_COMPILER}")
 
-if(STAR_SYSTEM_FAMILY STREQUAL "mobile")
+if(STAR_SYSTEM_FAMILY STREQUAL "mobile" OR STAR_PC_MOBILE_LAUNCHER)
+  # The launcher/ImGui app path is never built with precompiled headers on
+  # mobile; match that on a desktop launcher build to avoid PCH/imgui friction.
   set(STAR_PRECOMPILED_HEADERS FALSE)
 endif()
 
@@ -279,9 +291,17 @@ elseif(STAR_SYSTEM_FAMILY STREQUAL "unix")
   set_flag(STAR_SYSTEM_FAMILY_UNIX)
 endif()
 
-if(STAR_SYSTEM_FAMILY STREQUAL "mobile")
+# STAR_PLATFORM_MOBILE selects the oSBM app path (launcher + touch/gamepad
+# adapters + mobile platform services). It is intentionally DECOUPLED from
+# STAR_SYSTEM_FAMILY_MOBILE (the "is a real mobile device" flag set above):
+# a desktop build can opt into the app path via STAR_PC_MOBILE_LAUNCHER while
+# keeping the PC renderer/allocator/GUI-lib branches (which key off the family
+# and per-system macros, not this one). On real mobile devices the family is
+# "mobile" so this is on regardless of the option.
+if(STAR_SYSTEM_FAMILY STREQUAL "mobile" OR STAR_PC_MOBILE_LAUNCHER)
   set_flag(STAR_PLATFORM_MOBILE)
-else()
+endif()
+if(NOT STAR_SYSTEM_FAMILY STREQUAL "mobile")
   set_flag(STAR_PLATFORM_PC)
 endif()
 

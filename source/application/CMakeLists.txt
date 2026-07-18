@@ -39,14 +39,22 @@ IF (STAR_PLATFORM_MOBILE)
   SET (star_application_SOURCES ${star_application_SOURCES}
       StarMainApplication_mobile_sdl.cpp
       StarPlatformServices_mobile.cpp
-      mobile/StarMobileAndroidGyro.cpp
       mobile/StarMobileControls.cpp
       mobile/StarMobileLauncherSupport.cpp
       mobile/StarMobilePlatform.cpp
-      mobile/android/StarAndroidFileAccessBridge.cpp
       mobile/ios/StarIosFileAccessBridge.cpp
       StarRenderer_gles.cpp
     )
+  # Android-native translation units (JNI, SDL_system) -- only compiled for a
+  # real Android target. On a desktop launcher build (STAR_PC_MOBILE_LAUNCHER)
+  # their symbols are only referenced from inside STAR_SYSTEM_ANDROID guards,
+  # so they are simply left out.
+  IF (STAR_SYSTEM_ANDROID)
+    SET (star_application_SOURCES ${star_application_SOURCES}
+        mobile/StarMobileAndroidGyro.cpp
+        mobile/android/StarAndroidFileAccessBridge.cpp
+      )
+  ENDIF ()
   IF (STAR_SYSTEM_IOS)
     SET (star_application_SOURCES ${star_application_SOURCES}
         # Keep a distinct basename from StarIosFileAccessBridge.cpp to avoid

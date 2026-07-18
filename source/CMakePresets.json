@@ -84,6 +84,18 @@
     },
     {
       "inherits": "linux-release",
+      "name": "linux-launcher-release",
+      "displayName": "Linux x64 (oSBM ImGui launcher)",
+      "description": "Desktop Linux build using the oSBM app path: ImGui launcher, touch/gamepad adapters, mobile platform services. Keeps the desktop GL/GLEW renderer and jemalloc.",
+      "binaryDir": "${sourceParentDir}/build/linux-launcher-release",
+      "cacheVariables": {
+        "STAR_PC_MOBILE_LAUNCHER": true,
+        "STAR_ENABLE_STEAM_INTEGRATION": false,
+        "STAR_ENABLE_DISCORD_INTEGRATION": false
+      }
+    },
+    {
+      "inherits": "linux-release",
       "name": "linux-release-clang",
       "displayName": "Linux Clang x64",
       "binaryDir": "${sourceParentDir}/build/linux-release-clang",
@@ -268,6 +280,10 @@
     {
       "name": "linux-release",
       "configurePreset": "linux-release"
+    },
+    {
+      "name": "linux-launcher-release",
+      "configurePreset": "linux-launcher-release"
     },
     {
       "name": "linux-release-clang",

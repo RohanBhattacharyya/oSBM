@@ -21,7 +21,11 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #endif
 
 #include "SDL3/SDL.h"
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
+// See StarMobilePlatform.cpp: excluded on desktop launcher builds to avoid
+// clashing with GLEW's GL symbol macros.
 #include "SDL3/SDL_opengles2.h"
+#endif
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"

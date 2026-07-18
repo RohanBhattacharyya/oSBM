@@ -4,6 +4,7 @@ launcher.configureHint=请先配置资源和触控，再启动游戏。
 launcher.packedPakLabel=packed.pak
 launcher.notSelected=<未选择>
 launcher.packedPakSwitchHint=将 packed.pak 复制到 SD 卡上的以下路径，然后重启 oSBM：
+launcher.packedPakDesktopHint=将 packed.pak 复制到此路径，然后重新启动（或使用"选择 packed.pak"）：
 launcher.pickPackedPak=选择 packed.pak
 launcher.modsDirectoryLabel=当前模组目录
 launcher.modManager=模组管理

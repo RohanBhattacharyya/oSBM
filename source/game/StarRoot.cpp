@@ -62,7 +62,10 @@ namespace Star {
 
 namespace {
   unsigned const RootMaintenanceSleep = 5000;
-#if STAR_PLATFORM_MOBILE
+// Gated on the real mobile-device family, not STAR_PLATFORM_MOBILE: a desktop
+// build using the oSBM launcher path (STAR_PC_MOBILE_LAUNCHER) should keep the
+// desktop 4-thread asset load, not the single-threaded mobile value.
+#if STAR_SYSTEM_FAMILY_MOBILE
   unsigned const RootLoadThreads = 1;
 #else
   unsigned const RootLoadThreads = 4;
@@ -825,19 +828,19 @@ shared_ptr<T> Root::loadMemberFunction(shared_ptr<T>& ptr, Mutex& mutex, char co
   MutexLocker locker(mutex);
   if (!ptr) {
     auto startSeconds = Time::monotonicTime();
-#if STAR_PLATFORM_MOBILE
+#if STAR_SYSTEM_FAMILY_MOBILE
     Logger::info("Root: Loading {}... ({})", name, processMemorySummary());
 #endif
     try {
       ptr = loadFunction();
     } catch (...) {
-#if STAR_PLATFORM_MOBILE
+#if STAR_SYSTEM_FAMILY_MOBILE
       Logger::error("Root: Failed loading {} after {} seconds ({})", name, Time::monotonicTime() - startSeconds, processMemorySummary());
 #endif
       throw;
     }
     Logger::info("Root: Loaded {} in {} seconds", name, Time::monotonicTime() - startSeconds);
-#if STAR_PLATFORM_MOBILE
+#if STAR_SYSTEM_FAMILY_MOBILE
     Logger::info("Root: Memory after {}: {}", name, processMemorySummary());
 #endif
   }

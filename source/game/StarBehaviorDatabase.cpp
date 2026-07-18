@@ -234,7 +234,10 @@ BehaviorDatabase::BehaviorDatabase() {
   Logger::info("BehaviorDatabase: Scanned {} node file(s), {} behavior file(s), {} named behavior tree(s)",
       nodeFiles.size(), behaviorFiles.size(), m_configs.size());
 
-#if !STAR_PLATFORM_MOBILE
+// Gated on the real mobile-device family, not STAR_PLATFORM_MOBILE: a desktop
+// build using the oSBM launcher path keeps the desktop eager behavior-tree
+// load; only real mobile devices lazy-load to save memory/startup time.
+#if !STAR_SYSTEM_FAMILY_MOBILE
   for (auto& pair : m_configs)
     loadTree(pair.first);
 #endif
