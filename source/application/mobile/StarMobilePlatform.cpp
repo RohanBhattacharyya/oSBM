@@ -4012,9 +4012,13 @@ private:
   }
 
   Vec2F externalMouseInputPosition(float x, float y) const {
-    // External mice report physical window coordinates, while the game is
-    // rendered into the safe-area canvas. Touch input already goes through the
-    // touch adapter's canvas conversion; keep this path for real mouse devices.
+    // External mice report window POINTS, while the game canvas / safe area /
+    // render canvas are all in framebuffer PIXELS. Scale points -> pixels
+    // first (1:1 on non-HiDPI); without this the cursor lands offset toward the
+    // origin on HiDPI displays. Touch input takes the touch adapter's own
+    // conversion path instead.
+    x *= m_windowPointToPixel[0];
+    y *= m_windowPointToPixel[1];
     Vec2U physicalCanvas = gameCanvasSize();
     Vec2U renderCanvas = m_renderCanvasSize;
     Vec2F physical{
@@ -4567,6 +4571,19 @@ private:
       float displayScale = SDL_GetWindowDisplayScale(m_window);
       if (displayScale > 0.0f)
         m_displayScale = displayScale;
+
+      // Compute the exact framebuffer-pixels-per-window-point ratio from the
+      // two window-size queries (handles fractional/HiDPI scaling precisely,
+      // rather than trusting the display content scale). Mouse events arrive
+      // in points; the render canvas is in pixels, so external-mouse coords
+      // are scaled by this in externalMouseInputPosition.
+      int pointW = 0, pointH = 0;
+      if (hasSize && SDL_GetWindowSize(m_window, &pointW, &pointH) && pointW > 0 && pointH > 0) {
+        m_windowPointToPixel = {
+          (float)queriedSize[0] / (float)pointW,
+          (float)queriedSize[1] / (float)pointH
+        };
+      }
     }
 
 #if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
@@ -4759,6 +4776,11 @@ private:
   Vec2U m_windowSize = {1280, 720};
   Vec2U m_renderCanvasSize = {1280, 720};
   Vec2U m_requestedRenderResolution = {0, 0};
+  // Framebuffer-pixels per window-point. m_windowSize / canvases are in pixels
+  // (SDL_GetWindowSizeInPixels), but SDL mouse events report window points, so
+  // external-mouse coordinates must be scaled by this before mapping into the
+  // pixel-space render canvas. 1.0 on non-HiDPI displays.
+  Vec2F m_windowPointToPixel = {1.0f, 1.0f};
   SafeAreaInsets m_safeArea;
   bool m_vsync = true;
   bool m_cursorVisible = true;
