@@ -1227,6 +1227,10 @@ private:
 #endif
     state.touchConfig.directTouchGestures = config.queryBool("touch.directTouchGestures", true);
     state.touchConfig.directTouchGestureMode = directTouchGestureModeFromName(config.queryString("touch.directTouchGestureMode", "touchscreen"));
+    state.touchConfig.directTouchSingleAction = touchActionFromJson(
+        config.query("touch.directTouchSingleAction", jsonFromTouchAction(state.touchConfig.directTouchSingleAction)), state.touchConfig.directTouchSingleAction);
+    state.touchConfig.directTouchTwoFingerAction = touchActionFromJson(
+        config.query("touch.directTouchTwoFingerAction", jsonFromTouchAction(state.touchConfig.directTouchTwoFingerAction)), state.touchConfig.directTouchTwoFingerAction);
     state.touchConfig.gyroEnabled = config.queryBool("touch.gyroEnabled", false);
     if (!platformGyroAvailable())
       state.touchConfig.gyroEnabled = false;
@@ -2472,6 +2476,12 @@ private:
       }
       ImGui::TextDisabled("%s", launcherText("touchManager.gestureModeHint",
           "Touchscreen: cursor tracks your finger directly. Touchpad: swipe to move the cursor relatively, like a laptop touchpad.").utf8Ptr());
+      renderTouchActionCombo(state, launcherText("touchManager.singleTouchAction", "Single-touch action").utf8Ptr(),
+          state.touchConfig.directTouchSingleAction, "directTouchSingleAction");
+      renderTouchActionCombo(state, launcherText("touchManager.twoFingerTouchAction", "Two-finger touch action").utf8Ptr(),
+          state.touchConfig.directTouchTwoFingerAction, "directTouchTwoFingerAction");
+      ImGui::TextDisabled("%s", launcherText("touchManager.directTouchActionHint",
+          "What single-finger and two-finger taps/holds do. Defaults match the classic behavior (aim/attack, secondary aim/use). Pick No Action to disable a gesture.").utf8Ptr());
       ImGui::Unindent();
     }
     ImGui::BeginDisabled(!gyroAvailable);
@@ -3344,6 +3354,8 @@ private:
         {"enabled", state.touchConfig.enabled},
         {"directTouchGestures", state.touchConfig.directTouchGestures},
         {"directTouchGestureMode", directTouchGestureModeName(state.touchConfig.directTouchGestureMode)},
+        {"directTouchSingleAction", jsonFromTouchAction(state.touchConfig.directTouchSingleAction)},
+        {"directTouchTwoFingerAction", jsonFromTouchAction(state.touchConfig.directTouchTwoFingerAction)},
         {"gyroEnabled", state.touchConfig.gyroEnabled},
         {"opacity", state.touchConfig.opacity},
         {"size", state.touchConfig.size},
@@ -3436,6 +3448,8 @@ private:
             {"enabled", state.touchConfig.enabled},
             {"directTouchGestures", state.touchConfig.directTouchGestures},
             {"directTouchGestureMode", directTouchGestureModeName(state.touchConfig.directTouchGestureMode)},
+            {"directTouchSingleAction", jsonFromTouchAction(state.touchConfig.directTouchSingleAction)},
+            {"directTouchTwoFingerAction", jsonFromTouchAction(state.touchConfig.directTouchTwoFingerAction)},
             {"gyroEnabled", state.touchConfig.gyroEnabled},
             {"opacity", state.touchConfig.opacity},
             {"size", state.touchConfig.size},
@@ -3578,6 +3592,10 @@ private:
 #endif
         touch.directTouchGestures = cfg.queryBool("touch.directTouchGestures", true);
         touch.directTouchGestureMode = directTouchGestureModeFromName(cfg.queryString("touch.directTouchGestureMode", "touchscreen"));
+        touch.directTouchSingleAction = touchActionFromJson(
+            cfg.query("touch.directTouchSingleAction", jsonFromTouchAction(touch.directTouchSingleAction)), touch.directTouchSingleAction);
+        touch.directTouchTwoFingerAction = touchActionFromJson(
+            cfg.query("touch.directTouchTwoFingerAction", jsonFromTouchAction(touch.directTouchTwoFingerAction)), touch.directTouchTwoFingerAction);
         touch.gyroEnabled = cfg.queryBool("touch.gyroEnabled", false);
         if (!platformGyroAvailable())
           touch.gyroEnabled = false;

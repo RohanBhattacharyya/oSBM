@@ -719,9 +719,9 @@ public:
     m_aimVec = {};
 
     if (m_primaryMouseHeld)
-      emitMouseUp(m_primaryTouchPos);
+      releaseDirectGestureAction(m_config.directTouchSingleAction, DirectTouchSingleOwner);
     if (m_secondaryMouseHeld)
-      emitMouseUp(m_secondaryTouchPos, MouseButton::Right);
+      releaseDirectGestureAction(m_config.directTouchTwoFingerAction, DirectTouchTwoFingerOwner);
 
     m_primaryHeld = false;
     m_primaryMouseHeld = false;
@@ -1110,16 +1110,16 @@ private:
       m_secondaryFinger = finger;
       m_secondaryTouchPos = m_primaryHeld ? m_primaryTouchPos : pos;
 
-      // Let right-click behavior take precedence while secondary gesture is held.
+      // Let the two-finger gesture's action take precedence while held.
       if (m_primaryMouseHeld) {
-        emitMouseUp(m_primaryTouchPos);
+        releaseDirectGestureAction(m_config.directTouchSingleAction, DirectTouchSingleOwner);
         m_primaryMouseHeld = false;
         m_primaryPausedForSecondary = true;
       }
 
       m_secondaryMouseHeld = true;
       emitMouseMove(m_secondaryTouchPos);
-      emitMouseDown(m_secondaryTouchPos, MouseButton::Right);
+      pressDirectGestureAction(m_config.directTouchTwoFingerAction, DirectTouchTwoFingerOwner);
     } else if (m_primaryHeld) {
       // A third touch should not steal ownership of the primary attack/aim
       // button or synthesize a click while the primary button is still held.
@@ -1130,6 +1130,9 @@ private:
       m_aimFinger = finger;
       m_primaryHeld = true;
       m_primaryMouseHeld = true;
+      // Cursor tracking always happens regardless of what action is
+      // configured below: moving your finger while touching aims the
+      // reticle, independent of what fires on press.
       if (m_config.directTouchGestureMode == DirectTouchGestureMode::Touchpad) {
         // Touchpad mode: the cursor stays put on finger-down and only moves
         // by the swipe delta from here (see updateFinger), instead of
@@ -1138,12 +1141,11 @@ private:
         state.touchpadAnchor = pos;
         m_primaryTouchPos = cursorPos;
         emitMouseMove(cursorPos);
-        emitMouseDown(cursorPos);
       } else {
         m_primaryTouchPos = pos;
         emitMouseMove(pos);
-        emitMouseDown(pos);
       }
+      pressDirectGestureAction(m_config.directTouchSingleAction, DirectTouchSingleOwner);
     }
 
     m_fingers[finger] = state;
@@ -1218,10 +1220,12 @@ private:
         break;
       case FingerRole::Aim:
         if (m_primaryMouseHeld) {
-          // Use the tracked cursor position, not the raw release pos: in
-          // touchpad mode they can differ significantly (cursor position is
-          // delta-tracked, not 1:1 with the finger).
-          emitMouseUp(m_primaryTouchPos);
+          // The cursor position was already kept in sync via emitMouseMove
+          // during updateFinger, so releasing here reads that tracked
+          // position rather than the raw release pos (in touchpad mode they
+          // can differ significantly -- cursor position is delta-tracked,
+          // not 1:1 with the finger).
+          releaseDirectGestureAction(m_config.directTouchSingleAction, DirectTouchSingleOwner);
           m_primaryMouseHeld = false;
         }
         m_primaryHeld = false;
@@ -1235,7 +1239,7 @@ private:
         if (m_secondaryMouseHeld && m_secondaryFinger == finger) {
           m_secondaryTouchPos = m_primaryHeld ? m_primaryTouchPos : pos;
           emitMouseMove(m_secondaryTouchPos);
-          emitMouseUp(m_secondaryTouchPos, MouseButton::Right);
+          releaseDirectGestureAction(m_config.directTouchTwoFingerAction, DirectTouchTwoFingerOwner);
           m_secondaryMouseHeld = false;
         } else if (tap) {
           Vec2F target = m_primaryHeld ? m_primaryTouchPos : pos;
@@ -1247,7 +1251,7 @@ private:
 
         if (m_primaryPausedForSecondary && m_primaryHeld && !m_primaryMouseHeld) {
           emitMouseMove(m_primaryTouchPos);
-          emitMouseDown(m_primaryTouchPos);
+          pressDirectGestureAction(m_config.directTouchSingleAction, DirectTouchSingleOwner);
           m_primaryMouseHeld = true;
         }
         m_primaryPausedForSecondary = false;
@@ -1272,11 +1276,11 @@ private:
 
   void cancelDirectTouchGestures() {
     if (m_primaryMouseHeld) {
-      emitMouseUp(m_primaryTouchPos);
+      releaseDirectGestureAction(m_config.directTouchSingleAction, DirectTouchSingleOwner);
       m_primaryMouseHeld = false;
     }
     if (m_secondaryMouseHeld) {
-      emitMouseUp(m_secondaryTouchPos, MouseButton::Right);
+      releaseDirectGestureAction(m_config.directTouchTwoFingerAction, DirectTouchTwoFingerOwner);
       m_secondaryMouseHeld = false;
     }
 
@@ -1579,6 +1583,37 @@ private:
       m_nextActionRepeatMs.remove(state.elementId);
       cancelPulsedAction(state.elementId);
     }
+  }
+
+  // Owner tokens for the two direct-touch gestures (single-finger "Aim",
+  // two-finger "SecondaryHold"): distinct from any element id since these
+  // gestures aren't backed by a configured MobileTouchElement.
+  static constexpr char const* DirectTouchSingleOwner = "directTouchSingle";
+  static constexpr char const* DirectTouchTwoFingerOwner = "directTouchTwoFinger";
+
+  // Press/release for the two configurable direct-touch gesture actions.
+  // Mirrors pressActionButton/releaseActionButton's Hold-mode + GyroToggle
+  // special case, but takes the action directly since there's no backing
+  // element -- these gestures are always "press on finger-down, release on
+  // finger-up" (no press-mode picker; that matches how they behaved before
+  // being made configurable).
+  void pressDirectGestureAction(MobileTouchAction const& action, char const* owner) {
+    if (action.kind == MobileTouchActionKind::GyroToggle) {
+      if (m_gyroAvailable && m_config.gyroEnabled) {
+        m_gyroRuntimeEnabled = !m_gyroRuntimeEnabled;
+        m_lastGyroFrameMs = 0;
+        if (m_gyroRuntimeEnabled)
+          ensureAimTarget();
+      }
+      return;
+    }
+    setAction(action, owner, true);
+  }
+
+  void releaseDirectGestureAction(MobileTouchAction const& action, char const* owner) {
+    if (action.kind == MobileTouchActionKind::GyroToggle)
+      return;
+    setAction(action, owner, false);
   }
 
   void setKeyOwner(String const& owner, Key key, bool desired) {

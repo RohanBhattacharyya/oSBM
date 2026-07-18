@@ -31,10 +31,43 @@ enum class DirectTouchGestureMode {
   Touchpad
 };
 
+enum class MobileTouchActionKind {
+  Key,
+  KeyMacro,
+  MouseButton,
+  MouseWheelUp,
+  MouseWheelDown,
+  GyroToggle,
+  GamepadAimModeToggle,
+  ActionWheel,
+  InventoryWheel,
+  UiNavigation,
+  None
+};
+
+struct MobileTouchAction {
+  MobileTouchActionKind kind = MobileTouchActionKind::Key;
+  Key key = Key::Space;
+  MouseButton mouseButton = MouseButton::Left;
+  UiNavigationDirection uiNavigationDirection = UiNavigationDirection::Down;
+  List<Key> keys;
+  // For KeyMacro: true = play the keys as an ordered sequence of taps,
+  // false = hold all keys down together (a chord / key combination).
+  bool macroSequential = true;
+};
+
 struct MobileTouchConfig {
   bool enabled = true;
   bool directTouchGestures = true;
   DirectTouchGestureMode directTouchGestureMode = DirectTouchGestureMode::Touchscreen;
+  // What single-finger and two-finger direct touch gestures do, independent
+  // of the touch overlay's configured buttons. Defaults match the
+  // long-standing hardcoded behavior (single = aim/attack, two-finger =
+  // secondary aim/use) so upgrading users see no change. MobileTouchActionKind::None
+  // ("No Action" in the picker) makes the gesture do nothing but still move
+  // the cursor.
+  MobileTouchAction directTouchSingleAction = MobileTouchAction{MobileTouchActionKind::MouseButton, Key::Space, MouseButton::Left};
+  MobileTouchAction directTouchTwoFingerAction = MobileTouchAction{MobileTouchActionKind::MouseButton, Key::Space, MouseButton::Right};
   bool gyroEnabled = false;
   float opacity = 0.35f;
   float size = 1.0f;
@@ -85,36 +118,11 @@ enum class PerformanceCounterMode {
   Detailed
 };
 
-enum class MobileTouchActionKind {
-  Key,
-  KeyMacro,
-  MouseButton,
-  MouseWheelUp,
-  MouseWheelDown,
-  GyroToggle,
-  GamepadAimModeToggle,
-  ActionWheel,
-  InventoryWheel,
-  UiNavigation,
-  None
-};
-
 enum class MobileTouchPressMode {
   SinglePress,
   Repeat,
   Hold,
   Toggle
-};
-
-struct MobileTouchAction {
-  MobileTouchActionKind kind = MobileTouchActionKind::Key;
-  Key key = Key::Space;
-  MouseButton mouseButton = MouseButton::Left;
-  UiNavigationDirection uiNavigationDirection = UiNavigationDirection::Down;
-  List<Key> keys;
-  // For KeyMacro: true = play the keys as an ordered sequence of taps,
-  // false = hold all keys down together (a chord / key combination).
-  bool macroSequential = true;
 };
 
 struct MobileTouchElement {
