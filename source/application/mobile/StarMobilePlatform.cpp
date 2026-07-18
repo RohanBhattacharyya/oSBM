@@ -1226,6 +1226,7 @@ private:
     state.touchConfig.enabled = config.queryBool("touch.enabled", true);
 #endif
     state.touchConfig.directTouchGestures = config.queryBool("touch.directTouchGestures", true);
+    state.touchConfig.directTouchGestureMode = directTouchGestureModeFromName(config.queryString("touch.directTouchGestureMode", "touchscreen"));
     state.touchConfig.gyroEnabled = config.queryBool("touch.gyroEnabled", false);
     if (!platformGyroAvailable())
       state.touchConfig.gyroEnabled = false;
@@ -2411,6 +2412,30 @@ private:
     ImGui::TextUnformatted(launcherText("touchManager.touchSection", "Controls").utf8Ptr());
     ImGui::Checkbox(launcherText("touchManager.enableOverlay", "Enable touch overlay").utf8Ptr(), &state.touchConfig.enabled);
     ImGui::Checkbox(launcherText("touchManager.enableDirectGestures", "Enable direct screen touch gestures").utf8Ptr(), &state.touchConfig.directTouchGestures);
+    if (state.touchConfig.directTouchGestures) {
+      bool touchpad = state.touchConfig.directTouchGestureMode == DirectTouchGestureMode::Touchpad;
+      char const* modeLabel = touchpad
+          ? launcherText("touchManager.gestureModeTouchpad", "Touchpad").utf8Ptr()
+          : launcherText("touchManager.gestureModeTouchscreen", "Touchscreen").utf8Ptr();
+      ImGui::Indent();
+      if (ImGui::BeginCombo(launcherText("touchManager.gestureMode", "Gesture mode").utf8Ptr(), modeLabel)) {
+        for (int i = 0; i < 2; ++i) {
+          bool isTouchpad = i == 1;
+          bool selected = touchpad == isTouchpad;
+          char const* label = isTouchpad
+              ? launcherText("touchManager.gestureModeTouchpad", "Touchpad").utf8Ptr()
+              : launcherText("touchManager.gestureModeTouchscreen", "Touchscreen").utf8Ptr();
+          if (ImGui::Selectable(label, selected))
+            state.touchConfig.directTouchGestureMode = isTouchpad ? DirectTouchGestureMode::Touchpad : DirectTouchGestureMode::Touchscreen;
+          if (selected)
+            ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::TextDisabled("%s", launcherText("touchManager.gestureModeHint",
+          "Touchscreen: cursor tracks your finger directly. Touchpad: swipe to move the cursor relatively, like a laptop touchpad.").utf8Ptr());
+      ImGui::Unindent();
+    }
     ImGui::BeginDisabled(!gyroAvailable);
     ImGui::Checkbox(launcherText("touchManager.enableGyroAim", "Enable gyro aim").utf8Ptr(), &state.touchConfig.gyroEnabled);
     ImGui::EndDisabled();
@@ -3259,6 +3284,7 @@ private:
       {"touch", JsonObject{
         {"enabled", state.touchConfig.enabled},
         {"directTouchGestures", state.touchConfig.directTouchGestures},
+        {"directTouchGestureMode", directTouchGestureModeName(state.touchConfig.directTouchGestureMode)},
         {"gyroEnabled", state.touchConfig.gyroEnabled},
         {"opacity", state.touchConfig.opacity},
         {"size", state.touchConfig.size},
@@ -3350,6 +3376,7 @@ private:
           {"touchControls", JsonObject{
             {"enabled", state.touchConfig.enabled},
             {"directTouchGestures", state.touchConfig.directTouchGestures},
+            {"directTouchGestureMode", directTouchGestureModeName(state.touchConfig.directTouchGestureMode)},
             {"gyroEnabled", state.touchConfig.gyroEnabled},
             {"opacity", state.touchConfig.opacity},
             {"size", state.touchConfig.size},
@@ -3491,6 +3518,7 @@ private:
         touch.enabled = cfg.queryBool("touch.enabled", true);
 #endif
         touch.directTouchGestures = cfg.queryBool("touch.directTouchGestures", true);
+        touch.directTouchGestureMode = directTouchGestureModeFromName(cfg.queryString("touch.directTouchGestureMode", "touchscreen"));
         touch.gyroEnabled = cfg.queryBool("touch.gyroEnabled", false);
         if (!platformGyroAvailable())
           touch.gyroEnabled = false;

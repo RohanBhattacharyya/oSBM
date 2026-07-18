@@ -20,9 +20,21 @@ struct SafeAreaInsets {
   }
 };
 
+enum class DirectTouchGestureMode {
+  // Cursor jumps to and tracks the finger's absolute screen position (the
+  // long-standing behavior, kept as the default so upgrading users see no
+  // change).
+  Touchscreen,
+  // Cursor moves relative to the finger's swipe delta, like a laptop
+  // touchpad: swiping up moves the cursor up, not necessarily to the
+  // finger's position.
+  Touchpad
+};
+
 struct MobileTouchConfig {
   bool enabled = true;
   bool directTouchGestures = true;
+  DirectTouchGestureMode directTouchGestureMode = DirectTouchGestureMode::Touchscreen;
   bool gyroEnabled = false;
   float opacity = 0.35f;
   float size = 1.0f;
@@ -154,6 +166,8 @@ JsonArray jsonFromTouchElements(std::vector<MobileTouchElement> const& elements)
 std::vector<MobileTouchElement> touchElementsFromConfig(Json const& config);
 String gamepadStickModeName(MobileGamepadStickMode mode);
 MobileGamepadStickMode gamepadStickModeFromName(String const& name, MobileGamepadStickMode def = MobileGamepadStickMode::Movement);
+String directTouchGestureModeName(DirectTouchGestureMode mode);
+DirectTouchGestureMode directTouchGestureModeFromName(String const& name, DirectTouchGestureMode def = DirectTouchGestureMode::Touchscreen);
 Json jsonFromGamepadStick(MobileGamepadStickConfig const& stick);
 MobileGamepadStickConfig gamepadStickFromJson(Json const& json, MobileGamepadStickConfig def);
 MobileGamepadConfig gamepadConfigFromConfig(Json const& config);

@@ -422,6 +422,23 @@ MobileGamepadStickMode gamepadStickModeFromName(String const& name, MobileGamepa
   return def;
 }
 
+String directTouchGestureModeName(DirectTouchGestureMode mode) {
+  switch (mode) {
+    case DirectTouchGestureMode::Touchpad:
+      return "touchpad";
+    default:
+      return "touchscreen";
+  }
+}
+
+DirectTouchGestureMode directTouchGestureModeFromName(String const& name, DirectTouchGestureMode def) {
+  if (name.equals("touchpad", String::CaseInsensitive))
+    return DirectTouchGestureMode::Touchpad;
+  if (name.equals("touchscreen", String::CaseInsensitive))
+    return DirectTouchGestureMode::Touchscreen;
+  return def;
+}
+
 Json jsonFromGamepadStick(MobileGamepadStickConfig const& stick) {
   return JsonObject{
     {"enabled", stick.enabled},
@@ -799,6 +816,10 @@ private:
     MobileTouchPressMode pressMode = MobileTouchPressMode::Hold;
     int64_t downTimeMs = 0;
     bool movedTooFarForTap = false;
+    // Touchpad mode (FingerRole::Aim only): the finger's raw position as of
+    // the last update, used to compute the next frame's swipe delta. Kept
+    // separate from currentPos, which trackTapMotion overwrites unconditionally.
+    Vec2F touchpadAnchor;
   };
 
   static bool insideCircle(Vec2F const& p, Vec2F const& center, float radius) {
@@ -1046,9 +1067,20 @@ private:
       m_aimFinger = finger;
       m_primaryHeld = true;
       m_primaryMouseHeld = true;
-      m_primaryTouchPos = pos;
-      emitMouseMove(pos);
-      emitMouseDown(pos);
+      if (m_config.directTouchGestureMode == DirectTouchGestureMode::Touchpad) {
+        // Touchpad mode: the cursor stays put on finger-down and only moves
+        // by the swipe delta from here (see updateFinger), instead of
+        // warping to the finger's position like touchscreen mode does.
+        Vec2F cursorPos = m_hasCursorInputPosition ? toScreenSpace(m_cursorInputPosition) : canvasSize() * 0.5f;
+        state.touchpadAnchor = pos;
+        m_primaryTouchPos = cursorPos;
+        emitMouseMove(cursorPos);
+        emitMouseDown(cursorPos);
+      } else {
+        m_primaryTouchPos = pos;
+        emitMouseMove(pos);
+        emitMouseDown(pos);
+      }
     }
 
     m_fingers[finger] = state;
@@ -1080,8 +1112,17 @@ private:
     } else if (ptr->role == FingerRole::AimJoystick) {
       updateAimJoystickFinger(*ptr, pos);
     } else if (ptr->role == FingerRole::Aim) {
-      m_primaryTouchPos = pos;
-      emitMouseMove(pos);
+      if (m_config.directTouchGestureMode == DirectTouchGestureMode::Touchpad) {
+        Vec2F delta = pos - ptr->touchpadAnchor;
+        ptr->touchpadAnchor = pos;
+        Vec2F canvas = canvasSize();
+        m_primaryTouchPos = Vec2F(
+          std::clamp(m_primaryTouchPos[0] + delta[0], 0.0f, canvas[0]),
+          std::clamp(m_primaryTouchPos[1] + delta[1], 0.0f, canvas[1]));
+      } else {
+        m_primaryTouchPos = pos;
+      }
+      emitMouseMove(m_primaryTouchPos);
     } else if (ptr->role == FingerRole::SecondaryHold && m_secondaryMouseHeld) {
       m_secondaryTouchPos = m_primaryHeld ? m_primaryTouchPos : pos;
       emitMouseMove(m_secondaryTouchPos);
@@ -1114,7 +1155,10 @@ private:
         break;
       case FingerRole::Aim:
         if (m_primaryMouseHeld) {
-          emitMouseUp(pos);
+          // Use the tracked cursor position, not the raw release pos: in
+          // touchpad mode they can differ significantly (cursor position is
+          // delta-tracked, not 1:1 with the finger).
+          emitMouseUp(m_primaryTouchPos);
           m_primaryMouseHeld = false;
         }
         m_primaryHeld = false;
