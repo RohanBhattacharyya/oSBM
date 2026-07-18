@@ -2456,9 +2456,6 @@ private:
     ImGui::TextUnformatted(launcherText("touchManager.touchSection", "Controls").utf8Ptr());
     ImGui::Checkbox(launcherText("touchManager.enableOverlay", "Enable touch overlay").utf8Ptr(), &state.touchConfig.enabled);
     ImGui::Checkbox(launcherText("touchManager.enableDirectGestures", "Enable direct screen touch gestures").utf8Ptr(), &state.touchConfig.directTouchGestures);
-    ImGui::Checkbox(launcherText("touchManager.joystickAimCursor", "Enable joystick aim cursor").utf8Ptr(), &state.touchConfig.joystickAimCursorEnabled);
-    ImGui::TextDisabled("%s", launcherText("touchManager.joystickAimCursorHint",
-        "Shows the aim cursor while aiming with a joystick, from the touch-screen aim joystick or a physical controller.").utf8Ptr());
     if (state.touchConfig.directTouchGestures) {
       bool touchpad = state.touchConfig.directTouchGestureMode == DirectTouchGestureMode::Touchpad;
       // Store as String, not char const*: .utf8Ptr() on a launcherText()
@@ -2491,6 +2488,9 @@ private:
           "What single-finger and two-finger taps/holds do. Defaults match the classic behavior (aim/attack, secondary aim/use). Pick No Action to disable a gesture.").utf8Ptr());
       ImGui::Unindent();
     }
+    ImGui::Checkbox(launcherText("touchManager.joystickAimCursor", "Enable joystick aim cursor").utf8Ptr(), &state.touchConfig.joystickAimCursorEnabled);
+    ImGui::TextDisabled("%s", launcherText("touchManager.joystickAimCursorHint",
+        "Shows the aim cursor while aiming with a joystick, from the touch-screen aim joystick or a physical controller.").utf8Ptr());
     ImGui::BeginDisabled(!gyroAvailable);
     ImGui::Checkbox(launcherText("touchManager.enableGyroAim", "Enable gyro aim").utf8Ptr(), &state.touchConfig.gyroEnabled);
     ImGui::EndDisabled();
