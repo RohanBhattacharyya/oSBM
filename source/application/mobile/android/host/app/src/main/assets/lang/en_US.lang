@@ -3,6 +3,7 @@ launcher.loadingHint=Please wait. Assets and configuration are loading.
 launcher.configureHint=Configure assets and controls before launching.
 launcher.packedPakLabel=packed.pak
 launcher.notSelected=<not selected>
+launcher.packedPakSwitchHint=Copy packed.pak to this path on the SD card, then restart oSBM:
 launcher.pickPackedPak=Pick packed.pak
 launcher.modsDirectoryLabel=Current mods directory
 launcher.modManager=Mod Manager

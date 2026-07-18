@@ -941,6 +941,14 @@ if(STAR_BUILD_GUI)
         COMMENT "Staging packed.pak into Switch romfs (self-contained .nro)"
         VERBATIM)
       add_custom_target(switch_bundle_pak DEPENDS "${STAR_SWITCH_ROMFS}/packed.pak")
+    elseif(EXISTS "${STAR_SWITCH_ROMFS}/packed.pak")
+      # STAR_SWITCH_PACKED_PAK is unset (possibly toggled off since a prior
+      # configure that DID set it) -- elf2nro packs everything under the romfs
+      # staging directory regardless of what CMake asked to copy this run, so
+      # a stale pak here would silently keep getting embedded. Remove it so
+      # unsetting the variable actually produces a non-self-contained .nro.
+      message(STATUS "Removing stale embedded packed.pak from Switch romfs (STAR_SWITCH_PACKED_PAK is unset): ${STAR_SWITCH_ROMFS}/packed.pak")
+      file(REMOVE "${STAR_SWITCH_ROMFS}/packed.pak")
     endif()
 
     # Generate application metadata and the final NRO via the devkitPro

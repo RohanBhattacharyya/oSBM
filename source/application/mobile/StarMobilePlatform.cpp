@@ -1208,9 +1208,22 @@ private:
     // (STAR_SWITCH_PACKED_PAK), producing a fully self-contained build. Prefer
     // it whenever there is no valid persisted pak so the launcher needs no
     // in-app file selection (the Switch has no native file picker).
+    //
+    // Release NROs are NOT built with an embedded pak, so the more common
+    // path is the SD-card fallback below: the same "<storage root>/assets/
+    // packed.pak" location Android/iOS's file-picker import copies into (see
+    // MobileExternalFileAccessService::pickPackedPak), so a user just has to
+    // drop the file at the matching SD path themselves since there's no
+    // picker to do it for them. state.packedPakPath ends up unset if neither
+    // is found; the "please place packed.pak" hint below covers that case.
     if (state.packedPakPath.empty() || !File::isFile(state.packedPakPath)) {
       if (File::isFile("romfs:/packed.pak"))
         state.packedPakPath = "romfs:/packed.pak";
+      else {
+        auto sdPakPath = File::relativeTo(m_storageRoot, "assets/packed.pak");
+        if (File::isFile(sdPakPath))
+          state.packedPakPath = sdPakPath;
+      }
     }
 #endif
 
@@ -3185,6 +3198,18 @@ private:
       ImGui::Separator();
 
       ImGui::Text("%s: %s", launcherText("launcher.packedPakLabel", "packed.pak").utf8Ptr(), state.packedPakPath.empty() ? launcherText("launcher.notSelected", "<not selected>").utf8Ptr() : state.packedPakPath.utf8Ptr());
+#ifdef STAR_SYSTEM_SWITCH
+      // Switch builds don't embed packed.pak and have no native file picker
+      // (see the SD-card fallback check in loadLauncherState), so this is the
+      // only way a user finds out where to put the file. Path is shown
+      // separately from the translated sentence so a translation can't drop
+      // or mangle it (no embedded {} placeholder to lose in translation).
+      if (state.packedPakPath.empty()) {
+        ImGui::TextWrapped("%s", launcherText("launcher.packedPakSwitchHint",
+            "Copy packed.pak to this path on the SD card, then restart oSBM:").utf8Ptr());
+        ImGui::TextWrapped("%s", File::relativeTo(m_storageRoot, "assets/packed.pak").utf8Ptr());
+      }
+#endif
       renderLauncherBusyIndicator(state);
 
       ImGui::BeginDisabled(state.asyncActionRunning);
