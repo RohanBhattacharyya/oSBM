@@ -68,6 +68,11 @@ struct MobileTouchConfig {
   // the cursor.
   MobileTouchAction directTouchSingleAction = MobileTouchAction{MobileTouchActionKind::MouseButton, Key::Space, MouseButton::Left};
   MobileTouchAction directTouchTwoFingerAction = MobileTouchAction{MobileTouchActionKind::MouseButton, Key::Space, MouseButton::Right};
+  // Whether the aim cursor is drawn while aiming with a joystick -- the
+  // touch-screen's built-in aim-joystick element, or a physical controller's
+  // aim stick (mirrored into MobileGamepadConfig, see there). Single source
+  // of truth is this copy; the gamepad copy is kept in sync from it.
+  bool joystickAimCursorEnabled = true;
   bool gyroEnabled = false;
   float opacity = 0.35f;
   float size = 1.0f;
@@ -98,6 +103,9 @@ struct MobileGamepadConfig {
   float triggerThreshold = 0.45f;
   MobileGamepadStickConfig leftStick;
   MobileGamepadStickConfig rightStick;
+  // Mirrors MobileTouchConfig::joystickAimCursorEnabled -- see there for why
+  // this exists in both configs.
+  bool joystickAimCursorEnabled = true;
 
   MobileGamepadConfig() {
     rightStick.mode = MobileGamepadStickMode::Aim;

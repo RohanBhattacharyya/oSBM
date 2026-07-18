@@ -693,7 +693,7 @@ public:
     }
     for (auto const& pair : m_mouseHoldCounts.pairs()) {
       if (pair.second > 0) {
-        syncVirtualAimCursor();
+        syncVirtualAimCursor(false, m_config.joystickAimCursorEnabled);
         emitEvent(MouseButtonUpEvent{pair.first, mouseActionPosition()});
       }
     }
@@ -1510,7 +1510,7 @@ private:
       if (!aimJoystickPrecise()) {
         float deflection = std::clamp(m_aimVec.magnitude(), 0.0f, 1.0f);
         Vec2F direction = m_aimVec / std::max(0.0001f, m_aimVec.magnitude());
-        emitDirectionalAim(direction, deflection, false);
+        emitDirectionalAim(direction, deflection, m_config.joystickAimCursorEnabled);
         return;
       } else {
         float speed = controlRadius() * 0.22f * sensitivity * std::clamp(m_aimVec.magnitude(), 0.25f, 1.0f);
@@ -1528,7 +1528,7 @@ private:
     m_aimJoystickTarget[0] = std::clamp(m_aimJoystickTarget[0], 0.0f, canvas[0]);
     m_aimJoystickTarget[1] = std::clamp(m_aimJoystickTarget[1], 0.0f, canvas[1]);
     m_hasAimJoystickTarget = true;
-    syncVirtualAimCursor(true, true);
+    syncVirtualAimCursor(true, m_config.joystickAimCursorEnabled);
   }
 
   void repeatActionButtons() {
@@ -1648,7 +1648,7 @@ private:
         if (directionalAimActive())
           updateVirtualAimTarget();
         else
-          syncVirtualAimCursor();
+          syncVirtualAimCursor(false, m_config.joystickAimCursorEnabled);
         emitEvent(MouseButtonDownEvent{button, mouseActionPosition()});
       }
     } else if (!desired && m_mouseActionOwners.contains(token)) {
@@ -1659,7 +1659,7 @@ private:
         if (directionalAimActive())
           updateVirtualAimTarget();
         else
-          syncVirtualAimCursor();
+          syncVirtualAimCursor(false, m_config.joystickAimCursorEnabled);
         emitEvent(MouseButtonUpEvent{button, mouseActionPosition()});
       } else {
         m_mouseHoldCounts.set(button, count - 1);
@@ -1684,10 +1684,10 @@ private:
     } else if (action.kind == MobileTouchActionKind::MouseButton) {
       setMouseOwner(owner, action.mouseButton, desired);
     } else if (desired && action.kind == MobileTouchActionKind::MouseWheelUp) {
-      syncVirtualAimCursor();
+      syncVirtualAimCursor(false, m_config.joystickAimCursorEnabled);
       emitEvent(MouseWheelEvent{MouseWheel::Up, mouseActionPosition()});
     } else if (desired && action.kind == MobileTouchActionKind::MouseWheelDown) {
-      syncVirtualAimCursor();
+      syncVirtualAimCursor(false, m_config.joystickAimCursorEnabled);
       emitEvent(MouseWheelEvent{MouseWheel::Down, mouseActionPosition()});
     }
   }
@@ -2275,14 +2275,14 @@ private:
       m_cursorPosition += aim * speed * dt;
       m_cursorPosition[0] = std::clamp(m_cursorPosition[0], 0.0f, canvas[0]);
       m_cursorPosition[1] = std::clamp(m_cursorPosition[1], 0.0f, canvas[1]);
-      emitEvent(MouseMoveEvent{{0.0f, 0.0f}, m_cursorPosition, true});
+      emitEvent(MouseMoveEvent{{0.0f, 0.0f}, m_cursorPosition, m_config.joystickAimCursorEnabled});
     } else {
       Vec2F center{canvas[0] * 0.5f, canvas[1] * 0.5f};
       float radius = std::min(canvas[0], canvas[1]) * 0.34f * std::clamp(stick->sensitivity, 0.25f, 2.5f);
       m_cursorPosition = center + aim * radius;
       m_cursorPosition[0] = std::clamp(m_cursorPosition[0], 0.0f, canvas[0]);
       m_cursorPosition[1] = std::clamp(m_cursorPosition[1], 0.0f, canvas[1]);
-      emitEvent(DirectionalAimEvent{aim, radius, true});
+      emitEvent(DirectionalAimEvent{aim, radius, m_config.joystickAimCursorEnabled});
     }
   }
 

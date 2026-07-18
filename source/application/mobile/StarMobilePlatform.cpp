@@ -1231,6 +1231,7 @@ private:
         config.query("touch.directTouchSingleAction", jsonFromTouchAction(state.touchConfig.directTouchSingleAction)), state.touchConfig.directTouchSingleAction);
     state.touchConfig.directTouchTwoFingerAction = touchActionFromJson(
         config.query("touch.directTouchTwoFingerAction", jsonFromTouchAction(state.touchConfig.directTouchTwoFingerAction)), state.touchConfig.directTouchTwoFingerAction);
+    state.touchConfig.joystickAimCursorEnabled = config.queryBool("touch.joystickAimCursorEnabled", true);
     state.touchConfig.gyroEnabled = config.queryBool("touch.gyroEnabled", false);
     if (!platformGyroAvailable())
       state.touchConfig.gyroEnabled = false;
@@ -1243,6 +1244,9 @@ private:
     state.touchConfig.gyroInvertY = config.queryBool("touch.gyroInvertY", false);
     state.touchElements = touchElementsFromConfig(config);
     state.gamepadConfig = gamepadConfigFromConfig(config);
+    // touchConfig is the single source of truth for this setting -- see
+    // MobileTouchConfig::joystickAimCursorEnabled.
+    state.gamepadConfig.joystickAimCursorEnabled = state.touchConfig.joystickAimCursorEnabled;
     state.gamepadBindings = gamepadBindingsFromConfig(config);
 
     state.canLaunch = File::isFile(state.packedPakPath);
@@ -2452,6 +2456,9 @@ private:
     ImGui::TextUnformatted(launcherText("touchManager.touchSection", "Controls").utf8Ptr());
     ImGui::Checkbox(launcherText("touchManager.enableOverlay", "Enable touch overlay").utf8Ptr(), &state.touchConfig.enabled);
     ImGui::Checkbox(launcherText("touchManager.enableDirectGestures", "Enable direct screen touch gestures").utf8Ptr(), &state.touchConfig.directTouchGestures);
+    ImGui::Checkbox(launcherText("touchManager.joystickAimCursor", "Enable joystick aim cursor").utf8Ptr(), &state.touchConfig.joystickAimCursorEnabled);
+    ImGui::TextDisabled("%s", launcherText("touchManager.joystickAimCursorHint",
+        "Shows the aim cursor while aiming with a joystick, from the touch-screen aim joystick or a physical controller.").utf8Ptr());
     if (state.touchConfig.directTouchGestures) {
       bool touchpad = state.touchConfig.directTouchGestureMode == DirectTouchGestureMode::Touchpad;
       // Store as String, not char const*: .utf8Ptr() on a launcherText()
@@ -3356,6 +3363,7 @@ private:
         {"directTouchGestureMode", directTouchGestureModeName(state.touchConfig.directTouchGestureMode)},
         {"directTouchSingleAction", jsonFromTouchAction(state.touchConfig.directTouchSingleAction)},
         {"directTouchTwoFingerAction", jsonFromTouchAction(state.touchConfig.directTouchTwoFingerAction)},
+        {"joystickAimCursorEnabled", state.touchConfig.joystickAimCursorEnabled},
         {"gyroEnabled", state.touchConfig.gyroEnabled},
         {"opacity", state.touchConfig.opacity},
         {"size", state.touchConfig.size},
@@ -3450,6 +3458,7 @@ private:
             {"directTouchGestureMode", directTouchGestureModeName(state.touchConfig.directTouchGestureMode)},
             {"directTouchSingleAction", jsonFromTouchAction(state.touchConfig.directTouchSingleAction)},
             {"directTouchTwoFingerAction", jsonFromTouchAction(state.touchConfig.directTouchTwoFingerAction)},
+            {"joystickAimCursorEnabled", state.touchConfig.joystickAimCursorEnabled},
             {"gyroEnabled", state.touchConfig.gyroEnabled},
             {"opacity", state.touchConfig.opacity},
             {"size", state.touchConfig.size},
@@ -3596,6 +3605,7 @@ private:
             cfg.query("touch.directTouchSingleAction", jsonFromTouchAction(touch.directTouchSingleAction)), touch.directTouchSingleAction);
         touch.directTouchTwoFingerAction = touchActionFromJson(
             cfg.query("touch.directTouchTwoFingerAction", jsonFromTouchAction(touch.directTouchTwoFingerAction)), touch.directTouchTwoFingerAction);
+        touch.joystickAimCursorEnabled = cfg.queryBool("touch.joystickAimCursorEnabled", true);
         touch.gyroEnabled = cfg.queryBool("touch.gyroEnabled", false);
         if (!platformGyroAvailable())
           touch.gyroEnabled = false;
@@ -3609,7 +3619,11 @@ private:
         m_touchAdapter->setConfig(touch);
         m_touchAdapter->setElements(touchElementsFromConfig(cfg));
         syncGyroSensor(touch.gyroEnabled);
-        m_gamepadAdapter->setConfig(gamepadConfigFromConfig(cfg));
+        MobileGamepadConfig gamepadConfig = gamepadConfigFromConfig(cfg);
+        // touch is the single source of truth for this setting -- see
+        // MobileTouchConfig::joystickAimCursorEnabled.
+        gamepadConfig.joystickAimCursorEnabled = touch.joystickAimCursorEnabled;
+        m_gamepadAdapter->setConfig(gamepadConfig);
         m_gamepadAdapter->setBindings(gamepadBindingsFromConfig(cfg));
       }
 
