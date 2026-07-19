@@ -740,9 +740,13 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
         // Motion trace: per-frame keyframe detail while the player moves
         // (budgeted), to attribute uneven rendered motion to its component --
         // sim positions per tick (px/py per stamp), interpolation phase
-        // (alpha), or the offset math. One log pull settles it.
-        static int s_ptrBudget = 400;
-        if (s_ptrBudget > 0 && renderOffset != Vec2F()) {
+        // (alpha), or the offset math. One log pull settles it. Gated to
+        // FAST motion (jump/fall speeds) so the budget isn't exhausted by
+        // ordinary walking before the interesting windows happen -- the
+        // 2026-07-19 iOS log burned all 400 lines on the first seven seconds
+        // of walking while the reported jitter was in later jump/fall play.
+        static int s_ptrBudget = 1500;
+        if (s_ptrBudget > 0 && renderOffset.magnitude() > 0.5f) {
           --s_ptrBudget;
           Logger::info("[perf-ptr] stamp={} a={:.4f} px={:.4f} py={:.4f} ox={:.4f} oy={:.4f}",
               m_renderTickStamp, m_renderInterpolationAlpha,

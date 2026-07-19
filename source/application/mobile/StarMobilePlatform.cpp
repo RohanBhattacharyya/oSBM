@@ -447,6 +447,26 @@ private:
     }
 
     float updateTickFraction() const override {
+#ifdef STAR_SYSTEM_IOS
+      // Vsync-locked frames: anchor the render phase to the loop start (the
+      // vsync boundary) -- just the accumulator residual after this frame's
+      // ticks ran. The live-sampled formula below adds (snapshot - loopStart)
+      // wall time, and on iOS the sim tick runs synchronously BEFORE the
+      // snapshot, so tick-duration variance (5-15ms in dense areas) leaks
+      // straight into alpha as per-frame noise; at fall speed that noise is
+      // most of a tile of rendered wobble, plus alpha saturating at the 1.0
+      // clamp freezes frames (measured on-device: alpha=[0.04,1.00] windows
+      // with playerJerk 0.09-0.21 at the Outpost while frame delivery was a
+      // vsync-perfect 16.7ms +/- 1ms). Presentation lands one vsync after
+      // loop start -- a fixed offset -- so residual-only phase advances in
+      // mathematically even steps and stays smooth through tick/frame phase
+      // wraps. (Switch is different: its deferred pipeline snapshots BEFORE
+      // the tick runs, so no tick-time leak, and it has its own worldAlpha
+      // correction; Android's frame starts aren't vsync-anchored, so live
+      // sampling is still the right clock there.)
+      if (IosVsyncPacer::running())
+        return (float)clamp(parent->m_tickAccum, 0.0, 1.0);
+#endif
       // Live phase: the accumulator residual plus time elapsed since it was
       // sampled, read at the moment the render snapshot consumes it. Using
       // the loop-start residual alone leaves a per-frame error equal to the
@@ -4085,6 +4105,13 @@ private:
       // ProMotion panels that is 120 (needs the
       // CADisableMinimumFrameDurationOnPhone Info.plist key, present).
       bool vsyncPaced = IosVsyncPacer::ensureStarted();
+      static bool s_pacerLogged = false;
+      if (vsyncPaced != s_pacerLogged) {
+        // Once per state change; also stamps device logs with which pacing
+        // path this build/session actually used.
+        Logger::info("[vsync-pacer] running={} panelMaxFps={}", vsyncPaced, IosVsyncPacer::displayMaxFps());
+        s_pacerLogged = vsyncPaced;
+      }
       if (vsyncPaced) {
         double panelFps = IosVsyncPacer::displayMaxFps();
         int interval = 1;
