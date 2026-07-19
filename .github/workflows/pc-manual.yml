@@ -82,6 +82,7 @@ jobs:
             libdrm-dev \
             libgbm-dev \
             libgl1-mesa-dev \
+            libglu1-mesa-dev \
             libegl1-mesa-dev \
             libdbus-1-dev \
             libudev-dev \

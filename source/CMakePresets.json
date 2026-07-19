@@ -313,6 +313,10 @@
       "configuration": "Debug"
     },
     {
+      "name": "windows-launcher-release",
+      "configurePreset": "windows-launcher-release"
+    },
+    {
       "name": "linux-release",
       "configurePreset": "linux-release"
     },
@@ -331,6 +335,14 @@
     {
       "name": "macos-arm-release",
       "configurePreset": "macos-arm-release"
+    },
+    {
+      "name": "macos-launcher-release",
+      "configurePreset": "macos-launcher-release"
+    },
+    {
+      "name": "macos-arm-launcher-release",
+      "configurePreset": "macos-arm-launcher-release"
     },
     {
       "name": "android-arm64-debug",
