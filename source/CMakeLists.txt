@@ -725,8 +725,12 @@ if(STAR_BUILD_GUI)
     find_package(GLEW REQUIRED)
 
     include_directories(SYSTEM ${GLEW_INCLUDE_DIR})
+    # OPENGL_LIBRARIES (not the undocumented singular OPENGL_LIBRARY): on
+    # GLVND Linux it expands to libOpenGL + libGLX, and static GLEW needs the
+    # GLX half (glXGetProcAddressARB) at link time. Same value as before on
+    # Windows (opengl32) and macOS (OpenGL framework).
     set(STAR_EXT_GUI_LIBS ${STAR_EXT_GUI_LIBS}
-        ${OPENGL_LIBRARY}
+        ${OPENGL_LIBRARIES}
         GLEW::glew_s
     )
   endif()
