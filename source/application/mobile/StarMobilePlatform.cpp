@@ -1474,6 +1474,76 @@ private:
     ImGui::Text("%c %s", frames[frame], label.utf8Ptr());
   }
 
+#if !defined(STAR_SYSTEM_ANDROID) && !defined(STAR_SYSTEM_IOS) && !defined(STAR_SYSTEM_SWITCH)
+  // Desktop (Linux/Windows/macOS) native "Pick packed.pak" dialog. SDL's file
+  // dialog is asynchronous by design (it may show a portal/GTK/native sheet
+  // and the callback can fire from a different thread), so it plugs into the
+  // same asyncAction* polling slot the worker-thread pickers (Android/iOS)
+  // populate -- applyAsyncLauncherAction() above already drains that slot
+  // every frame, so no new polling code is needed here.
+  struct PackedPakPickContext {
+    MobilePlatform* platform;
+    LauncherState* state;
+    String target;
+  };
+
+  static void onPackedPakPicked(void* userdata, char const* const* filelist, int) {
+    std::unique_ptr<PackedPakPickContext> ctx(static_cast<PackedPakPickContext*>(userdata));
+    LauncherActionResult result;
+    if (!filelist) {
+      result.status = ctx->platform->launcherText("status.nativePickerUnavailable", "Native picker unavailable.");
+      result.error = String(SDL_GetError());
+    } else if (!*filelist) {
+      result.status = ctx->platform->launcherText("status.noFileSelected", "No file selected.");
+      result.error = ctx->platform->launcherText("error.nativePickerUnavailableCanceled", "Native picker unavailable or canceled.");
+    } else {
+      try {
+        File::copy(filelist[0], ctx->target);
+        result.status = ctx->platform->launcherText("status.importedPackedPak", "Imported packed.pak");
+        result.packedPakPath = ctx->target;
+      } catch (std::exception const& e) {
+        result.status = strf("{} {}", ctx->platform->launcherText("launcher.pickPackedPak", "Pick packed.pak"),
+            ctx->platform->launcherText("runtime.actionFailedSuffix", "failed."));
+        result.error = strf("{}", outputException(e, true));
+      }
+    }
+
+    std::lock_guard<std::mutex> lock(ctx->state->asyncActionMutex);
+    ctx->state->asyncActionResult = result;
+    ctx->state->asyncActionCompleted = true;
+  }
+
+  void startDesktopPackedPakPicker(LauncherState& state) {
+    if (state.asyncActionRunning) {
+      state.lastStatus = launcherText("status.nativePickerAlreadyOpen", "Native file picker is already open.");
+      state.lastError = launcherText("error.finishCurrentPickerFirst", "Finish or cancel the current picker before starting another import.");
+      return;
+    }
+
+    auto packedPakTarget = File::relativeTo(m_storageRoot, "assets/packed.pak");
+    File::makeDirectoryRecursive(File::dirName(packedPakTarget));
+
+    {
+      std::lock_guard<std::mutex> lock(state.asyncActionMutex);
+      state.asyncActionRunning = true;
+      state.asyncActionCompleted = false;
+      state.asyncActionName = launcherText("status.importingPackedPak", "Importing packed.pak");
+      state.asyncActionResult = {};
+    }
+    state.lastStatus = strf("{}...", state.asyncActionName);
+    state.lastError.clear();
+
+    // SDL_ShowOpenFileDialog must be called from the main thread; runLauncher's
+    // loop (which this button click executes inside) is that thread.
+    static SDL_DialogFileFilter const filters[] = {
+      { "OpenStarbound assets", "pak" },
+      { "All files", "*" }
+    };
+    auto* ctx = new PackedPakPickContext{this, &state, packedPakTarget};
+    SDL_ShowOpenFileDialog(&MobilePlatform::onPackedPakPicked, ctx, m_window, filters, 2, nullptr, false);
+  }
+#endif
+
   void renderLauncherStatusText(LauncherState const& state) const {
     if (state.lastStatus.empty() && state.lastError.empty())
       return;
@@ -3287,9 +3357,10 @@ private:
         ImGui::TextWrapped("%s", File::relativeTo(m_storageRoot, "assets/packed.pak").utf8Ptr());
       }
 #elif !defined(STAR_SYSTEM_ANDROID) && !defined(STAR_SYSTEM_IOS)
-      // Desktop launcher: the in-app picker isn't wired to a native dialog, so
-      // guide the user to drop the file at the auto-detected location (see the
-      // desktop fallback in loadLauncherState).
+      // Desktop launcher: "Pick packed.pak" below opens a native file dialog
+      // (see startDesktopPackedPakPicker), but manually dropping the file at
+      // the auto-detected location still works too (loadLauncherState's
+      // desktop fallback), so keep the hint visible until something's picked.
       if (state.packedPakPath.empty()) {
         ImGui::TextWrapped("%s", launcherText("launcher.packedPakDesktopHint",
             "Copy packed.pak to this path, then relaunch (or use Pick packed.pak):").utf8Ptr());
@@ -3332,7 +3403,7 @@ private:
             {}
           };
         });
-#else
+#elif defined(STAR_SYSTEM_ANDROID)
         runLauncherAction("Pick packed.pak", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             auto picked = svc->pickPackedPak();
@@ -3349,6 +3420,13 @@ private:
             state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
+#elif defined(STAR_SYSTEM_SWITCH)
+        runLauncherAction("Pick packed.pak", [&]() {
+          state.lastStatus = launcherText("status.nativePickerUnavailable", "Native picker unavailable.");
+          state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
+        });
+#else
+        runLauncherAction("Pick packed.pak", [&]() { startDesktopPackedPakPicker(state); });
 #endif
       }
       ImGui::EndDisabled();
