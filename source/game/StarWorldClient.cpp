@@ -701,11 +701,12 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
       }
       renderData.entityDrawableOffsets.append(renderOffset);
 
-#ifdef STAR_SYSTEM_SWITCH
+#ifdef STAR_PLATFORM_MOBILE
       // [perf-interp]: measure rendered-motion smoothness of the focal
       // entity. jerk = mean |second difference| of the player's rendered
       // world position across frames; near zero when interpolation delivers
-      // even per-frame steps, large when motion stutters.
+      // even per-frame steps, large when motion stutters. Enabled on all oSBM
+      // (mobile + desktop launcher) builds so player jitter is measurable.
       if (entity == m_mainPlayer) {
         static Vec2F s_pp[2];
         static int s_ppN = 0;

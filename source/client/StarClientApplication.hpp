@@ -145,17 +145,22 @@ private:
   bool m_simTickInFlight = false;
   int64_t m_hudSyncCounter = 0;
   bool m_hudFbValid = false;
-  bool m_autopilotActive = false;
-  // Optional autopilot.flag contents: "stay" keeps the player on the ship
-  // (no auto-beam), "warp=<action>" warps once to the parsed WarpAction
-  // (e.g. warp=instanceworld:outpost) after arrival. Test infra only.
-  bool m_autopilotStayOnShip = false;
-  String m_autopilotWarpTarget;
   float m_pendingInterfaceDt = 0.0f;
   unsigned m_interfaceUpdateCounter = 0;
   float m_simTickDt = 0.0f;
   std::exception_ptr m_simException;
   int64_t m_simLastTickUs = 0; // written by worker, read after join
+#endif
+
+#ifdef STAR_PLATFORM_MOBILE
+  // Test autopilot (all oSBM builds): auto-start SP with the first character,
+  // optionally warp, and auto-walk, for measuring perf/jitter without manual
+  // navigation. Enabled by the Switch autopilot.flag or the STAR_AUTOPILOT
+  // environment variable on desktop; inert otherwise. flag/env contents:
+  // "stay" idles on the ship; "warp=<action>" warps once after arrival.
+  bool m_autopilotActive = false;
+  bool m_autopilotStayOnShip = false;
+  String m_autopilotWarpTarget;
 #endif
   
   StringMap<PostProcessGroup> m_postProcessGroups;

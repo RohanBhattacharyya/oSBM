@@ -1470,33 +1470,38 @@ void ClientApplication::updateTitle(float dt) {
     p2pNetworkingService->setActivityData("Not In Game", getStateString(m_titleScreen->currentState()), 0, {});
   }
 
-#ifdef STAR_SYSTEM_SWITCH
-  // Test autopilot: when /switch/oSBM/autopilot.flag exists, auto-start single
-  // player with the first stored character (skips manual title-screen navigation).
-  // Used only for automated performance testing; absent for normal users.
+#ifdef STAR_PLATFORM_MOBILE
+  // Test autopilot: auto-start single player with the first stored character
+  // (skips manual title-screen navigation), for measuring perf/jitter without
+  // manual input. Enabled by the Switch autopilot.flag or, on other oSBM
+  // builds, the STAR_AUTOPILOT environment variable. Absent for normal users.
+  // flag/env contents select behavior (empty = beam-down-and-walk): "stay"
+  // idles on the ship, "warp=<action>" warps once to a parseWarpAction target.
   {
     static bool s_autopilotStarted = false;
-    // Cache the flag-file check: File::isFile on Switch is an opendir+readdir
-    // scan (libnx stat aborts on missing paths), and libnx fsdev path
-    // handling races other threads' file IO -- polling it every tick from
-    // the main thread intermittently crashed in opendir (null strchr). One
-    // check at title time is enough; the flag doesn't change mid-run.
+    // Cache the flag check once at title time: on Switch File::isFile is an
+    // opendir scan that races libnx fsdev if polled every tick; and the flag
+    // doesn't change mid-run anyway.
     static int s_autopilotFlagCached = -1;
     if (s_autopilotFlagCached < 0 && m_titleScreen->currentState() == TitleState::Main) {
-      s_autopilotFlagCached = File::isFile("/switch/oSBM/autopilot.flag") ? 1 : 0;
-      if (s_autopilotFlagCached == 1) {
-        // The flag's contents select optional behaviors (empty file = classic
-        // beam-down-and-walk): "stay" idles on the ship, "warp=<action>"
-        // warps once to any parseWarpAction target (e.g. instanceworld:outpost).
-        try {
-          auto contents = String(File::readFileString("/switch/oSBM/autopilot.flag"));
-          m_autopilotStayOnShip = contents.contains("stay");
-          for (auto const& line : contents.split('\n')) {
-            auto trimmed = line.trim();
-            if (trimmed.beginsWith("warp="))
-              m_autopilotWarpTarget = trimmed.substr(5).trim();
-          }
-        } catch (std::exception const&) {}
+      Maybe<String> contents;
+#ifdef STAR_SYSTEM_SWITCH
+      if (File::isFile("/switch/oSBM/autopilot.flag")) {
+        try { contents = String(File::readFileString("/switch/oSBM/autopilot.flag")); }
+        catch (std::exception const&) { contents = String(); }
+      }
+#else
+      if (auto env = getenv("STAR_AUTOPILOT"))
+        contents = String(env);
+#endif
+      s_autopilotFlagCached = contents ? 1 : 0;
+      if (contents) {
+        m_autopilotStayOnShip = contents->contains("stay");
+        for (auto const& line : contents->split('\n')) {
+          auto trimmed = line.trim();
+          if (trimmed.beginsWith("warp="))
+            m_autopilotWarpTarget = trimmed.substr(5).trim();
+        }
       }
     }
     if (!s_autopilotStarted && m_titleScreen->currentState() == TitleState::Main
@@ -1568,7 +1573,7 @@ void ClientApplication::updateRunning(float dt) {
     }
 #endif
 
-#ifdef STAR_SYSTEM_SWITCH
+#ifdef STAR_PLATFORM_MOBILE
     // Autopilot perf-testing: once the ship has arrived at the starter world, auto-warp
     // to the planet surface so the real gameplay scene can be measured (the ship/space
     // hub is not where players spend their time). This bypasses canBeamDown()'s UI-only
