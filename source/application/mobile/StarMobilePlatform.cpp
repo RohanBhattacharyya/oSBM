@@ -399,6 +399,10 @@ public:
         launcher.lastStatus = launcherText("runtime.returnedToLauncher", "Returned to launcher.");
       }
       shutdownApplication();
+#if !defined(STAR_SYSTEM_ANDROID) && !defined(STAR_SYSTEM_IOS) && !defined(STAR_SYSTEM_SWITCH)
+      // Restore the OS pointer for the ImGui launcher (runGameLoop hid it).
+      SDL_ShowCursor();
+#endif
 #ifdef STAR_SYSTEM_SWITCH
       switchRestoreClocks();
 #endif
@@ -512,12 +516,7 @@ private:
     }
 
     void setAcceptingTextInput(bool acceptingTextInput) override {
-#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
-      // Apply IME state from the main loop so startup and SDL lifecycle remain
-      // stable on mobile while still opening the native keyboard for textboxes.
-      parent->m_textInput = acceptingTextInput;
-      parent->m_textInputDirty = true;
-#else
+#ifdef STAR_SYSTEM_SWITCH
       // Switch: deliberately NOT wired to SDL_StartTextInput. The game runs
       // its own blocking software-keyboard session per textbox focus
       // (ClientApplication::runSwitchKeyboardSession) because the SDL switch
@@ -529,6 +528,13 @@ private:
       parent->m_textInput = acceptingTextInput;
       parent->m_textInputApplied = acceptingTextInput;
       parent->m_textInputDirty = false;
+#else
+      // Android/iOS (native IME) and desktop (hardware keyboard): apply the
+      // state from the main loop via syncTextInputState so SDL_StartTextInput
+      // fires and SDL_EVENT_TEXT_INPUT is delivered while a textbox/chat has
+      // focus. Without this, key presses arrive but typed characters do not.
+      parent->m_textInput = acceptingTextInput;
+      parent->m_textInputDirty = true;
 #endif
     }
 
@@ -3825,6 +3831,14 @@ private:
       m_application->windowChanged(WindowMode::Normal, m_renderCanvasSize);
 #endif
 
+#if !defined(STAR_SYSTEM_ANDROID) && !defined(STAR_SYSTEM_IOS) && !defined(STAR_SYSTEM_SWITCH)
+    // Desktop: the game renders its own in-world cursor, so hide the OS pointer
+    // while in-game -- otherwise the real cursor and the game cursor stack on
+    // top of each other. Restored when control returns to the ImGui launcher
+    // (which drives its UI with the OS pointer). See the SDL_ShowCursor in run().
+    SDL_HideCursor();
+#endif
+
     while (!m_quitRequested && !m_softQuitRequested) {
 #ifdef STAR_SYSTEM_SWITCH
       // Outer-loop phase breakdown, logged every ~150 frames; complements the
@@ -3944,10 +3958,18 @@ private:
       // Frame pacing: with a cap, sleep to the next frame slot (updates run
       // on their own schedule within whatever frames occur). Uncapped, the
       // loop free-runs and the platform's swap behavior is the only limiter.
-#ifdef STAR_SYSTEM_SWITCH
-      // At the panel rate, vsync (swap interval 1) owns the cadence; a
-      // software pacer on top would just phase-jitter against it. Lower caps
-      // still sleep (swap won't block when running under the vsync rate).
+#if defined(STAR_SYSTEM_SWITCH) || defined(STAR_SYSTEM_IOS)
+      // The display owns the cadence here: Switch swaps at vsync (interval 1),
+      // and iOS presents via CADisplayLink -- both block SwapWindow at the
+      // panel rate. A software pacer on top does not throttle further (the
+      // frame is already >= its target period), it only phase-jitters against
+      // the present clock -- measured on iPhone (ProMotion) as heavy player
+      // jitter at a 144 cap while the display presented at ~48-60Hz. Letting
+      // the display drive gives a uniform present cadence, which the render
+      // interpolation turns into smooth motion (verified on desktop, whose
+      // X11/no-vsync path keeps the software pacer as the sole, uniform
+      // limiter). Below the panel rate the pacer still runs, so a low cap
+      // (e.g. 30) still throttles -- swap won't block under the refresh rate.
       bool presentPaced = m_maxFrameRate >= 59.0f;
 #else
       constexpr bool presentPaced = false;
@@ -4714,7 +4736,10 @@ private:
   }
 
   void syncTextInputState() {
-#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+    // Everything except Switch drives SDL text input (Switch uses its own
+    // blocking swkbd session -- see setAcceptingTextInput). Desktop needs this
+    // exactly like Android/iOS so hardware-keyboard typing reaches textboxes.
+#ifndef STAR_SYSTEM_SWITCH
     if (!m_window)
       return;
     if (!m_textInputDirty && m_textInputApplied == m_textInput)
