@@ -727,11 +727,14 @@ if(STAR_BUILD_GUI)
     include_directories(SYSTEM ${GLEW_INCLUDE_DIR})
     # OPENGL_LIBRARIES (not the undocumented singular OPENGL_LIBRARY): on
     # GLVND Linux it expands to libOpenGL + libGLX, and static GLEW needs the
-    # GLX half (glXGetProcAddressARB) at link time. Same value as before on
-    # Windows (opengl32) and macOS (OpenGL framework).
+    # GLX half (glXGetProcAddressARB) at link time. GL must come AFTER the
+    # static GLEW archive: distros that default ld to --as-needed (Ubuntu)
+    # drop a shared GL listed before anything has referenced it, leaving
+    # GLEW's glX* undefined. Same value as before on Windows (opengl32) and
+    # macOS (OpenGL framework), where order is inert.
     set(STAR_EXT_GUI_LIBS ${STAR_EXT_GUI_LIBS}
-        ${OPENGL_LIBRARIES}
         GLEW::glew_s
+        ${OPENGL_LIBRARIES}
     )
   endif()
 
