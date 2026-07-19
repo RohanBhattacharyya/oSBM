@@ -1491,8 +1491,20 @@ void ClientApplication::updateTitle(float dt) {
         catch (std::exception const&) { contents = String(); }
       }
 #else
-      if (auto env = getenv("STAR_AUTOPILOT"))
-        contents = String(env);
+#ifdef STAR_SYSTEM_ANDROID
+      // adb push a flag file to the app's own external files dir (no extra
+      // permission needed, same dir bundled_assets copies into) since adb
+      // can't set env vars for a normal (non-debuggable) app process.
+      String androidFlagPath = "/storage/emulated/0/Android/data/com.devoflife.osbm.android/files/autopilot.flag";
+      if (File::isFile(androidFlagPath)) {
+        try { contents = String(File::readFileString(androidFlagPath)); }
+        catch (std::exception const&) { contents = String(); }
+      }
+#endif
+      if (!contents) {
+        if (auto env = getenv("STAR_AUTOPILOT"))
+          contents = String(env);
+      }
 #endif
       s_autopilotFlagCached = contents ? 1 : 0;
       if (contents) {

@@ -3958,20 +3958,30 @@ private:
       // Frame pacing: with a cap, sleep to the next frame slot (updates run
       // on their own schedule within whatever frames occur). Uncapped, the
       // loop free-runs and the platform's swap behavior is the only limiter.
-#if defined(STAR_SYSTEM_SWITCH) || defined(STAR_SYSTEM_IOS)
-      // The display owns the cadence here: Switch swaps at vsync (interval 1),
-      // and iOS presents via CADisplayLink -- both block SwapWindow at the
-      // panel rate. A software pacer on top does not throttle further (the
-      // frame is already >= its target period), it only phase-jitters against
-      // the present clock -- measured on iPhone (ProMotion) as heavy player
-      // jitter at a 144 cap while the display presented at ~48-60Hz. Letting
-      // the display drive gives a uniform present cadence, which the render
-      // interpolation turns into smooth motion (verified on desktop, whose
-      // X11/no-vsync path keeps the software pacer as the sole, uniform
-      // limiter). Below the panel rate the pacer still runs, so a low cap
-      // (e.g. 30) still throttles -- swap won't block under the refresh rate.
+#ifdef STAR_SYSTEM_SWITCH
+      // The display owns the cadence here: Switch swaps at vsync (interval 1,
+      // set explicitly in setupWindowAndRenderer via SDL_GL_SetSwapInterval),
+      // which genuinely blocks SwapWindow at the panel rate. A software pacer
+      // on top does not throttle further, it only phase-jitters against the
+      // present clock. Below the panel rate the pacer still runs, so a low
+      // cap (e.g. 30) still throttles -- swap won't block under the refresh
+      // rate.
       bool presentPaced = m_maxFrameRate >= 59.0f;
 #else
+      // iOS was included here for one session under the (wrong) assumption
+      // that SDL_GL_SwapWindow blocks to the display on iOS the way it does
+      // on Switch. It does not: UIKit_GL_SwapWindow just calls
+      // [EAGLContext presentRenderbuffer:], which is fire-and-forget with no
+      // vsync/CADisplayLink wait, and we never call SDL_GL_SetSwapInterval
+      // for iOS. With presentPaced=true there the loop free-ran, uncapped and
+      // unpaced -- worse jitter than before, at any sim/fps combo, not just
+      // high caps (measured on-device: "FPS not a clean number", persists
+      // regardless of config). Real vsync-locked pacing on iOS needs a
+      // CADisplayLink hooked into the run loop (a bigger, untested change) --
+      // until that lands, iOS uses the same software pacer as Android, which
+      // measurably keeps ticks caught up (gap=0) and produces small, smooth
+      // interpolation offsets during actual movement (verified on a real
+      // Android device at the Outpost).
       constexpr bool presentPaced = false;
 #endif
       if (m_maxFrameRate > 0.0f && !presentPaced) {

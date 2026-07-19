@@ -698,6 +698,18 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
         Vec2F delta = m_geometry.diff(hist.cur, hist.prev);
         if (delta != Vec2F() && delta.magnitude() < 8.0f) // teleports snap
           renderOffset = delta * (m_renderInterpolationAlpha - 1.0f);
+#ifdef STAR_PLATFORM_MOBILE
+        // TEMP diagnostic for the render-offset-always-zero jitter investigation.
+        if (entity == m_mainPlayer) {
+          static int s_gapBudget = 300;
+          if (s_gapBudget > 0) {
+            --s_gapBudget;
+            Logger::info("[perf-gap] tickStamp={} histStamp={} gap={} alpha={:.3f} delta=({:.3f},{:.3f}) offset=({:.3f},{:.3f})",
+                m_renderTickStamp, hist.stamp, m_renderTickStamp - hist.stamp, m_renderInterpolationAlpha,
+                delta[0], delta[1], renderOffset[0], renderOffset[1]);
+          }
+        }
+#endif
       }
       renderData.entityDrawableOffsets.append(renderOffset);
 

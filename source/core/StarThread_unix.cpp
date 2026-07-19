@@ -366,17 +366,21 @@ struct RecursiveMutexImpl {
 };
 
 void Thread::sleepPrecise(unsigned msecs) {
-  int64_t now = Time::monotonicMilliseconds();
-  int64_t deadline = now + msecs;
+  // Sub-millisecond deadline math: the integer-millisecond version this
+  // replaced could accumulate up to ~1ms of quantization error per call,
+  // a real contributor to frame-time variance (and hence render jitter) when
+  // called once per frame from a fixed-fps pacer.
+  double now = Time::monotonicTime();
+  double deadline = now + msecs / 1000.0;
 
-  while (deadline - now > 10) {
-    usleep((deadline - now - 10) * 1000);
-    now = Time::monotonicMilliseconds();
+  while (deadline - now > 0.010) {
+    usleep((useconds_t)((deadline - now - 0.010) * 1e6));
+    now = Time::monotonicTime();
   }
 
   while (deadline > now) {
-    usleep((deadline - now) * 500);
-    now = Time::monotonicMilliseconds();
+    usleep((useconds_t)((deadline - now) * 5e5));
+    now = Time::monotonicTime();
   }
 }
 
