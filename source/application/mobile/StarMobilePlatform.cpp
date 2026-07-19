@@ -1049,6 +1049,15 @@ private:
       auto candidateLang = File::relativeTo(assetsRoot, strf("opensb/{}", LauncherLangDirectory));
       if (File::isDirectory(candidateLang))
         m_launcherLangDirectory = candidateLang;
+      // launcherBundledAssetPath() joins its callers' relative paths (all of
+      // which start with "opensb/", e.g. controller glyphs) onto
+      // launcherBundledAssetsRoot(). On Android/iOS/Switch that root is the
+      // synced bundled_assets folder, which has "opensb/" as an immediate
+      // child. Desktop has no such sync step, so point straight at the real
+      // assets root here instead of falling through to the mobile-only
+      // bundled_assets fallback (which never gets populated on desktop and
+      // silently failed every controller-glyph texture load).
+      m_desktopAssetsRoot = assetsRoot;
     }
 #endif
   }
@@ -1075,6 +1084,8 @@ private:
   }
 
   String launcherBundledAssetsRoot() const {
+    if (!m_desktopAssetsRoot.empty())
+      return m_desktopAssetsRoot;
     if (!m_launcherLangDirectory.empty())
       return File::dirName(m_launcherLangDirectory);
     return File::relativeTo(m_storageRoot, "bundled_assets");
@@ -1819,10 +1830,24 @@ private:
   }
 
   bool activeGamepadIsNintendo() const {
+#ifdef STAR_SYSTEM_SWITCH
+    // The console's own controller is reported by SDL's Switch backend with
+    // vendor/product 0 and the generic name "Switch Controller", which
+    // SDL_GetGamepadTypeFromVIDPID doesn't recognize as any NINTENDO_SWITCH_*
+    // type (that heuristic only matches a few known clone-controller name
+    // strings). Every gamepad on real Switch hardware is a Nintendo-style
+    // pad by definition, so skip the type lookup entirely here -- without
+    // this, the family fell through to Xbox and showed unswapped A/B/X/Y
+    // glyphs against SDL's already-positionally-swapped button reports
+    // (see SWITCH_JoystickGetGamepadMapping), e.g. showing "A" for the
+    // button that's physically labeled B.
+    return true;
+#else
     return m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO
         || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT
         || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT
         || m_activeGamepadType == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR;
+#endif
   }
 
   bool activeGamepadIsSteamDeck() const {
@@ -4916,6 +4941,7 @@ private:
   String m_launcherLocale = DefaultLauncherLocale;
   String m_launcherLangDirectory;
   String m_launcherFontPath;
+  String m_desktopAssetsRoot;
   StringMap<String> m_launcherTranslations;
   StringMap<LauncherTexture> m_launcherTextureCache;
   ByteArray m_launcherFontData;
