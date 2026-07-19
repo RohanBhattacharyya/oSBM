@@ -72,6 +72,7 @@ jobs:
             autoconf-archive \
             automake \
             libtool \
+            libltdl-dev \
             libasound2-dev \
             libpulse-dev \
             libx11-dev \
