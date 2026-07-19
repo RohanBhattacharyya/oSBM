@@ -14,6 +14,7 @@
 #include "mobile/android/StarAndroidFileAccessBridge.hpp"
 #elif STAR_SYSTEM_IOS
 #include "mobile/ios/StarIosFileAccessBridge.hpp"
+#include "mobile/ios/StarIosVsyncPacer.hpp"
 extern "C" void StarIosBridge_setSdlWindow(void* window);
 extern "C" void StarIosBridge_getSafeAreaInsets(float* top, float* left, float* bottom, float* right);
 extern "C" int  StarIosBridge_getInterfaceOrientation();
@@ -4070,21 +4071,33 @@ private:
       // cap (e.g. 30) still throttles -- swap won't block under the refresh
       // rate.
       bool presentPaced = m_maxFrameRate >= 59.0f;
+#elif defined(STAR_SYSTEM_IOS)
+      // iOS: UIKit_GL_SwapWindow -> presentRenderbuffer is fire-and-forget
+      // (no vsync wait, no swap-interval support in SDL's GLES backend), so
+      // a software-slept loop drifts freely across the vsync grid -- some
+      // refresh windows repeat the previous frame, some discard one of two
+      // presents. Repeated frames under eye tracking read as jitter and a
+      // "previous frame faintly visible" double image during fast motion.
+      // Fix: block on a CADisplayLink signal (running on its own thread's
+      // run loop, see StarIosVsyncPacer) so every frame starts on the
+      // display grid. Frame caps below the panel rate map to waiting
+      // multiple vsync intervals; "Unlimited" means every vsync -- on
+      // ProMotion panels that is 120 (needs the
+      // CADisableMinimumFrameDurationOnPhone Info.plist key, present).
+      bool vsyncPaced = IosVsyncPacer::ensureStarted();
+      if (vsyncPaced) {
+        double panelFps = IosVsyncPacer::displayMaxFps();
+        int interval = 1;
+        if (m_maxFrameRate > 0.0f && panelFps > m_maxFrameRate + 1.0f)
+          interval = std::max(1, (int)std::lround(panelFps / m_maxFrameRate));
+        // Two panel periods of grace, then give up for this frame so a
+        // paused display link (backgrounding) can't hang the loop.
+        m_iosLastVsyncFrame = IosVsyncPacer::waitForFrame(m_iosLastVsyncFrame, interval, 2.0 * interval / std::max(panelFps, 30.0));
+        // Keep the software pacer's clock coherent for when it takes over.
+        m_framePacer.tick();
+      }
+      bool presentPaced = vsyncPaced;
 #else
-      // iOS was included here for one session under the (wrong) assumption
-      // that SDL_GL_SwapWindow blocks to the display on iOS the way it does
-      // on Switch. It does not: UIKit_GL_SwapWindow just calls
-      // [EAGLContext presentRenderbuffer:], which is fire-and-forget with no
-      // vsync/CADisplayLink wait, and we never call SDL_GL_SetSwapInterval
-      // for iOS. With presentPaced=true there the loop free-ran, uncapped and
-      // unpaced -- worse jitter than before, at any sim/fps combo, not just
-      // high caps (measured on-device: "FPS not a clean number", persists
-      // regardless of config). Real vsync-locked pacing on iOS needs a
-      // CADisplayLink hooked into the run loop (a bigger, untested change) --
-      // until that lands, iOS uses the same software pacer as Android, which
-      // measurably keeps ticks caught up (gap=0) and produces small, smooth
-      // interpolation offsets during actual movement (verified on a real
-      // Android device at the Outpost).
       constexpr bool presentPaced = false;
 #endif
       if (m_maxFrameRate > 0.0f && !presentPaced) {
@@ -4118,6 +4131,13 @@ private:
 #endif
     }
 
+#ifdef STAR_SYSTEM_IOS
+    // Back to the launcher (or quitting): stop the display-link thread so it
+    // doesn't burn per-vsync wakeups while nothing waits on it. The next
+    // game session restarts it via ensureStarted().
+    IosVsyncPacer::stop();
+    m_iosLastVsyncFrame = 0;
+#endif
   }
 
   void shutdownApplication() {
@@ -4951,6 +4971,10 @@ private:
   TickRateApproacher m_updateTicker{60.0f, 1.0f};
   float m_maxFrameRate = 0.0f; // 0 = unlimited
   TickRateApproacher m_framePacer{60.0f, 1.0f};
+#ifdef STAR_SYSTEM_IOS
+  // Last CADisplayLink frame counter observed by the game loop's vsync wait.
+  uint64_t m_iosLastVsyncFrame = 0;
+#endif
   // Fixed-timestep accumulator (in ticks) driving both tick execution and
   // the render interpolation fraction; see the game loop.
   double m_tickAccum = 0.0;

@@ -68,6 +68,10 @@ jobs:
             ninja-build \
             pkg-config \
             build-essential \
+            autoconf \
+            autoconf-archive \
+            automake \
+            libtool \
             libasound2-dev \
             libpulse-dev \
             libx11-dev \

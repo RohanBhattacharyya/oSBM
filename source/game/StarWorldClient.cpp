@@ -766,13 +766,17 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
               || entityType == EntityType::Plant || entityType == EntityType::Object
               || entityType == EntityType::ItemDrop);
       int64_t skipInterval = peripheralSkipInterval;
-      // The player's humanoid composition alone measured ~8ms/frame -- by far
-      // the most expensive single render() in the world. As the focal entity
-      // it gets a gentler 1-in-2 refresh under load (vs 1-in-3 for the rest):
-      // position stays exact every frame via the delta translation, only the
-      // walk-cycle/armor animation refreshes at half rate -- while the game is
-      // already below 20fps.
-      if (underLoad && entityType == EntityType::Player) {
+      // Player humanoid composition is expensive (~8ms/frame measured), and
+      // an earlier iteration throttled it under load like the peripherals.
+      // That reuse path emits the CACHED pose translated to the live
+      // position: body in the right place, limbs 1-2 frames stale. On the
+      // focal entity that staleness is exactly what the eye is locked onto --
+      // reported on iOS as "a previous frame of the animation showing
+      // slightly", worst when jumping+moving (fastest pose change, and load
+      // spikes cross the underLoad gate precisely then). Other players keep
+      // the throttle (they're peripheral by definition); YOUR player always
+      // renders fresh.
+      if (underLoad && entityType == EntityType::Player && entity != m_mainPlayer) {
         isPeripheral = true;
         skipInterval = deepLoad ? 3 : 2;
       }

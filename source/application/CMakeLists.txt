@@ -56,10 +56,14 @@ IF (STAR_PLATFORM_MOBILE)
       )
   ENDIF ()
   IF (STAR_SYSTEM_IOS)
+    SET (star_application_HEADERS ${star_application_HEADERS}
+        mobile/ios/StarIosVsyncPacer.hpp
+      )
     SET (star_application_SOURCES ${star_application_SOURCES}
         # Keep a distinct basename from StarIosFileAccessBridge.cpp to avoid
         # Xcode object-file name collisions in iOS builds.
         mobile/ios/StarIosFileAccessBridgeObjC.mm
+        mobile/ios/StarIosVsyncPacerObjC.mm
       )
   ENDIF ()
   IF (STAR_SYSTEM_SWITCH)
