@@ -1,0 +1,139 @@
+name: PC Build (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which PC platforms to build
+        required: true
+        type: choice
+        options:
+          - all
+          - linux
+          - windows
+          - macos
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  build_pc:
+    name: Build oSBM launcher (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+            preset: linux-launcher-release
+          - name: windows
+            os: windows-latest
+            preset: windows-launcher-release
+          - name: macos-x64
+            os: macos-15-intel
+            preset: macos-launcher-release
+          - name: macos-arm64
+            os: macos-15
+            preset: macos-arm-launcher-release
+    steps:
+      - name: Skip unselected platform
+        id: gate
+        shell: bash
+        run: |
+          target="${{ inputs.target }}"
+          name="${{ matrix.name }}"
+          run=false
+          if [ "$target" = "all" ]; then
+            run=true
+          elif [ "$target" = "macos" ] && [[ "$name" == macos-* ]]; then
+            run=true
+          elif [ "$target" = "$name" ]; then
+            run=true
+          fi
+          echo "run=${run}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux build dependencies
+        if: steps.gate.outputs.run == 'true' && matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build \
+            pkg-config \
+            build-essential \
+            libasound2-dev \
+            libpulse-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxss-dev \
+            libxtst-dev \
+            libxkbcommon-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libdbus-1-dev \
+            libudev-dev \
+            libwayland-dev \
+            libdecor-0-dev
+
+      - name: Install ninja (Windows)
+        if: steps.gate.outputs.run == 'true' && matrix.name == 'windows'
+        run: choco install ninja -y
+
+      - name: Setup MSVC dev environment
+        if: steps.gate.outputs.run == 'true' && matrix.name == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install ninja (macOS)
+        if: steps.gate.outputs.run == 'true' && startsWith(matrix.name, 'macos')
+        run: brew install ninja
+
+      - name: Setup vcpkg
+        if: steps.gate.outputs.run == 'true'
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: "**/source/vcpkg.json"
+          vcpkgConfigurationJsonGlob: "**/source/vcpkg-configuration.json"
+
+      - name: Configure
+        if: steps.gate.outputs.run == 'true'
+        working-directory: source
+        shell: bash
+        run: cmake --preset ${{ matrix.preset }} -DVCPKG_INSTALL_OPTIONS=--clean-after-build
+
+      - name: Build
+        if: steps.gate.outputs.run == 'true'
+        working-directory: source
+        shell: bash
+        run: cmake --build --preset ${{ matrix.preset }} --target starbound --parallel
+
+      - name: Stage artifact
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          echo "OSBM_VERSION=$(tr -d ' \n' < VERSION)" >> "${GITHUB_ENV}"
+          mkdir -p pc-staging
+          cp -v dist/starbound* pc-staging/ 2>/dev/null || true
+          cp -v dist/*.dll pc-staging/ 2>/dev/null || true
+          cp -v dist/*.dylib pc-staging/ 2>/dev/null || true
+          cp -v dist/*.so* pc-staging/ 2>/dev/null || true
+
+      - name: Upload artifact
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: oSBM-${{ env.OSBM_VERSION }}-pc-launcher-${{ matrix.name }}
+          path: pc-staging/*
+          if-no-files-found: error

@@ -60,6 +60,18 @@
       "generator": "Visual Studio 17 2022"
     },
     {
+      "inherits": "windows-release",
+      "name": "windows-launcher-release",
+      "displayName": "Windows x64 (oSBM ImGui launcher)",
+      "description": "Desktop Windows build using the oSBM app path: ImGui launcher, touch/gamepad adapters, mobile platform services.",
+      "binaryDir": "${sourceParentDir}/build/windows-launcher-release",
+      "cacheVariables": {
+        "STAR_PC_MOBILE_LAUNCHER": true,
+        "STAR_ENABLE_STEAM_INTEGRATION": false,
+        "STAR_ENABLE_DISCORD_INTEGRATION": false
+      }
+    },
+    {
       "inherits": "base",
       "name": "linux-release",
       "displayName": "Linux x64",
@@ -137,6 +149,28 @@
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "arm64-osx-mixed",
         "CMAKE_LIBRARY_PATH": "${sourceParentDir}/lib/osx/arm64;${sourceParentDir}/lib/osx"
+      }
+    },
+    {
+      "inherits": "macos-release",
+      "name": "macos-launcher-release",
+      "displayName": "macOS x64 (oSBM ImGui launcher)",
+      "description": "Desktop macOS build using the oSBM app path: ImGui launcher, touch/gamepad adapters, mobile platform services.",
+      "binaryDir": "${sourceParentDir}/build/macos-launcher-release",
+      "cacheVariables": {
+        "STAR_PC_MOBILE_LAUNCHER": true,
+        "STAR_ENABLE_DISCORD_INTEGRATION": false
+      }
+    },
+    {
+      "inherits": "macos-arm-release",
+      "name": "macos-arm-launcher-release",
+      "displayName": "macOS ARM (oSBM ImGui launcher)",
+      "description": "Desktop macOS ARM build using the oSBM app path: ImGui launcher, touch/gamepad adapters, mobile platform services.",
+      "binaryDir": "${sourceParentDir}/build/macos-arm-launcher-release",
+      "cacheVariables": {
+        "STAR_PC_MOBILE_LAUNCHER": true,
+        "STAR_ENABLE_DISCORD_INTEGRATION": false
       }
     },
     {
