@@ -25,6 +25,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # The NDK is reinstalled every run, so its clang gets a fresh mtime and
+  # ccache's default mtime-based compiler check misses 100% of the time
+  # (measured: 0/1398 hits on a fully warm cache). Hash compiler contents
+  # instead -- stable across installs of the same NDK version.
+  CCACHE_COMPILERCHECK: content
+
 jobs:
   build_android:
     name: Build Android APK (${{ inputs.arch }})

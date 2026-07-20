@@ -17,6 +17,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Hash compiler contents rather than mtime so image/toolchain reinstalls
+  # can't silently zero the ccache hit rate (see android-manual.yml).
+  CCACHE_COMPILERCHECK: content
+
 jobs:
   build_pc:
     name: Build oSBM launcher (${{ matrix.name }})
