@@ -82,6 +82,11 @@ jobs:
       - name: Restore release signing keystore
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+          # Public cert fingerprint of the key every published release is
+          # signed with (fingerprints are not secret). If the restored
+          # keystore doesn't produce this, fail here in seconds instead of
+          # shipping an APK existing users can't install over.
+          EXPECTED_SHA256: "6F:31:13:89:82:35:1C:A7:08:66:2C:36:B7:45:C2:9F:A6:E5:53:BB:88:5B:C9:DA:F3:C8:64:12:45:D0:D4:A5"
         run: |
           if [ -z "${KEYSTORE_B64}" ]; then
             echo "ANDROID_DEBUG_KEYSTORE_B64 secret is not set; APKs would get a throwaway signature users cannot upgrade onto." >&2
@@ -89,6 +94,16 @@ jobs:
           fi
           mkdir -p "${HOME}/.android"
           echo "${KEYSTORE_B64}" | base64 -d > "${HOME}/.android/debug.keystore"
+          ACTUAL=$(keytool -list -v -keystore "${HOME}/.android/debug.keystore" -alias androiddebugkey -storepass android 2>/dev/null | sed -n 's/.*SHA256: //p' | head -1)
+          echo "restored keystore cert SHA256: ${ACTUAL}"
+          if [ "${ACTUAL}" != "${EXPECTED_SHA256}" ]; then
+            echo "Restored keystore does not match the release signing certificate (expected ${EXPECTED_SHA256}); the secret is missing, stale, or corrupt." >&2
+            exit 1
+          fi
+          # Explicit path for gradle's signing config -- AGP's default debug
+          # keystore resolution silently regenerates a random key when its
+          # path misses; the explicit config hard-fails instead.
+          echo "STAR_SIGNING_KEYSTORE=${HOME}/.android/debug.keystore" >> "${GITHUB_ENV}"
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2

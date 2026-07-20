@@ -40,6 +40,26 @@ android {
         }
     }
 
+    signingConfigs {
+        // The published releases have always been signed with the default
+        // debug key from this repo owner's machine, so that key IS the
+        // release identity -- rotating it would break every user's upgrade
+        // path. Resolve the keystore explicitly instead of via AGP's
+        // debug-config default: AGP silently REGENERATES a fresh random
+        // keystore when its resolved path is missing or unreadable (which is
+        // how CI runs kept minting unrelated signatures), while an explicit
+        // signingConfig with a bad file fails the build loudly. CI sets
+        // STAR_SIGNING_KEYSTORE to the restored keystore; local builds fall
+        // back to ~/.android/debug.keystore unchanged.
+        osbmRelease {
+            def envKeystore = System.getenv("STAR_SIGNING_KEYSTORE")
+            storeFile envKeystore ? new File(envKeystore) : new File("${System.properties['user.home']}/.android/debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
+
     buildTypes {
         debug {
             debuggable true
@@ -48,7 +68,7 @@ android {
         release {
             debuggable false
             jniDebuggable false
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.osbmRelease
             // Java shrinkers can rename JNI-bridge methods used from native code.
             // Keep release deterministic until explicit keep-rules are introduced.
             minifyEnabled false
