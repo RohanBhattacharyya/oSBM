@@ -106,6 +106,18 @@ jobs:
         if: steps.gate.outputs.run == 'true' && startsWith(matrix.name, 'macos')
         run: brew install ninja
 
+      # Compiler cache for the game code itself (vcpkg deps are already
+      # binary-cached via run-vcpkg's x-gha source). ccache for gcc/clang;
+      # sccache for MSVC, which additionally needs embedded (/Z7) debug info
+      # because /Zi's shared PDB writer defeats compile caching.
+      - name: Setup compiler cache
+        if: steps.gate.outputs.run == 'true'
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: pc-${{ matrix.name }}
+          max-size: 2G
+          variant: ${{ matrix.name == 'windows' && 'sccache' || 'ccache' }}
+
       - name: Setup vcpkg
         if: steps.gate.outputs.run == 'true'
         uses: lukka/run-vcpkg@v11
@@ -117,7 +129,13 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         working-directory: source
         shell: bash
-        run: cmake --preset ${{ matrix.preset }} -DVCPKG_INSTALL_OPTIONS=--clean-after-build
+        run: |
+          if [ "${{ matrix.name }}" = "windows" ]; then
+            LAUNCHER_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded -DCMAKE_POLICY_DEFAULT_CMP0141=NEW"
+          else
+            LAUNCHER_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          fi
+          cmake --preset ${{ matrix.preset }} -DVCPKG_INSTALL_OPTIONS=--clean-after-build ${LAUNCHER_FLAGS}
 
       - name: Build
         if: steps.gate.outputs.run == 'true'

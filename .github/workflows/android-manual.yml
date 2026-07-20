@@ -74,6 +74,28 @@ jobs:
         with:
           gradle-version: "8.7"
 
+      # Release APKs sign with the default debug signingConfig, so the
+      # signing identity IS ~/.android/debug.keystore. Restore the same
+      # keystore the published releases were signed with -- without this
+      # every runner mints a fresh key and users hit
+      # INSTALL_FAILED_UPDATE_INCOMPATIBLE on upgrade.
+      - name: Restore release signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -z "${KEYSTORE_B64}" ]; then
+            echo "ANDROID_DEBUG_KEYSTORE_B64 secret is not set; APKs would get a throwaway signature users cannot upgrade onto." >&2
+            exit 1
+          fi
+          mkdir -p "${HOME}/.android"
+          echo "${KEYSTORE_B64}" | base64 -d > "${HOME}/.android/debug.keystore"
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: android-${{ inputs.arch }}-${{ inputs.build_type }}
+          max-size: 2G
+
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
@@ -122,7 +144,8 @@ jobs:
           fi
           for PRESET in ${CMAKE_PRESETS}; do
             echo "::group::${PRESET}"
-            cmake --preset "${PRESET}" -DVCPKG_INSTALL_OPTIONS=--clean-after-build
+            cmake --preset "${PRESET}" -DVCPKG_INSTALL_OPTIONS=--clean-after-build \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
             cmake --build --preset "${PRESET}" --target android_apk --parallel
             cp -v "${APK_DIR}"/oSBM-*.apk "${GITHUB_WORKSPACE}/apk-staging/"
             echo "::endgroup::"
