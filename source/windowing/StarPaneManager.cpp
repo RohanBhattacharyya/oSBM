@@ -336,9 +336,11 @@ void PaneManager::render() {
     m_paneRenderCache.clear();
   auto const& renderer = m_context->renderer();
 
-#ifdef STAR_SYSTEM_SWITCH
+#ifdef STAR_PLATFORM_MOBILE
   // Per-pane render cost ([perf-pm]): identifies which panes own the pane
   // layer's frame cost (fresh renders vs replays). Logged every ~150 frames.
+  // All oSBM platforms (was Switch-only): the star-map/nav ScriptPane cost
+  // investigation (issue #39) needs this in pulled iOS/Android/desktop logs.
   static int64_t s_pmFrames = 0, s_pmReplayUs = 0;
   static StringMap<int64_t> s_pmFreshUs;
 #endif
@@ -351,7 +353,7 @@ void PaneManager::render() {
 
         panePair.first->setDrawingOffset(calculatePaneOffset(panePair.first));
         bool replayed = false;
-#ifdef STAR_SYSTEM_SWITCH
+#ifdef STAR_PLATFORM_MOBILE
         int64_t paneStart = Time::monotonicMicroseconds();
 #endif
         if (underLoad || m_forceReplay) {
@@ -371,7 +373,7 @@ void PaneManager::render() {
         } else {
           panePair.first->render(RectI(Vec2I(), windowSize()));
         }
-#ifdef STAR_SYSTEM_SWITCH
+#ifdef STAR_PLATFORM_MOBILE
         int64_t paneUs = Time::monotonicMicroseconds() - paneStart;
         if (replayed)
           s_pmReplayUs += paneUs;
@@ -381,7 +383,7 @@ void PaneManager::render() {
       }
     }
   }
-#ifdef STAR_SYSTEM_SWITCH
+#ifdef STAR_PLATFORM_MOBILE
   if (++s_pmFrames >= 150) {
     String breakdown;
     for (auto const& p : s_pmFreshUs)
@@ -462,15 +464,42 @@ void PaneManager::update(float dt) {
     m_lastUpdateTimeUs = nowUs;
     m_pendingUpdateDt += dt;
     bool runUpdates = !updateUnderLoad || (++m_updateCounter % 2 == 0);
+#ifdef STAR_PLATFORM_MOBILE
+    // Per-pane update() cost ([perf-pmu]), the update-side companion of
+    // [perf-pm]: for the nav/star-map ScriptPane the Lua update rebuilds the
+    // whole canvas, so this line is where that cost shows up.
+    static int64_t s_pmuFrames = 0;
+    static StringMap<int64_t> s_pmuUs;
+#endif
     for (auto const& layerPair : reverseIterate(m_displayedPanes)) {
       for (auto const& panePair : reverseIterate(layerPair.second)) {
         panePair.first->tick(dt);
-        if (runUpdates && panePair.first->active())
+        if (runUpdates && panePair.first->active()) {
+#ifdef STAR_PLATFORM_MOBILE
+          int64_t updStart = Time::monotonicMicroseconds();
           panePair.first->update(m_pendingUpdateDt);
+          s_pmuUs[panePair.first->title().empty() ? String(typeid(*panePair.first).name()) : panePair.first->title()] +=
+              Time::monotonicMicroseconds() - updStart;
+#else
+          panePair.first->update(m_pendingUpdateDt);
+#endif
+        }
       }
     }
     if (runUpdates)
       m_pendingUpdateDt = 0.0f;
+#ifdef STAR_PLATFORM_MOBILE
+    if (++s_pmuFrames >= 150) {
+      if (!s_pmuUs.empty()) {
+        String breakdown;
+        for (auto const& p : s_pmuUs)
+          breakdown += strf(" {}={}us", p.first, p.second / s_pmuFrames);
+        Logger::info("[perf-pmu] update:{}", breakdown);
+      }
+      s_pmuFrames = 0;
+      s_pmuUs.clear();
+    }
+#endif
   }
 
   clearInvalidUiSelection();

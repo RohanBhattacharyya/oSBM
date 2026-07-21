@@ -161,6 +161,9 @@ private:
   bool m_autopilotActive = false;
   bool m_autopilotStayOnShip = false;
   String m_autopilotWarpTarget;
+  // open=<pane> autopilot verb: "nav" opens the ship navigation ScriptPane
+  // for unattended star-map performance measurement.
+  String m_autopilotOpenPane;
 #endif
   
   StringMap<PostProcessGroup> m_postProcessGroups;

@@ -1,5 +1,7 @@
 #include "StarBaseScriptPane.hpp"
 #include "StarRoot.hpp"
+#include "StarLogging.hpp"
+#include "StarTime.hpp"
 #include "StarAssets.hpp"
 #include "StarGuiReader.hpp"
 #include "StarJsonExtra.hpp"
@@ -78,7 +80,29 @@ void BaseScriptPane::tick(float dt) {
       m_script.invoke(p.second, (int)keyEvent.key, keyEvent.keyDown, KeyNames.getRight(keyEvent.key));
   }
 
+#ifdef STAR_PLATFORM_MOBILE
+  // [perf-spt]: the script pane's Lua update runs from tick(), NOT update(),
+  // so it is invisible to [perf-pmu] and exempt from PaneManager's under-load
+  // update throttle. Measured here per pane title to attribute nav/star-map
+  // cost (issue #39).
+  {
+    static int64_t s_sptTicks = 0;
+    static StringMap<int64_t> s_sptUs;
+    int64_t start = Time::monotonicMicroseconds();
+    m_script.update(m_script.updateDt(dt));
+    s_sptUs[title().empty() ? String("<untitled>") : title()] += Time::monotonicMicroseconds() - start;
+    if (++s_sptTicks >= 300) {
+      String breakdown;
+      for (auto const& p : s_sptUs)
+        breakdown += strf(" {}={}us", p.first, p.second / s_sptTicks);
+      Logger::info("[perf-spt] scriptPaneLua:{}", breakdown);
+      s_sptTicks = 0;
+      s_sptUs.clear();
+    }
+  }
+#else
   m_script.update(m_script.updateDt(dt));
+#endif
 }
 
 bool BaseScriptPane::sendEvent(InputEvent const& event) {

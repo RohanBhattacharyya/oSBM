@@ -213,6 +213,13 @@ LuaCallbacks LuaBindings::makeCelestialCallbacks(UniverseClient* client) {
       return CelestialGraphics::drawSystemTwinkle(celestialDatabase, coordinate, twinkleTime);
     });
 
+#ifdef STAR_PLATFORM_MOBILE
+  // Star-map / issue #39 cost hunt: profile this surface for every consumer
+  // (script panes, the universe client's lua root, player/quest scripts) --
+  // the nav pane's celestial table can come from any of them depending on
+  // which context the pane script runs in.
+  callbacks.profile("celestial");
+#endif
   return callbacks;
 }
 

@@ -143,11 +143,31 @@ uint64_t SystemWorld::coordinateSeed(CelestialCoordinate const& coordinate, Stri
   return staticRandomU64(coordinate.location()[0], coordinate.location()[1], coordinate.location()[2], planet, satellite, seedMix);
 }
 
-float SystemWorld::planetOrbitDistance(CelestialCoordinate const& coordinate) const {
-  RandomSource random(coordinateSeed(coordinate, "PlanetOrbitDistance"));
+Vec2I SystemWorld::orbitCacheKey(CelestialCoordinate const& coord) const {
+  if (coord.isSatelliteBody())
+    return Vec2I(coord.parent().orbitNumber(), coord.orbitNumber());
+  return Vec2I(coord.orbitNumber(), 0);
+}
 
+bool SystemWorld::celestialDataReady(CelestialCoordinate const& coord) const {
+  // Sticky: chunks hold whole systems, so one successful parameters() lookup
+  // means every value derived from this system's data is final.
+  if (!m_celestialDataReady && (bool)m_celestialDatabase->parameters(coord.system()))
+    m_celestialDataReady = true;
+  return m_celestialDataReady;
+}
+
+float SystemWorld::planetOrbitDistance(CelestialCoordinate const& coordinate) const {
   if (coordinate.isSystem() || coordinate.isNull())
     return 0;
+
+  Vec2I cacheKey = orbitCacheKey(coordinate);
+  if (coordinate.location() == m_location) {
+    if (auto cached = m_planetOrbitDistanceCache.ptr(cacheKey))
+      return *cached;
+  }
+
+  RandomSource random(coordinateSeed(coordinate, "PlanetOrbitDistance"));
 
   float distance = planetSize(coordinate.parent()) / 2.0;
   for (int i = 0; i < coordinate.orbitNumber(); i++) {
@@ -162,6 +182,8 @@ float SystemWorld::planetOrbitDistance(CelestialCoordinate const& coordinate) co
 
   distance += clusterSize(coordinate) / 2.0;
 
+  if (coordinate.location() == m_location && celestialDataReady(coordinate))
+    m_planetOrbitDistanceCache.set(cacheKey, distance);
   return distance;
 }
 
@@ -182,6 +204,17 @@ Vec2F SystemWorld::orbitPosition(CelestialOrbit const& orbit) const {
 }
 
 float SystemWorld::clusterSize(CelestialCoordinate const& coordinate) const {
+  if (coordinate.isPlanetaryBody() && coordinate.location() == m_location) {
+    if (auto cached = m_clusterSizeCache.ptr(orbitCacheKey(coordinate)))
+      return *cached;
+  }
+  float result = clusterSizeUncached(coordinate);
+  if (coordinate.isPlanetaryBody() && coordinate.location() == m_location && celestialDataReady(coordinate))
+    m_clusterSizeCache.set(orbitCacheKey(coordinate), result);
+  return result;
+}
+
+float SystemWorld::clusterSizeUncached(CelestialCoordinate const& coordinate) const {
   if (coordinate.isPlanetaryBody() && m_celestialDatabase->childOrbits(coordinate.parent()).contains(coordinate.orbitNumber())) {
     auto childOrbits = m_celestialDatabase->childOrbits(coordinate).sorted();
     if (childOrbits.size() > 0) {
@@ -202,15 +235,29 @@ float SystemWorld::planetSize(CelestialCoordinate const& coordinate) const {
   if (coordinate.isSystem())
     return m_config.starSize;
 
-  if (!m_celestialDatabase->childOrbits(coordinate.parent()).contains(coordinate.orbitNumber()))
+  Vec2I cacheKey = orbitCacheKey(coordinate);
+  bool cacheable = coordinate.location() == m_location;
+  if (cacheable) {
+    if (auto cached = m_planetSizeCache.ptr(cacheKey))
+      return *cached;
+    cacheable = celestialDataReady(coordinate);
+  }
+
+  if (!m_celestialDatabase->childOrbits(coordinate.parent()).contains(coordinate.orbitNumber())) {
+    if (cacheable)
+      m_planetSizeCache.set(cacheKey, m_config.emptyOrbitSize);
     return m_config.emptyOrbitSize;
+  }
 
   if (auto parameters = m_celestialDatabase->parameters(coordinate)) {
     if (auto visitableParameters = parameters->visitableParameters()) {
       float size = 0;
       if (is<FloatingDungeonWorldParameters>(visitableParameters)) {
-        if (auto s = m_config.floatingDungeonWorldSizes.maybe(visitableParameters->typeName))
+        if (auto s = m_config.floatingDungeonWorldSizes.maybe(visitableParameters->typeName)) {
+          if (cacheable)
+            m_planetSizeCache.set(cacheKey, *s);
           return *s;
+        }
       }
       for (auto s : m_config.planetSizes) {
         if (visitableParameters->worldSize[0] >= s.first)
@@ -218,9 +265,13 @@ float SystemWorld::planetSize(CelestialCoordinate const& coordinate) const {
         else
           break;
       }
+      if (cacheable)
+        m_planetSizeCache.set(cacheKey, size);
       return size;
     }
   }
+  if (cacheable)
+    m_planetSizeCache.set(cacheKey, m_config.unvisitablePlanetSize);
   return m_config.unvisitablePlanetSize;
 }
 

@@ -626,6 +626,30 @@ List<CelestialConstellation> CelestialMasterDatabase::produceConstellations(
   return constellations;
 }
 
+#ifdef STAR_PLATFORM_MOBILE
+// [perf-celdb]: cheap call-volume counters over the client celestial
+// database's hot query surface, for the star-map / nav-pane cost hunt
+// (issue #39). Volume is the diagnostic: the cockpit Lua re-queries the
+// same coordinates every tick with no memoization anywhere.
+static void celestialSlavePerfCount(char const* which) {
+  static StringMap<uint64_t> s_counts;
+  static int64_t s_lastDumpUs = 0;
+  s_counts[which] += 1;
+  int64_t now = Time::monotonicMicroseconds();
+  if (s_lastDumpUs == 0)
+    s_lastDumpUs = now;
+  if (now - s_lastDumpUs > 5000000) {
+    double secs = (now - s_lastDumpUs) / 1e6;
+    String breakdown;
+    for (auto const& p : s_counts)
+      breakdown += strf(" {}={:.0f}/s", p.first, p.second / secs);
+    Logger::info("[perf-celdb]{}", breakdown);
+    s_counts.clear();
+    s_lastDumpUs = now;
+  }
+}
+#endif
+
 CelestialSlaveDatabase::CelestialSlaveDatabase(CelestialBaseInformation baseInformation) {
   auto config = Root::singleton().assets()->json("/celestial.config");
 
@@ -708,6 +732,11 @@ Maybe<CelestialParameters> CelestialSlaveDatabase::parameters(CelestialCoordinat
   if (!coordinate)
     throw CelestialException("CelestialSlaveDatabase::parameters called on null coordinate");
 
+#ifdef STAR_PLATFORM_MOBILE
+  // [perf-celdb]: call-volume + time counters for the star-map cost hunt
+  // (issue #39). Dumped ~every 5s from whichever call trips the check.
+  celestialSlavePerfCount("parameters");
+#endif
   RecursiveMutexLocker locker(m_mutex);
 
   if (coordinate.isSystem())
@@ -741,6 +770,9 @@ Maybe<bool> CelestialSlaveDatabase::hasChildren(CelestialCoordinate const& coord
   if (!coordinate)
     throw CelestialException("CelestialSlaveDatabase::hasChildren called on null coordinate");
 
+#ifdef STAR_PLATFORM_MOBILE
+  celestialSlavePerfCount("hasChildren");
+#endif
   RecursiveMutexLocker locker(m_mutex);
 
   signalSystem(coordinate);
@@ -785,6 +817,9 @@ List<int> CelestialSlaveDatabase::childOrbits(CelestialCoordinate const& coordin
 }
 
 List<CelestialCoordinate> CelestialSlaveDatabase::scanSystems(RectI const& region, Maybe<StringSet> const& includedTypes) {
+#ifdef STAR_PLATFORM_MOBILE
+  celestialSlavePerfCount("scanSystems");
+#endif
   RecursiveMutexLocker locker(m_mutex);
 
   signalRegion(region);
@@ -809,6 +844,9 @@ List<CelestialCoordinate> CelestialSlaveDatabase::scanSystems(RectI const& regio
 }
 
 List<pair<Vec2I, Vec2I>> CelestialSlaveDatabase::scanConstellationLines(RectI const& region) {
+#ifdef STAR_PLATFORM_MOBILE
+  celestialSlavePerfCount("scanConstellationLines");
+#endif
   RecursiveMutexLocker locker(m_mutex);
 
   signalRegion(region);

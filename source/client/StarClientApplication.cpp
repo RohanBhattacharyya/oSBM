@@ -13,6 +13,7 @@
 #include "StarAssets.hpp"
 #include "StarWorldTemplate.hpp"
 #include "StarWorldClient.hpp"
+#include "StarObject.hpp"
 #include "StarRootLoader.hpp"
 #include "StarInput.hpp"
 #include "StarVoice.hpp"
@@ -56,6 +57,17 @@ extern "C" __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
 namespace Star {
 
 void setMobileStartupStatus(String const& status);
+
+#if defined(STAR_PLATFORM_MOBILE) && !defined(STAR_SYSTEM_SWITCH)
+// Per-phase accumulators for the [perf-fps] line (nav-pane / issue #39
+// investigation): where a frame's time goes on the platforms whose rich
+// [perf] instrumentation is Switch-only. Reset each time the line logs.
+static int64_t s_phaseUniverseUs = 0;
+static int64_t s_phaseInterfaceUpdateUs = 0;
+static int64_t s_phaseSnapUs = 0;
+static int64_t s_phasePaintUs = 0;
+static int64_t s_phaseIfaceRenderUs = 0;
+#endif
 
 Json const AdditionalAssetsSettings = Json::parseJson(R"JSON(
     {
@@ -752,6 +764,9 @@ void ClientApplication::render() {
 #endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       LogMap::set("client_render_world_client", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - clientStart));
+#if defined(STAR_PLATFORM_MOBILE) && !defined(STAR_SYSTEM_SWITCH)
+      s_phaseSnapUs += Time::monotonicMicroseconds() - clientStart;
+#endif
 #endif
 
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
@@ -763,6 +778,9 @@ void ClientApplication::render() {
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
       LogMap::set("client_render_world_painter", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - paintStart));
       LogMap::set("client_render_world_total", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - totalStart));
+#if defined(STAR_PLATFORM_MOBILE) && !defined(STAR_SYSTEM_SWITCH)
+      s_phasePaintUs += Time::monotonicMicroseconds() - paintStart;
+#endif
 #endif
 
 #ifdef STAR_SYSTEM_FAMILY_MOBILE
@@ -877,6 +895,9 @@ void ClientApplication::render() {
 #endif
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     LogMap::set("client_render_interface", strf(u8"{:05d}\u00b5s", Time::monotonicMicroseconds() - start));
+#if defined(STAR_PLATFORM_MOBILE) && !defined(STAR_SYSTEM_SWITCH)
+    s_phaseIfaceRenderUs += Time::monotonicMicroseconds() - start;
+#endif
 #endif
   }
 
@@ -1513,6 +1534,8 @@ void ClientApplication::updateTitle(float dt) {
           auto trimmed = line.trim();
           if (trimmed.beginsWith("warp="))
             m_autopilotWarpTarget = trimmed.substr(5).trim();
+          if (trimmed.beginsWith("open="))
+            m_autopilotOpenPane = trimmed.substr(5).trim();
         }
       }
     }
@@ -1629,6 +1652,47 @@ void ClientApplication::updateRunning(float dt) {
             Logger::info("[autopilot] warping to {}", m_autopilotWarpTarget);
           } catch (std::exception const& e) {
             Logger::error("[autopilot] warp to '{}' failed: {}", m_autopilotWarpTarget, e.what());
+          }
+        }
+      }
+
+      // Autopilot pane opening: open=nav pops the ship navigation ScriptPane
+      // (the star map) exactly the way the captain's chair does -- the chair
+      // object emits InteractAction(ScriptPane, <chair id>,
+      // "/interface/cockpit/cockpit.config") -- so its per-frame cost can be
+      // measured unattended. Null source entity: the pane's auto-dismiss
+      // range check only applies to a valid source entity.
+      static bool s_autopilotPaneOpened = false;
+      static double s_autopilotPaneArmAt = 0;
+      if (m_autopilotActive && !s_autopilotPaneOpened && !m_autopilotOpenPane.empty()
+          && m_player && m_player->inWorld() && m_mainInterface) {
+        if (s_autopilotPaneArmAt == 0)
+          s_autopilotPaneArmAt = nowSecs + 15.0;
+        else if (nowSecs > s_autopilotPaneArmAt) {
+          s_autopilotPaneOpened = true;
+          if (m_autopilotOpenPane.equalsIgnoreCase("nav")) {
+            // Use the real captain's chair as the source entity: cockpit.lua's
+            // init() calls player.lounge(pane.sourceEntity()), which errors on
+            // a null id and kills the whole script (pane opens but stays an
+            // inert shell -- measured as a ~6us update). Also requires the
+            // ship to have the planetTravel capability or the pane sits in
+            // disabledState.
+            EntityId chairId = NullEntityId;
+            if (auto world = m_universeClient->worldClient()) {
+              for (auto const& e : world->entityQuery(RectF::withCenter(m_player->position(), Vec2F(120, 120)))) {
+                if (auto obj = as<Object>(e)) {
+                  if (obj->name().contains("captainschair")) {
+                    chairId = obj->entityId();
+                    break;
+                  }
+                }
+              }
+            }
+            m_mainInterface->handleInteractAction(
+                InteractAction(InteractActionType::ScriptPane, chairId, Json("/interface/cockpit/cockpit.config")));
+            Logger::info("[autopilot] opened navigation pane (chair entity {})", chairId);
+          } else {
+            Logger::error("[autopilot] unknown open= pane '{}'", m_autopilotOpenPane);
           }
         }
       }
@@ -1912,7 +1976,15 @@ void ClientApplication::updateRunning(float dt) {
       m_universeClient->update(dt);
     }
 #else
+#if defined(STAR_PLATFORM_MOBILE) && !defined(STAR_SYSTEM_SWITCH)
+    {
+      int64_t ucStart = Time::monotonicMicroseconds();
+      m_universeClient->update(dt);
+      s_phaseUniverseUs += Time::monotonicMicroseconds() - ucStart;
+    }
+#else
     m_universeClient->update(dt);
+#endif
 #endif
     if (checkDisconnection())
       return;
@@ -1975,7 +2047,15 @@ void ClientApplication::updateRunning(float dt) {
 #endif
 
     m_cinematicOverlay->update(dt);
+#if defined(STAR_PLATFORM_MOBILE) && !defined(STAR_SYSTEM_SWITCH)
+    {
+      int64_t ifStart = Time::monotonicMicroseconds();
+      m_mainInterface->update(dt);
+      s_phaseInterfaceUpdateUs += Time::monotonicMicroseconds() - ifStart;
+    }
+#else
     m_mainInterface->update(dt);
+#endif
 #ifdef STAR_SYSTEM_SWITCH
     urrLap(s_urrIface);
 #endif
@@ -2015,6 +2095,33 @@ void ClientApplication::updateRunning(float dt) {
 
       m_universeServer->setPause(m_mainInterface->escapeDialogOpen());
     }
+
+#if defined(STAR_PLATFORM_MOBILE) && !defined(STAR_SYSTEM_SWITCH)
+    // Log-readable FPS + pane state on the platforms whose rich [perf] output
+    // is Switch-only. One line every ~300 ticks; navPanes counts ScriptPanes
+    // in the Window layer so "FPS while the star map is open" is attributable
+    // straight from a pulled starbound.log (nav-lag investigation, issue #39).
+    {
+      static uint64_t s_fpsLogTick = 0;
+      if (++s_fpsLogTick % 300 == 0 && m_mainInterface) {
+        bool windowPaneOpen = false;
+        if (auto* pm = m_mainInterface->paneManager())
+          windowPaneOpen = (bool)pm->topPane({PaneLayer::Window});
+        // Phase averages since the last line (per tick for update phases,
+        // per rendered frame for render phases -- ratios matter, not the
+        // absolute denominators). snap/paint are desktop-launcher-only
+        // (their timers live inside a !ANDROID/!IOS block) and read 0 on
+        // real devices.
+        double ticks = 300.0;
+        Logger::info("[perf-fps] fps={:.1f} updateRate={:.1f} windowPaneOpen={} | avg/tick: universe={:.2f}ms ifaceUpd={:.2f}ms | render accum: snap={:.1f}ms paint={:.1f}ms ifaceRender={:.1f}ms",
+            app->renderFps(), app->updateRate(), windowPaneOpen,
+            s_phaseUniverseUs / 1e3 / ticks, s_phaseInterfaceUpdateUs / 1e3 / ticks,
+            s_phaseSnapUs / 1e3 / ticks, s_phasePaintUs / 1e3 / ticks, s_phaseIfaceRenderUs / 1e3 / ticks);
+        s_phaseUniverseUs = s_phaseInterfaceUpdateUs = 0;
+        s_phaseSnapUs = s_phasePaintUs = s_phaseIfaceRenderUs = 0;
+      }
+    }
+#endif
 
 #if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
     Vec2F aimPosition = m_player->aimPosition();

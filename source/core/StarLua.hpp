@@ -274,6 +274,14 @@ public:
 
   bool removeCallback(String name);
 
+#ifdef STAR_PLATFORM_MOBILE
+  // Wraps every registered callback with a per-call timing accumulator
+  // (dumped periodically as [perf-luacb] scope.name=...). Diagnostic tool for
+  // attributing script cost to specific native callback surfaces; only
+  // compiled on oSBM platforms and only active on surfaces that opt in.
+  void profile(String const& scopeName);
+#endif
+
   template <typename Return, typename... Args, typename Function>
   void registerCallbackWithSignature(String name, Function&& func);
 

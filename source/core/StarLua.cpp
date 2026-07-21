@@ -1,6 +1,7 @@
 #include "StarLua.hpp"
 #include "StarArray.hpp"
 #include "StarTime.hpp"
+#include "StarLogging.hpp"
 #include "imgui_lua_bindings.hpp"
 
 namespace Star {
@@ -68,6 +69,43 @@ void LuaCallbacks::copyCallback(String srcName, String dstName) {
 bool LuaCallbacks::removeCallback(String name) {
   return m_callbacks.remove(name);
 }
+
+#ifdef STAR_PLATFORM_MOBILE
+void LuaCallbacks::profile(String const& scopeName) {
+  for (auto& cb : m_callbacks) {
+    String key = strf("{}.{}", scopeName, cb.first);
+    auto inner = std::move(cb.second);
+    cb.second = [inner = std::move(inner), key = std::move(key)](
+        LuaEngine& engine, size_t argc, LuaValue* argv) -> LuaDetail::LuaFunctionReturn {
+      static StringMap<std::pair<uint64_t, int64_t>> s_stats; // count, us
+      static int64_t s_lastDumpUs = 0;
+      int64_t start = Time::monotonicMicroseconds();
+      auto result = inner(engine, argc, argv);
+      int64_t end = Time::monotonicMicroseconds();
+      auto& entry = s_stats[key];
+      entry.first += 1;
+      entry.second += end - start;
+      if (s_lastDumpUs == 0)
+        s_lastDumpUs = end;
+      if (end - s_lastDumpUs > 5000000) {
+        double secs = (end - s_lastDumpUs) / 1e6;
+        // Top offenders by total time, to keep the line readable.
+        List<std::pair<String, std::pair<uint64_t, int64_t>>> sorted;
+        for (auto const& p : s_stats)
+          sorted.append(p);
+        sorted.sort([](auto const& a, auto const& b) { return a.second.second > b.second.second; });
+        String breakdown;
+        for (size_t i = 0; i < sorted.size() && i < 10; ++i)
+          breakdown += strf(" {}={:.0f}/s,{:.1f}ms/s", sorted[i].first, sorted[i].second.first / secs, sorted[i].second.second / 1e3 / secs);
+        Logger::info("[perf-luacb]{}", breakdown);
+        s_stats.clear();
+        s_lastDumpUs = end;
+      }
+      return result;
+    };
+  }
+}
+#endif
 
 LuaCallbacks& LuaCallbacks::merge(LuaCallbacks const& callbacks) {
   try {

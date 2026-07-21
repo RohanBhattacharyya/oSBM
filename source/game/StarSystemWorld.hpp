@@ -106,8 +106,34 @@ protected:
   CelestialDatabasePtr m_celestialDatabase;
 
 private:
+  // Orbit geometry memoization. planetOrbitDistance/planetSize/clusterSize
+  // are pure functions of the coordinate for a fixed universe, but computed
+  // naively they explode combinatorially (each orbit distance walks every
+  // inner sibling's cluster, each cluster recurses into its outermost moon's
+  // orbit distance, and every leaf hits the celestial database's mutex +
+  // parameters copy). The nav star map calls planetPosition for every body
+  // every frame; measured on the client this was ~1ms PER CALL (~25 database
+  // hits each), which alone took the pane from 60 to <20 fps on every
+  // platform. All cached values are time-independent; only the final orbital
+  // angle in planetPosition depends on the clock and stays live.
+  //
+  // Correctness: a chunk holds its entire system, so once any parameters()
+  // lookup for this system succeeds the underlying data is complete and
+  // immutable -- m_celestialDataReady gates caching so values computed from
+  // a not-yet-streamed chunk (client slave database) are never frozen.
+  // Lifetime: this object exists for exactly one star system, so the caches
+  // never need invalidation.
+  Vec2I orbitCacheKey(CelestialCoordinate const& coord) const;
+  bool celestialDataReady(CelestialCoordinate const& coord) const;
+  float clusterSizeUncached(CelestialCoordinate const& coord) const;
+
   ClockConstPtr m_universeClock;
   SystemWorldConfig m_config;
+
+  mutable bool m_celestialDataReady = false;
+  mutable HashMap<Vec2I, float> m_planetOrbitDistanceCache;
+  mutable HashMap<Vec2I, float> m_planetSizeCache;
+  mutable HashMap<Vec2I, float> m_clusterSizeCache;
 };
 
 struct SystemObjectConfig {
