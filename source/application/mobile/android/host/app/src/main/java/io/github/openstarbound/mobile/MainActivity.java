@@ -1235,6 +1235,21 @@ public final class MainActivity extends SDLActivity {
         importedMods.add(targetModRoot.getAbsolutePath());
     }
 
+    // A .pak found during the scan, deferred until the whole tree is collected
+    // so filename conflicts can be resolved. relName is the pak's path-derived
+    // name (folder chain from the picked root, joined by '_'), used only when
+    // its plain filename collides with another pak's.
+    private static final class PendingPak {
+        final DocumentFile file;
+        final String basename;
+        final String relName;
+        PendingPak(DocumentFile file, String basename, String relName) {
+            this.file = file;
+            this.basename = basename;
+            this.relName = relName;
+        }
+    }
+
     private static void importAllModsFromFolderTree(
         MainActivity activity,
         DocumentFile pickedTree,
@@ -1248,6 +1263,7 @@ public final class MainActivity extends SDLActivity {
             return;
         }
 
+        ArrayList<PendingPak> paks = new ArrayList<>();
         for (DocumentFile entry : entries) {
             if (entry == null) {
                 continue;
@@ -1266,23 +1282,24 @@ public final class MainActivity extends SDLActivity {
                 } else {
                     // Not itself a mod -- could be a Steam Workshop container
                     // whose numbered subfolders each hold a contents.pak, or any
-                    // nested layout. Recurse and extract every .pak we find. If
-                    // the subtree yields nothing, fall back to copying the folder
-                    // wholesale so no data is silently dropped.
-                    int before = importedMods.size();
-                    importPaksFromSubtree(activity, entry, modsDirFile, importedMods, MAX_MOD_SCAN_DEPTH);
-                    if (importedMods.size() == before) {
+                    // nested layout. Collect every .pak; if the subtree yields
+                    // nothing, fall back to copying the folder wholesale so no
+                    // data is silently dropped.
+                    int impBefore = importedMods.size();
+                    int pakBefore = paks.size();
+                    collectPaks(activity, entry, entryName, modsDirFile, paks, importedMods, MAX_MOD_SCAN_DEPTH);
+                    if (importedMods.size() == impBefore && paks.size() == pakBefore) {
                         importFolderAsMod(activity, entry, entryName, modsDirFile, importedMods);
                     }
                 }
             } else if (entry.isFile() && isPakFileName(entryName)) {
-                File targetPak = uniqueTargetFile(modsDirFile, entryName, false);
-                String imported = copyUriToPath(activity, entry.getUri(), targetPak);
-                if (imported != null) {
-                    importedMods.add(imported);
-                }
+                // Pak directly at the picked root: no containing subfolder to
+                // derive a distinct name from, so its own filename it is.
+                paks.add(new PendingPak(entry, entryName, entryName));
             }
         }
+
+        copyPaksResolvingConflicts(activity, paks, modsDirFile, importedMods);
     }
 
     // Guards against pathological deep trees while comfortably covering the
@@ -1314,15 +1331,15 @@ public final class MainActivity extends SDLActivity {
         importedMods.add(targetModRoot.getAbsolutePath());
     }
 
-    // Recursively pulls every .pak out of a folder subtree into the flat mods
-    // directory. Steam Workshop packs every mod as contents.pak inside a
-    // per-item folder, so a pak whose basename is generic is renamed after the
-    // folder that holds it to keep mods distinguishable (uniqueTargetFile still
-    // disambiguates any remaining collisions).
-    private static void importPaksFromSubtree(
+    // Recursively gathers every .pak in a folder subtree into `paks` (deferred
+    // for conflict resolution) and copies any genuine unpacked mods whole.
+    // relPrefix is the underscore-joined folder chain from the picked root.
+    private static void collectPaks(
         MainActivity activity,
         DocumentFile dir,
+        String relPrefix,
         File modsDirFile,
+        ArrayList<PendingPak> paks,
         ArrayList<String> importedMods,
         int depthRemaining
     ) {
@@ -1333,40 +1350,53 @@ public final class MainActivity extends SDLActivity {
             return;
         }
 
-        String dirName = dir.getName();
         for (DocumentFile entry : entries) {
             if (entry == null) {
                 continue;
             }
             String name = entry.getName();
+            if (name == null || name.isEmpty()) {
+                name = entry.isDirectory() ? "mod_folder" : "mod_file";
+            }
             if (entry.isFile() && isPakFileName(name)) {
-                File targetPak = uniqueTargetFile(modsDirFile, derivePakName(name, dirName), false);
-                String imported = copyUriToPath(activity, entry.getUri(), targetPak);
-                if (imported != null) {
-                    importedMods.add(imported);
-                }
+                String relName = relPrefix.isEmpty() ? name : relPrefix + ".pak";
+                paks.add(new PendingPak(entry, name, relName));
             } else if (entry.isDirectory() && depthRemaining > 0) {
                 if (isLooseAssetModFolder(entry)) {
-                    String subName = (name == null || name.isEmpty()) ? "mod_folder" : name;
-                    importFolderAsMod(activity, entry, subName, modsDirFile, importedMods);
+                    importFolderAsMod(activity, entry, name, modsDirFile, importedMods);
                 } else {
-                    importPaksFromSubtree(activity, entry, modsDirFile, importedMods, depthRemaining - 1);
+                    String childPrefix = relPrefix.isEmpty() ? name : relPrefix + "_" + name;
+                    collectPaks(activity, entry, childPrefix, modsDirFile, paks, importedMods, depthRemaining - 1);
                 }
             }
         }
     }
 
-    private static String derivePakName(String pakName, String containingFolderName) {
-        if (pakName == null) {
-            return "mod.pak";
+    // A pak keeps its own filename unless that filename appears more than once
+    // across the import (e.g. many Steam Workshop contents.pak); colliding names
+    // switch to their path-derived name so they stay distinct and meaningful.
+    private static void copyPaksResolvingConflicts(
+        MainActivity activity,
+        ArrayList<PendingPak> paks,
+        File modsDirFile,
+        ArrayList<String> importedMods
+    ) {
+        java.util.HashMap<String, Integer> counts = new java.util.HashMap<>();
+        for (PendingPak p : paks) {
+            String key = p.basename.toLowerCase();
+            Integer c = counts.get(key);
+            counts.put(key, c == null ? 1 : c + 1);
         }
-        String lower = pakName.toLowerCase();
-        boolean generic = lower.equals("contents.pak") || lower.equals("content.pak")
-            || lower.equals("packed.pak") || lower.equals("mod.pak");
-        if (generic && containingFolderName != null && !containingFolderName.isEmpty()) {
-            return containingFolderName + ".pak";
+
+        for (PendingPak p : paks) {
+            Integer c = counts.get(p.basename.toLowerCase());
+            String chosen = (c != null && c >= 2) ? p.relName : p.basename;
+            File targetPak = uniqueTargetFile(modsDirFile, chosen, false);
+            String imported = copyUriToPath(activity, p.file.getUri(), targetPak);
+            if (imported != null) {
+                importedMods.add(imported);
+            }
         }
-        return pakName;
     }
 
     private static boolean openDirectoryInSystemBrowser(MainActivity activity, File directory) {

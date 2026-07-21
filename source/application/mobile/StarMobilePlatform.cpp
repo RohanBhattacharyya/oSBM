@@ -1587,14 +1587,6 @@ private:
     return File::isFile(File::relativeTo(dir, "_metadata")) || File::isFile(File::relativeTo(dir, ".metadata"));
   }
 
-  static String derivePakNameDesktop(String const& pakName, String const& folderName) {
-    bool generic = pakName.equalsIgnoreCase("contents.pak") || pakName.equalsIgnoreCase("content.pak")
-        || pakName.equalsIgnoreCase("packed.pak") || pakName.equalsIgnoreCase("mod.pak");
-    if (generic && !folderName.empty())
-      return folderName + ".pak";
-    return pakName;
-  }
-
   static String uniqueModTargetDesktop(String const& modsDir, String const& name, bool isDir) {
     String base = name, ext;
     if (!isDir) {
@@ -1628,19 +1620,30 @@ private:
     }
   }
 
-  static void importPaksFromSubtreeDesktop(String const& dir, String const& modsDir, StringList& imported, int depthRemaining) {
-    String dirName = File::baseName(dir);
+  // A pak found during the scan, deferred until the whole tree is collected so
+  // filename conflicts can be resolved. relName is the pak's path-derived name
+  // (folder chain from the picked root, joined by '_') used only when its plain
+  // filename collides with another pak's.
+  struct PendingPakDesktop {
+    String sourcePath;
+    String basename;
+    String relName;
+  };
+
+  static void collectPaksDesktop(String const& dir, String const& relPrefix, String const& modsDir,
+      List<PendingPakDesktop>& paks, StringList& imported, int depthRemaining) {
     for (auto const& entry : File::dirList(dir)) {
       String path = File::relativeTo(dir, entry.first);
       if (!entry.second && entry.first.endsWith(".pak", String::CaseInsensitive)) {
-        String target = uniqueModTargetDesktop(modsDir, derivePakNameDesktop(entry.first, dirName), false);
-        try { File::copy(path, target); imported.append(target); } catch (std::exception const&) {}
+        String relName = relPrefix.empty() ? entry.first : relPrefix + ".pak";
+        paks.append(PendingPakDesktop{path, entry.first, relName});
       } else if (entry.second && depthRemaining > 0) {
         if (isLooseAssetModFolderDesktop(path)) {
           String target = uniqueModTargetDesktop(modsDir, entry.first, true);
           try { copyDirectoryRecursiveDesktop(path, target); imported.append(target); } catch (std::exception const&) {}
         } else {
-          importPaksFromSubtreeDesktop(path, modsDir, imported, depthRemaining - 1);
+          String childPrefix = relPrefix.empty() ? entry.first : strf("{}_{}", relPrefix, entry.first);
+          collectPaksDesktop(path, childPrefix, modsDir, paks, imported, depthRemaining - 1);
         }
       }
     }
@@ -1649,6 +1652,8 @@ private:
   static StringList importModsFromLocalDirectoryDesktop(String const& sourceDir, String const& modsDir) {
     StringList imported;
     File::makeDirectoryRecursive(modsDir);
+
+    List<PendingPakDesktop> paks;
     for (auto const& entry : File::dirList(sourceDir)) {
       String path = File::relativeTo(sourceDir, entry.first);
       if (entry.second) {
@@ -1656,17 +1661,34 @@ private:
           String target = uniqueModTargetDesktop(modsDir, entry.first, true);
           try { copyDirectoryRecursiveDesktop(path, target); imported.append(target); } catch (std::exception const&) {}
         } else {
-          size_t before = imported.size();
-          importPaksFromSubtreeDesktop(path, modsDir, imported, DesktopMaxModScanDepth);
-          if (imported.size() == before) {
+          size_t importedBefore = imported.size();
+          size_t paksBefore = paks.size();
+          collectPaksDesktop(path, entry.first, modsDir, paks, imported, DesktopMaxModScanDepth);
+          // Nothing mod-like inside: fall back to copying the folder whole so
+          // no data is silently dropped.
+          if (imported.size() == importedBefore && paks.size() == paksBefore) {
             String target = uniqueModTargetDesktop(modsDir, entry.first, true);
             try { copyDirectoryRecursiveDesktop(path, target); imported.append(target); } catch (std::exception const&) {}
           }
         }
       } else if (entry.first.endsWith(".pak", String::CaseInsensitive)) {
-        String target = uniqueModTargetDesktop(modsDir, entry.first, false);
-        try { File::copy(path, target); imported.append(target); } catch (std::exception const&) {}
+        // Pak directly at the picked root: no containing subfolder to derive a
+        // distinct name from, so its own filename is the only option.
+        paks.append(PendingPakDesktop{path, entry.first, entry.first});
       }
+    }
+
+    // Conflict pass: a pak keeps its own filename unless that filename appears
+    // more than once across the import (e.g. many Steam Workshop contents.pak);
+    // colliding names switch to their path-derived name so they stay distinct.
+    StringMap<int> basenameCounts;
+    for (auto const& p : paks)
+      basenameCounts[p.basename.toLower()] += 1;
+
+    for (auto const& p : paks) {
+      String chosen = basenameCounts.value(p.basename.toLower(), 0) >= 2 ? p.relName : p.basename;
+      String target = uniqueModTargetDesktop(modsDir, chosen, false);
+      try { File::copy(p.sourcePath, target); imported.append(target); } catch (std::exception const&) {}
     }
     return imported;
   }

@@ -856,32 +856,19 @@ static bool isLooseAssetModFolder(NSString* dir) {
       || [fm fileExistsAtPath:[dir stringByAppendingPathComponent:@".metadata"]];
 }
 
-// Steam Workshop packs every mod as contents.pak inside a per-item folder, so a
-// pak with a generic basename is renamed after the folder holding it to keep
-// mods distinguishable (uniqueTargetPath disambiguates any remainder).
-static NSString* derivePakName(NSString* pakName, NSString* containingFolderName) {
-  if (!pakName)
-    return @"mod.pak";
-  NSString* lower = pakName.lowercaseString;
-  bool generic = [lower isEqualToString:@"contents.pak"] || [lower isEqualToString:@"content.pak"]
-      || [lower isEqualToString:@"packed.pak"] || [lower isEqualToString:@"mod.pak"];
-  if (generic && containingFolderName.length > 0)
-    return [containingFolderName stringByAppendingString:@".pak"];
-  return pakName;
-}
-
 static void importFolderAsMod(NSString* folder, NSString* folderName, NSString* targetModsDirectory, NSMutableArray<NSString*>* importedFiles) {
   NSString* targetModRoot = uniqueTargetPath(targetModsDirectory, sanitizedFileName(folderName, @"mod_folder"), true);
   if (copyLocalTree(folder, targetModRoot))
     [importedFiles addObject:targetModRoot];
 }
 
-// Recursively pulls every .pak out of a folder subtree into the flat mods
-// directory, so a Steam Workshop tree (numbered folders each holding
-// contents.pak) resolves to distinctly-named paks in the mods root.
-static void importPaksFromSubtree(NSString* dir, NSString* targetModsDirectory, NSMutableArray<NSString*>* importedFiles, int depthRemaining) {
+// A .pak found during the scan, deferred until the whole tree is collected so
+// filename conflicts can be resolved. Each pending pak is @[sourcePath,
+// basename, relName]; relName is the path-derived name (folder chain from the
+// picked root joined by '_') used only when the plain filename collides.
+static void collectPaks(NSString* dir, NSString* relPrefix, NSString* targetModsDirectory,
+    NSMutableArray<NSArray<NSString*>*>* paks, NSMutableArray<NSString*>* importedFiles, int depthRemaining) {
   NSFileManager* fm = NSFileManager.defaultManager;
-  NSString* dirName = dir.lastPathComponent;
   for (NSString* entryName in visibleDirectoryEntries(dir)) {
     NSString* sourcePath = [dir stringByAppendingPathComponent:entryName];
     BOOL isDirectory = NO;
@@ -889,14 +876,15 @@ static void importPaksFromSubtree(NSString* dir, NSString* targetModsDirectory, 
       continue;
 
     if (!isDirectory && isPakFileName(entryName)) {
-      NSString* targetPak = uniqueTargetPath(targetModsDirectory, derivePakName(entryName, dirName), false);
-      if (copyLocalFileToPathAtomic(sourcePath, targetPak))
-        [importedFiles addObject:targetPak];
+      NSString* relName = relPrefix.length == 0 ? entryName : [relPrefix stringByAppendingString:@".pak"];
+      [paks addObject:@[sourcePath, entryName, relName]];
     } else if (isDirectory && depthRemaining > 0) {
-      if (isLooseAssetModFolder(sourcePath))
+      if (isLooseAssetModFolder(sourcePath)) {
         importFolderAsMod(sourcePath, entryName, targetModsDirectory, importedFiles);
-      else
-        importPaksFromSubtree(sourcePath, targetModsDirectory, importedFiles, depthRemaining - 1);
+      } else {
+        NSString* childPrefix = relPrefix.length == 0 ? entryName : [relPrefix stringByAppendingFormat:@"_%@", entryName];
+        collectPaks(sourcePath, childPrefix, targetModsDirectory, paks, importedFiles, depthRemaining - 1);
+      }
     }
   }
 }
@@ -905,9 +893,9 @@ static void importAllModsFromLocalDirectory(NSString* sourceDirectory, NSString*
   if (!sourceDirectory || !targetModsDirectory || !importedFiles)
     return;
 
-  NSArray<NSString*>* entries = visibleDirectoryEntries(sourceDirectory);
   NSFileManager* fm = NSFileManager.defaultManager;
-  for (NSString* entryName in entries) {
+  NSMutableArray<NSArray<NSString*>*>* paks = [NSMutableArray array];
+  for (NSString* entryName in visibleDirectoryEntries(sourceDirectory)) {
     NSString* sourcePath = [sourceDirectory stringByAppendingPathComponent:entryName];
     BOOL isDirectory = NO;
     if (![fm fileExistsAtPath:sourcePath isDirectory:&isDirectory])
@@ -919,19 +907,35 @@ static void importAllModsFromLocalDirectory(NSString* sourceDirectory, NSString*
         importFolderAsMod(sourcePath, entryName, targetModsDirectory, importedFiles);
       } else {
         // Could be a Steam Workshop container whose numbered subfolders each
-        // hold a contents.pak, or any nested layout. Recurse and extract every
-        // .pak; if none found, fall back to copying the folder wholesale so no
-        // data is silently dropped.
-        NSUInteger before = importedFiles.count;
-        importPaksFromSubtree(sourcePath, targetModsDirectory, importedFiles, kMaxModScanDepth);
-        if (importedFiles.count == before)
+        // hold a contents.pak, or any nested layout. Collect every .pak; if none
+        // found, fall back to copying the folder wholesale so no data is
+        // silently dropped.
+        NSUInteger impBefore = importedFiles.count;
+        NSUInteger pakBefore = paks.count;
+        collectPaks(sourcePath, entryName, targetModsDirectory, paks, importedFiles, kMaxModScanDepth);
+        if (importedFiles.count == impBefore && paks.count == pakBefore)
           importFolderAsMod(sourcePath, entryName, targetModsDirectory, importedFiles);
       }
     } else if (isPakFileName(entryName)) {
-      NSString* targetPak = uniqueTargetPath(targetModsDirectory, sanitizedFileName(entryName, @"mod.pak"), false);
-      if (copyLocalFileToPathAtomic(sourcePath, targetPak))
-        [importedFiles addObject:targetPak];
+      // Pak directly at the picked root: no containing subfolder to derive a
+      // distinct name from, so its own filename is the only option.
+      [paks addObject:@[sourcePath, entryName, entryName]];
     }
+  }
+
+  // Conflict pass: a pak keeps its own filename unless that filename appears
+  // more than once across the import (e.g. many Steam Workshop contents.pak);
+  // colliding names switch to their path-derived name so they stay distinct.
+  NSMutableDictionary<NSString*, NSNumber*>* counts = [NSMutableDictionary dictionary];
+  for (NSArray<NSString*>* p in paks) {
+    NSString* key = p[1].lowercaseString;
+    counts[key] = @(counts[key].integerValue + 1);
+  }
+  for (NSArray<NSString*>* p in paks) {
+    NSString* chosen = counts[p[1].lowercaseString].integerValue >= 2 ? p[2] : p[1];
+    NSString* targetPak = uniqueTargetPath(targetModsDirectory, sanitizedFileName(chosen, @"mod.pak"), false);
+    if (copyLocalFileToPathAtomic(p[0], targetPak))
+      [importedFiles addObject:targetPak];
   }
 }
 
