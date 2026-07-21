@@ -1574,6 +1574,162 @@ private:
     auto* ctx = new PackedPakPickContext{this, &state, packedPakTarget};
     SDL_ShowOpenFileDialog(&MobilePlatform::onPackedPakPicked, ctx, m_window, filters, 2, nullptr, false);
   }
+
+  // Desktop "Import mods folder" -- the same recursive, flattening scan the
+  // Android (Java) and iOS (ObjC) bridges perform: every .pak found at any
+  // depth is pulled out into the flat mods root, so a Steam Workshop content
+  // tree (per-item folders each holding contents.pak) resolves to distinctly
+  // named paks; genuine unpacked mods (with _metadata/.metadata) are copied
+  // whole. Mirrors StarDirectoryAssetSource's notion of a folder mod.
+  static int const DesktopMaxModScanDepth = 6;
+
+  static bool isLooseAssetModFolderDesktop(String const& dir) {
+    return File::isFile(File::relativeTo(dir, "_metadata")) || File::isFile(File::relativeTo(dir, ".metadata"));
+  }
+
+  static String derivePakNameDesktop(String const& pakName, String const& folderName) {
+    bool generic = pakName.equalsIgnoreCase("contents.pak") || pakName.equalsIgnoreCase("content.pak")
+        || pakName.equalsIgnoreCase("packed.pak") || pakName.equalsIgnoreCase("mod.pak");
+    if (generic && !folderName.empty())
+      return folderName + ".pak";
+    return pakName;
+  }
+
+  static String uniqueModTargetDesktop(String const& modsDir, String const& name, bool isDir) {
+    String base = name, ext;
+    if (!isDir) {
+      std::string s = name.utf8();
+      auto dot = s.rfind('.');
+      if (dot != std::string::npos && dot > 0) {
+        base = String(s.substr(0, dot));
+        ext = String(s.substr(dot));
+      }
+    }
+    String candidate = File::relativeTo(modsDir, name);
+    if (!File::exists(candidate))
+      return candidate;
+    for (int i = 2; i < 10000; ++i) {
+      candidate = File::relativeTo(modsDir, strf("{} ({}){}", base, i, ext));
+      if (!File::exists(candidate))
+        return candidate;
+    }
+    return File::relativeTo(modsDir, strf("{}_{}{}", base, Time::millisecondsSinceEpoch(), ext));
+  }
+
+  static void copyDirectoryRecursiveDesktop(String const& src, String const& dst) {
+    File::makeDirectoryRecursive(dst);
+    for (auto const& entry : File::dirList(src)) {
+      String s = File::relativeTo(src, entry.first);
+      String d = File::relativeTo(dst, entry.first);
+      if (entry.second)
+        copyDirectoryRecursiveDesktop(s, d);
+      else
+        File::copy(s, d);
+    }
+  }
+
+  static void importPaksFromSubtreeDesktop(String const& dir, String const& modsDir, StringList& imported, int depthRemaining) {
+    String dirName = File::baseName(dir);
+    for (auto const& entry : File::dirList(dir)) {
+      String path = File::relativeTo(dir, entry.first);
+      if (!entry.second && entry.first.endsWith(".pak", String::CaseInsensitive)) {
+        String target = uniqueModTargetDesktop(modsDir, derivePakNameDesktop(entry.first, dirName), false);
+        try { File::copy(path, target); imported.append(target); } catch (std::exception const&) {}
+      } else if (entry.second && depthRemaining > 0) {
+        if (isLooseAssetModFolderDesktop(path)) {
+          String target = uniqueModTargetDesktop(modsDir, entry.first, true);
+          try { copyDirectoryRecursiveDesktop(path, target); imported.append(target); } catch (std::exception const&) {}
+        } else {
+          importPaksFromSubtreeDesktop(path, modsDir, imported, depthRemaining - 1);
+        }
+      }
+    }
+  }
+
+  static StringList importModsFromLocalDirectoryDesktop(String const& sourceDir, String const& modsDir) {
+    StringList imported;
+    File::makeDirectoryRecursive(modsDir);
+    for (auto const& entry : File::dirList(sourceDir)) {
+      String path = File::relativeTo(sourceDir, entry.first);
+      if (entry.second) {
+        if (isLooseAssetModFolderDesktop(path)) {
+          String target = uniqueModTargetDesktop(modsDir, entry.first, true);
+          try { copyDirectoryRecursiveDesktop(path, target); imported.append(target); } catch (std::exception const&) {}
+        } else {
+          size_t before = imported.size();
+          importPaksFromSubtreeDesktop(path, modsDir, imported, DesktopMaxModScanDepth);
+          if (imported.size() == before) {
+            String target = uniqueModTargetDesktop(modsDir, entry.first, true);
+            try { copyDirectoryRecursiveDesktop(path, target); imported.append(target); } catch (std::exception const&) {}
+          }
+        }
+      } else if (entry.first.endsWith(".pak", String::CaseInsensitive)) {
+        String target = uniqueModTargetDesktop(modsDir, entry.first, false);
+        try { File::copy(path, target); imported.append(target); } catch (std::exception const&) {}
+      }
+    }
+    return imported;
+  }
+
+  struct ModFolderImportContext {
+    MobilePlatform* platform;
+    LauncherState* state;
+    String modsDir;
+  };
+
+  static void onModFolderPicked(void* userdata, char const* const* filelist, int) {
+    std::unique_ptr<ModFolderImportContext> ctx(static_cast<ModFolderImportContext*>(userdata));
+    LauncherActionResult result;
+    if (!filelist) {
+      result.status = ctx->platform->launcherText("status.nativePickerUnavailable", "Native picker unavailable.");
+      result.error = String(SDL_GetError());
+    } else if (!*filelist) {
+      result.status = ctx->platform->launcherText("status.noFolderSelected", "No folder selected.");
+      result.error = ctx->platform->launcherText("error.nativePickerUnavailableCanceled", "Native picker unavailable or canceled.");
+    } else {
+      try {
+        auto imported = importModsFromLocalDirectoryDesktop(filelist[0], ctx->modsDir);
+        result.status = imported.empty()
+            ? ctx->platform->launcherText("status.noModsImported", "No mods imported.")
+            : strf("{} {}", ctx->platform->launcherText("status.imported", "Imported"), strf("{} mod(s)", imported.size()));
+        if (imported.empty())
+          result.error = ctx->platform->launcherText("error.noFolderSelectedOrNoValidMods", "No folder selected or no valid mods found.");
+        else
+          result.modListDirty = true;
+      } catch (std::exception const& e) {
+        result.status = ctx->platform->launcherText("status.importUnavailable", "Import unavailable.");
+        result.error = strf("{}", outputException(e, true));
+      }
+    }
+
+    std::lock_guard<std::mutex> lock(ctx->state->asyncActionMutex);
+    ctx->state->asyncActionResult = result;
+    ctx->state->asyncActionCompleted = true;
+  }
+
+  void startDesktopModFolderImport(LauncherState& state) {
+    if (state.asyncActionRunning) {
+      state.lastStatus = launcherText("status.nativePickerAlreadyOpen", "Native file picker is already open.");
+      state.lastError = launcherText("error.finishCurrentPickerFirst", "Finish or cancel the current picker before starting another import.");
+      return;
+    }
+
+    String modsDir = File::relativeTo(m_storageRoot, "mods");
+    File::makeDirectoryRecursive(modsDir);
+
+    {
+      std::lock_guard<std::mutex> lock(state.asyncActionMutex);
+      state.asyncActionRunning = true;
+      state.asyncActionCompleted = false;
+      state.asyncActionName = launcherText("status.importingMods", "Importing mods");
+      state.asyncActionResult = {};
+    }
+    state.lastStatus = strf("{}...", state.asyncActionName);
+    state.lastError.clear();
+
+    auto* ctx = new ModFolderImportContext{this, &state, modsDir};
+    SDL_ShowOpenFolderDialog(&MobilePlatform::onModFolderPicked, ctx, m_window, nullptr, false);
+  }
 #endif
 
   void renderLauncherStatusText(LauncherState const& state) const {
@@ -3210,7 +3366,7 @@ private:
 #ifdef STAR_SYSTEM_IOS
             launcherText("modManager.importAllZip", "Import mods folder (.zip)").utf8Ptr()
 #else
-            launcherText("modManager.importAllFolder", "Import mods folder (all .pak and folders)").utf8Ptr()
+            launcherText("modManager.importAllFolder", "Import mods folder (scans subfolders, incl. Steam Workshop)").utf8Ptr()
 #endif
           )) {
 #ifdef STAR_SYSTEM_IOS
@@ -3233,7 +3389,7 @@ private:
             {}
           };
         });
-#else
+#elif defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_SWITCH)
         runLauncherAction("Import mods folder", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             auto imported = svc->importModsDirectory();
@@ -3248,6 +3404,11 @@ private:
             state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
+#else
+        // Desktop launcher: SDL native folder dialog + the same recursive,
+        // flattening scan as the Android/iOS bridges (see
+        // startDesktopModFolderImport / importModsFromLocalDirectoryDesktop).
+        runLauncherAction("Import mods folder", [&]() { startDesktopModFolderImport(state); });
 #endif
       }
       ImGui::EndDisabled();

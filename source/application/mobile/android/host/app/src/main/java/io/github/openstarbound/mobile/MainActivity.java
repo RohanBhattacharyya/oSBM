@@ -1259,12 +1259,22 @@ public final class MainActivity extends SDLActivity {
             }
 
             if (entry.isDirectory()) {
-                File targetModRoot = uniqueTargetFile(modsDirFile, entryName, true);
-                if (!targetModRoot.exists() && !targetModRoot.mkdirs()) {
-                    continue;
+                if (isLooseAssetModFolder(entry)) {
+                    // A real unpacked mod (has _metadata/.metadata at its root):
+                    // copy the whole folder as-is.
+                    importFolderAsMod(activity, entry, entryName, modsDirFile, importedMods);
+                } else {
+                    // Not itself a mod -- could be a Steam Workshop container
+                    // whose numbered subfolders each hold a contents.pak, or any
+                    // nested layout. Recurse and extract every .pak we find. If
+                    // the subtree yields nothing, fall back to copying the folder
+                    // wholesale so no data is silently dropped.
+                    int before = importedMods.size();
+                    importPaksFromSubtree(activity, entry, modsDirFile, importedMods, MAX_MOD_SCAN_DEPTH);
+                    if (importedMods.size() == before) {
+                        importFolderAsMod(activity, entry, entryName, modsDirFile, importedMods);
+                    }
                 }
-                copyDocumentTreeContents(activity, entry, targetModRoot);
-                importedMods.add(targetModRoot.getAbsolutePath());
             } else if (entry.isFile() && isPakFileName(entryName)) {
                 File targetPak = uniqueTargetFile(modsDirFile, entryName, false);
                 String imported = copyUriToPath(activity, entry.getUri(), targetPak);
@@ -1273,6 +1283,90 @@ public final class MainActivity extends SDLActivity {
                 }
             }
         }
+    }
+
+    // Guards against pathological deep trees while comfortably covering the
+    // Steam Workshop layout (content/<appid>/<itemid>/contents.pak = depth 2-3).
+    private static final int MAX_MOD_SCAN_DEPTH = 6;
+
+    private static boolean isLooseAssetModFolder(DocumentFile dir) {
+        // Matches StarDirectoryAssetSource: an unpacked mod is a folder with a
+        // /_metadata or /.metadata file at its root.
+        try {
+            return dir.findFile("_metadata") != null || dir.findFile(".metadata") != null;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static void importFolderAsMod(
+        MainActivity activity,
+        DocumentFile folder,
+        String folderName,
+        File modsDirFile,
+        ArrayList<String> importedMods
+    ) {
+        File targetModRoot = uniqueTargetFile(modsDirFile, folderName, true);
+        if (!targetModRoot.exists() && !targetModRoot.mkdirs()) {
+            return;
+        }
+        copyDocumentTreeContents(activity, folder, targetModRoot);
+        importedMods.add(targetModRoot.getAbsolutePath());
+    }
+
+    // Recursively pulls every .pak out of a folder subtree into the flat mods
+    // directory. Steam Workshop packs every mod as contents.pak inside a
+    // per-item folder, so a pak whose basename is generic is renamed after the
+    // folder that holds it to keep mods distinguishable (uniqueTargetFile still
+    // disambiguates any remaining collisions).
+    private static void importPaksFromSubtree(
+        MainActivity activity,
+        DocumentFile dir,
+        File modsDirFile,
+        ArrayList<String> importedMods,
+        int depthRemaining
+    ) {
+        DocumentFile[] entries;
+        try {
+            entries = dir.listFiles();
+        } catch (Throwable ignored) {
+            return;
+        }
+
+        String dirName = dir.getName();
+        for (DocumentFile entry : entries) {
+            if (entry == null) {
+                continue;
+            }
+            String name = entry.getName();
+            if (entry.isFile() && isPakFileName(name)) {
+                File targetPak = uniqueTargetFile(modsDirFile, derivePakName(name, dirName), false);
+                String imported = copyUriToPath(activity, entry.getUri(), targetPak);
+                if (imported != null) {
+                    importedMods.add(imported);
+                }
+            } else if (entry.isDirectory() && depthRemaining > 0) {
+                if (isLooseAssetModFolder(entry)) {
+                    String subName = (name == null || name.isEmpty()) ? "mod_folder" : name;
+                    importFolderAsMod(activity, entry, subName, modsDirFile, importedMods);
+                } else {
+                    importPaksFromSubtree(activity, entry, modsDirFile, importedMods, depthRemaining - 1);
+                }
+            }
+        }
+    }
+
+    private static String derivePakName(String pakName, String containingFolderName) {
+        if (pakName == null) {
+            return "mod.pak";
+        }
+        String lower = pakName.toLowerCase();
+        boolean generic = lower.equals("contents.pak") || lower.equals("content.pak")
+            || lower.equals("packed.pak") || lower.equals("mod.pak");
+        if (generic && containingFolderName != null && !containingFolderName.isEmpty()) {
+            return containingFolderName + ".pak";
+        }
+        return pakName;
     }
 
     private static boolean openDirectoryInSystemBrowser(MainActivity activity, File directory) {

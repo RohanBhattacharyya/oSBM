@@ -844,6 +844,63 @@ static bool copyLocalTree(NSString* source, NSString* target) {
   return copyLocalFileToPathAtomic(source, target);
 }
 
+// Guards against pathological deep trees while comfortably covering the Steam
+// Workshop layout (content/<appid>/<itemid>/contents.pak).
+static int const kMaxModScanDepth = 6;
+
+// Matches StarDirectoryAssetSource: an unpacked mod is a folder with a
+// /_metadata or /.metadata file at its root.
+static bool isLooseAssetModFolder(NSString* dir) {
+  NSFileManager* fm = NSFileManager.defaultManager;
+  return [fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"_metadata"]]
+      || [fm fileExistsAtPath:[dir stringByAppendingPathComponent:@".metadata"]];
+}
+
+// Steam Workshop packs every mod as contents.pak inside a per-item folder, so a
+// pak with a generic basename is renamed after the folder holding it to keep
+// mods distinguishable (uniqueTargetPath disambiguates any remainder).
+static NSString* derivePakName(NSString* pakName, NSString* containingFolderName) {
+  if (!pakName)
+    return @"mod.pak";
+  NSString* lower = pakName.lowercaseString;
+  bool generic = [lower isEqualToString:@"contents.pak"] || [lower isEqualToString:@"content.pak"]
+      || [lower isEqualToString:@"packed.pak"] || [lower isEqualToString:@"mod.pak"];
+  if (generic && containingFolderName.length > 0)
+    return [containingFolderName stringByAppendingString:@".pak"];
+  return pakName;
+}
+
+static void importFolderAsMod(NSString* folder, NSString* folderName, NSString* targetModsDirectory, NSMutableArray<NSString*>* importedFiles) {
+  NSString* targetModRoot = uniqueTargetPath(targetModsDirectory, sanitizedFileName(folderName, @"mod_folder"), true);
+  if (copyLocalTree(folder, targetModRoot))
+    [importedFiles addObject:targetModRoot];
+}
+
+// Recursively pulls every .pak out of a folder subtree into the flat mods
+// directory, so a Steam Workshop tree (numbered folders each holding
+// contents.pak) resolves to distinctly-named paks in the mods root.
+static void importPaksFromSubtree(NSString* dir, NSString* targetModsDirectory, NSMutableArray<NSString*>* importedFiles, int depthRemaining) {
+  NSFileManager* fm = NSFileManager.defaultManager;
+  NSString* dirName = dir.lastPathComponent;
+  for (NSString* entryName in visibleDirectoryEntries(dir)) {
+    NSString* sourcePath = [dir stringByAppendingPathComponent:entryName];
+    BOOL isDirectory = NO;
+    if (![fm fileExistsAtPath:sourcePath isDirectory:&isDirectory])
+      continue;
+
+    if (!isDirectory && isPakFileName(entryName)) {
+      NSString* targetPak = uniqueTargetPath(targetModsDirectory, derivePakName(entryName, dirName), false);
+      if (copyLocalFileToPathAtomic(sourcePath, targetPak))
+        [importedFiles addObject:targetPak];
+    } else if (isDirectory && depthRemaining > 0) {
+      if (isLooseAssetModFolder(sourcePath))
+        importFolderAsMod(sourcePath, entryName, targetModsDirectory, importedFiles);
+      else
+        importPaksFromSubtree(sourcePath, targetModsDirectory, importedFiles, depthRemaining - 1);
+    }
+  }
+}
+
 static void importAllModsFromLocalDirectory(NSString* sourceDirectory, NSString* targetModsDirectory, NSMutableArray<NSString*>* importedFiles) {
   if (!sourceDirectory || !targetModsDirectory || !importedFiles)
     return;
@@ -857,9 +914,19 @@ static void importAllModsFromLocalDirectory(NSString* sourceDirectory, NSString*
       continue;
 
     if (isDirectory) {
-      NSString* targetModRoot = uniqueTargetPath(targetModsDirectory, sanitizedFileName(entryName, @"mod_folder"), true);
-      if (copyLocalTree(sourcePath, targetModRoot))
-        [importedFiles addObject:targetModRoot];
+      if (isLooseAssetModFolder(sourcePath)) {
+        // A real unpacked mod: copy the whole folder as-is.
+        importFolderAsMod(sourcePath, entryName, targetModsDirectory, importedFiles);
+      } else {
+        // Could be a Steam Workshop container whose numbered subfolders each
+        // hold a contents.pak, or any nested layout. Recurse and extract every
+        // .pak; if none found, fall back to copying the folder wholesale so no
+        // data is silently dropped.
+        NSUInteger before = importedFiles.count;
+        importPaksFromSubtree(sourcePath, targetModsDirectory, importedFiles, kMaxModScanDepth);
+        if (importedFiles.count == before)
+          importFolderAsMod(sourcePath, entryName, targetModsDirectory, importedFiles);
+      }
     } else if (isPakFileName(entryName)) {
       NSString* targetPak = uniqueTargetPath(targetModsDirectory, sanitizedFileName(entryName, @"mod.pak"), false);
       if (copyLocalFileToPathAtomic(sourcePath, targetPak))
