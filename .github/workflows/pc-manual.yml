@@ -158,6 +158,15 @@ jobs:
           cp -v dist/*.dll pc-staging/ 2>/dev/null || true
           cp -v dist/*.dylib pc-staging/ 2>/dev/null || true
           cp -v dist/*.so* pc-staging/ 2>/dev/null || true
+          # The desktop build loads its bundled assets from an assets/ folder
+          # resolved relative to the executable (exe-adjacent first, then
+          # ../assets); without it the launcher opens but the game boot fails
+          # with "Error loading asset /rendering/opengl.config". Ship the two
+          # distributable asset trees flat alongside the exe. packed.pak is the
+          # user's own file and is never bundled.
+          mkdir -p pc-staging/assets
+          cp -r assets/opensb pc-staging/assets/
+          cp -r assets/osbm pc-staging/assets/
 
       - name: Upload artifact
         if: steps.gate.outputs.run == 'true'

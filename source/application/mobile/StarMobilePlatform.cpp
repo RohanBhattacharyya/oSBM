@@ -1019,6 +1019,21 @@ private:
     state.modListDirty = false;
   }
 
+#if !defined(STAR_SYSTEM_ANDROID) && !defined(STAR_SYSTEM_IOS) && !defined(STAR_SYSTEM_SWITCH)
+  // Desktop bundled-assets root. Prefers an assets/ folder sitting right next
+  // to the executable (the flat layout the packaged builds ship, and what a
+  // user intuitively drops next to the exe), and falls back to <exe>/../assets
+  // (the classic OpenStarbound layout where the binary lives in a subfolder,
+  // and the in-repo dist/ tree). basePath is SDL_GetBasePath() = the
+  // executable's directory.
+  static String desktopBundledAssetsRoot(char const* basePath) {
+    String adjacent = File::convertDirSeparators(File::relativeTo(basePath, "assets"));
+    if (File::isDirectory(adjacent))
+      return adjacent;
+    return File::convertDirSeparators(File::relativeTo(basePath, "../assets"));
+  }
+#endif
+
   void syncLauncherBundledAssets() {
 #if STAR_SYSTEM_ANDROID
     String bundledStorageRoot = File::relativeTo(m_storageRoot, "bundled_assets");
@@ -1063,7 +1078,7 @@ private:
     // English fallback strings baked into every launcherText() call, so the
     // UI still renders and functions.
     if (auto basePath = SDL_GetBasePath()) {
-      String assetsRoot = File::convertDirSeparators(File::relativeTo(basePath, "../assets"));
+      String assetsRoot = desktopBundledAssetsRoot(basePath);
       auto candidateFont = File::relativeTo(assetsRoot, BundledLauncherFontPath);
       if (File::isFile(candidateFont))
         m_launcherFontPath = candidateFont;
@@ -3847,7 +3862,7 @@ private:
     }
 #else
     if (auto basePath = SDL_GetBasePath())
-      bundledAssetsRoot = File::convertDirSeparators(File::relativeTo(basePath, "../assets"));
+      bundledAssetsRoot = desktopBundledAssetsRoot(basePath);
     else
       bundledAssetsRoot = "../assets";
 #endif
