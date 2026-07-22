@@ -24,9 +24,7 @@ import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.DisplayCutout;
-import android.view.InputDevice;
 import android.view.KeyEvent;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -94,26 +92,6 @@ public final class MainActivity extends SDLActivity {
     // native launcher so it can navigate back through its menu history.
     public static native void nativeOnLauncherBack();
 
-    private static boolean isControllerSource(int source) {
-        return (source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
-            || (source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
-            || (source & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD;
-    }
-
-    private static boolean isControllerDevice(InputDevice device) {
-        return device != null && isControllerSource(device.getSources());
-    }
-
-    private static boolean isControllerEvent(int source, int deviceId, InputDevice device) {
-        if (isControllerSource(source)) {
-            return true;
-        }
-        if (deviceId < 0) {
-            return false;
-        }
-        return isControllerDevice(device);
-    }
-
     private static boolean isSoftKeyboardEditKey(KeyEvent event) {
         if (event == null || !SDLInputConnection.isEditingKeyCode(event.getKeyCode())) {
             return false;
@@ -124,33 +102,12 @@ public final class MainActivity extends SDLActivity {
         return SDLInputConnection.nativeIsEditingKeyTarget();
     }
 
-    private void restoreSdlFocusBeforeControllerInput() {
-        View currentFocus = getCurrentFocus();
-        if (mTextEdit != null
-                && (mTextEdit.hasFocus()
-                    || currentFocus == mTextEdit
-                    || (mTextEdit.getVisibility() == View.VISIBLE && currentFocus != mSurface))) {
-            forceTextInputFocusLost();
-        }
-    }
-
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (isSoftKeyboardEditKey(event) && SDLInputConnection.handleEditingKeyEvent(event))
             return true;
 
-        if (event != null && isControllerEvent(event.getSource(), event.getDeviceId(), event.getDevice())) {
-            restoreSdlFocusBeforeControllerInput();
-        }
         return super.dispatchKeyEvent(event);
-    }
-
-    @Override
-    public boolean dispatchGenericMotionEvent(MotionEvent event) {
-        if (event != null && isControllerEvent(event.getSource(), event.getDeviceId(), event.getDevice())) {
-            restoreSdlFocusBeforeControllerInput();
-        }
-        return super.dispatchGenericMotionEvent(event);
     }
 
     @Override

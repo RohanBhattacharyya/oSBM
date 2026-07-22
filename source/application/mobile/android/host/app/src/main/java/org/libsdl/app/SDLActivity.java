@@ -1441,40 +1441,16 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             mTextEdit.setVisibility(View.VISIBLE);
             mTextEdit.requestFocus();
 
-            // oSBM: two problems fixed here.
-            //  1) showSoftInput(view, 0) is a no-op when the system believes a
-            //     hardware keyboard is available, and a connected game
-            //     controller trips that (its buttons carry SOURCE_KEYBOARD).
-            //     Force it unless a *true* alphabetic keyboard is attached.
-            //  2) On the very first open, mTextEdit was just addView()'d, so it
-            //     isn't attached/focused yet when we ask for the IME -- the
-            //     request no-ops. That is the "only shows on the second, rapid
-            //     press" symptom, and why opening chat from the controller
-            //     action wheel (a single, un-repeatable trigger) never showed
-            //     the keyboard at all. Post the request so it runs after the
-            //     view is attached, and retry a few times (re-calling
-            //     showSoftInput while already shown is a harmless no-op -- it
-            //     does not toggle it back off).
-            final int showFlags = SDLActivity.hasHardwareKeyboard() ? 0 : InputMethodManager.SHOW_FORCED;
-            mTextEdit.post(new Runnable() {
-                private int attempts = 0;
-                @Override
-                public void run() {
-                    if (mTextEdit == null) {
-                        return;
-                    }
-                    mTextEdit.requestFocus();
-                    InputMethodManager imm = (InputMethodManager) SDL.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-                    if (imm != null) {
-                        imm.showSoftInput(mTextEdit, showFlags);
-                    }
-                    if (++attempts < 4) {
-                        mTextEdit.postDelayed(this, 60);
-                    }
+            // addView() is not attached until this UI-thread turn completes.
+            // Post one forced request so a controller classified as a hardware
+            // keyboard neither suppresses nor races the soft keyboard.
+            mScreenKeyboardShown = true;
+            mTextEdit.post(() -> {
+                InputMethodManager imm = (InputMethodManager) SDL.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+                if (imm != null && mTextEdit != null) {
+                    imm.showSoftInput(mTextEdit, InputMethodManager.SHOW_FORCED);
                 }
             });
-
-            mScreenKeyboardShown = true;
         }
     }
 
@@ -1484,37 +1460,6 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     public static boolean showTextInput(int input_type, int x, int y, int w, int h) {
         // Transfer the task to the main thread as a Runnable
         return mSingleton.commandHandler.post(new ShowTextInputTask(input_type, x, y, w, h));
-    }
-
-    // oSBM: true iff a real, physical alphabetic keyboard is attached. Game
-    // controllers report SOURCE_KEYBOARD for their buttons but a keyboard type
-    // of NON_ALPHABETIC, so they are excluded -- a controller connected must
-    // NOT suppress the on-screen keyboard. Only a genuine keyboard (Bluetooth/
-    // USB/dock, KEYBOARD_TYPE_ALPHABETIC and not a gamepad) does.
-    public static boolean hasHardwareKeyboard() {
-        try {
-            for (int id : InputDevice.getDeviceIds()) {
-                InputDevice device = InputDevice.getDevice(id);
-                if (device == null || device.isVirtual()) {
-                    continue;
-                }
-                if (device.getKeyboardType() != InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
-                    continue;
-                }
-                int sources = device.getSources();
-                boolean gamepadLike =
-                    (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
-                    || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
-                    || (sources & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD;
-                if (!gamepadLike) {
-                    return true;
-                }
-            }
-        } catch (Throwable ignored) {
-            // Enumeration failure: assume no hardware keyboard so the on-screen
-            // one is still offered rather than silently withheld.
-        }
-        return false;
     }
 
     public static boolean isTextInputEvent(KeyEvent event) {
