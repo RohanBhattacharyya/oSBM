@@ -1442,7 +1442,17 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             mTextEdit.requestFocus();
 
             InputMethodManager imm = (InputMethodManager) SDL.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-            imm.showSoftInput(mTextEdit, 0);
+            // oSBM: showSoftInput(view, 0) is a no-op when the system believes a
+            // hardware keyboard is available, and a connected game controller
+            // trips that (its buttons carry SOURCE_KEYBOARD). That left touch/
+            // controller users unable to open the on-screen keyboard for chat.
+            // Force it unless a *true* alphabetic keyboard is attached (in which
+            // case the user can type on that, matching normal Android behavior).
+            if (SDLActivity.hasHardwareKeyboard()) {
+                imm.showSoftInput(mTextEdit, 0);
+            } else {
+                imm.showSoftInput(mTextEdit, InputMethodManager.SHOW_FORCED);
+            }
 
             mScreenKeyboardShown = true;
         }
@@ -1454,6 +1464,37 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     public static boolean showTextInput(int input_type, int x, int y, int w, int h) {
         // Transfer the task to the main thread as a Runnable
         return mSingleton.commandHandler.post(new ShowTextInputTask(input_type, x, y, w, h));
+    }
+
+    // oSBM: true iff a real, physical alphabetic keyboard is attached. Game
+    // controllers report SOURCE_KEYBOARD for their buttons but a keyboard type
+    // of NON_ALPHABETIC, so they are excluded -- a controller connected must
+    // NOT suppress the on-screen keyboard. Only a genuine keyboard (Bluetooth/
+    // USB/dock, KEYBOARD_TYPE_ALPHABETIC and not a gamepad) does.
+    public static boolean hasHardwareKeyboard() {
+        try {
+            for (int id : InputDevice.getDeviceIds()) {
+                InputDevice device = InputDevice.getDevice(id);
+                if (device == null || device.isVirtual()) {
+                    continue;
+                }
+                if (device.getKeyboardType() != InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                    continue;
+                }
+                int sources = device.getSources();
+                boolean gamepadLike =
+                    (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+                    || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+                    || (sources & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD;
+                if (!gamepadLike) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+            // Enumeration failure: assume no hardware keyboard so the on-screen
+            // one is still offered rather than silently withheld.
+        }
+        return false;
     }
 
     public static boolean isTextInputEvent(KeyEvent event) {
