@@ -1145,17 +1145,40 @@ public final class MainActivity extends SDLActivity {
         return null;
     }
 
-    private static boolean installSavePayload(File payloadRoot, File storageRoot) {
+    // Moves a directory aside, preferring a same-parent rename (reliable on
+    // Android's FUSE external storage, unlike a cross-parent one) and falling
+    // back to a recursive copy + delete when even that is refused.
+    private static boolean moveDirectoryAside(File target, File backup) {
+        if (target.renameTo(backup)) {
+            return true;
+        }
+        if (copyLocalTree(target, backup)) {
+            if (deleteRecursively(target)) {
+                return true;
+            }
+            // Couldn't remove the original -- drop the copy so no orphan is left
+            // and the original save stays intact.
+            deleteRecursively(backup);
+        }
+        return false;
+    }
+
+    // Installs player/ and universe/ from payloadRoot into storageRoot. Returns
+    // null on success, or a human-readable failure reason. The existing save is
+    // moved aside within the same directory first (not into a subfolder --
+    // cross-parent File.renameTo is what silently failed on some devices) and
+    // restored on any failure.
+    private static String installSavePayload(File payloadRoot, File storageRoot) {
         if (!hasSavePayload(payloadRoot) || storageRoot == null) {
-            return false;
+            return "No player/ or universe/ data found in the zip.";
         }
         if (!storageRoot.exists() && !storageRoot.mkdirs()) {
-            return false;
+            return "Could not create the save directory.";
         }
 
         String[] saveDirectories = new String[] { "player", "universe" };
-        File backupRoot = new File(storageRoot, ".save-import-backup-" + System.currentTimeMillis());
-        ArrayList<String> moved = new ArrayList<>();
+        long stamp = System.currentTimeMillis();
+        ArrayList<File[]> backups = new ArrayList<>(); // { target, backup } pairs moved aside
         boolean success = false;
 
         try {
@@ -1167,49 +1190,61 @@ public final class MainActivity extends SDLActivity {
 
                 File target = new File(storageRoot, name);
                 if (target.exists()) {
-                    if (!backupRoot.exists() && !backupRoot.mkdirs()) {
-                        return false;
+                    File backup = new File(storageRoot, name + ".import-backup-" + stamp);
+                    if (!moveDirectoryAside(target, backup)) {
+                        return "Could not back up the existing " + name + " data (storage error).";
                     }
-                    File backup = new File(backupRoot, name);
-                    if (!target.renameTo(backup)) {
-                        return false;
-                    }
-                    moved.add(name);
+                    backups.add(new File[] { target, backup });
                 }
 
                 if (!copyLocalTree(source, target)) {
-                    return false;
+                    deleteRecursively(target); // drop the partial write; finally restores any backup
+                    return "Could not write the " + name + " data (out of space or storage error).";
                 }
             }
 
             success = true;
-            return true;
+            return null;
         } finally {
             if (success) {
-                deleteRecursively(backupRoot);
-            } else if (backupRoot.exists()) {
-                for (String name : moved) {
-                    File target = new File(storageRoot, name);
-                    File backup = new File(backupRoot, name);
+                for (File[] pair : backups) {
+                    deleteRecursively(pair[1]);
+                }
+            } else {
+                // Roll back: drop any partial write and restore the backup.
+                for (File[] pair : backups) {
+                    File target = pair[0];
+                    File backup = pair[1];
                     if (backup.exists()) {
                         deleteRecursively(target);
-                        backup.renameTo(target);
+                        if (!backup.renameTo(target) && copyLocalTree(backup, target)) {
+                            deleteRecursively(backup);
+                        }
                     }
                 }
-                deleteRecursively(backupRoot);
             }
         }
     }
 
-    private static boolean importSaveZipFromUri(MainActivity activity, Uri zipUri, String storageRoot) {
+    // Returns null on success, or a human-readable failure reason.
+    private static String importSaveZipFromUri(MainActivity activity, Uri zipUri, String storageRoot) {
         File root = new File(storageRoot);
-        File tempRoot = new File(root, ".save-import-" + System.currentTimeMillis());
+        // Stage extraction in internal cache (real ext4): renames there are
+        // reliable, and it keeps the transient second copy off the external
+        // save volume, which may be low on free space.
+        File tempRoot = new File(activity.getCacheDir(), "save-import-" + System.currentTimeMillis());
         try {
             if (!unzipSaveArchive(activity, zipUri, tempRoot)) {
-                return false;
+                return "Could not read the selected .zip (unsupported or corrupt archive).";
             }
-            File payloadRoot = findSavePayloadRoot(tempRoot, 3);
-            return payloadRoot != null && installSavePayload(payloadRoot, root);
+            // Depth 6 also covers zips made by file managers that store full
+            // paths (…/Android/data/<pkg>/files/player/…), not just the flat
+            // player/ + universe/ the in-app export produces.
+            File payloadRoot = findSavePayloadRoot(tempRoot, 6);
+            if (payloadRoot == null) {
+                return "The zip has no player/ or universe/ folder within it.";
+            }
+            return installSavePayload(payloadRoot, root);
         } finally {
             deleteRecursively(tempRoot);
         }
@@ -2006,6 +2041,9 @@ public final class MainActivity extends SDLActivity {
             return;
         }
 
+        // Set when a handler hands the latch off to a background thread (the
+        // save import), so the shared finally must not count it down here.
+        boolean deferLatch = false;
         try {
             if (resultCode != RESULT_OK || data == null) {
                 return;
@@ -2102,24 +2140,46 @@ public final class MainActivity extends SDLActivity {
                 }
                 Uri zipUri = data.getData();
                 if (zipUri != null && saveRoot != null) {
-                    boolean imported = importSaveZipFromUri(this, zipUri, saveRoot);
-                    synchronized (PICKER_LOCK) {
-                        sSaveImportResult = imported;
-                    }
-                    Toast.makeText(
-                        this,
-                        imported ? "Save imported." : "Could not import save zip.",
-                        Toast.LENGTH_LONG
-                    ).show();
+                    // Import off the UI thread: a large save's extract + copy
+                    // would otherwise block the UI (ANR). The picker latch is
+                    // counted down only once the import actually finishes.
+                    deferLatch = true;
+                    final CountDownLatch importLatch = latch;
+                    new Thread(() -> {
+                        String reason;
+                        try {
+                            reason = importSaveZipFromUri(this, zipUri, saveRoot);
+                        } catch (Throwable t) {
+                            reason = "Unexpected error: " + t.getMessage();
+                        }
+                        final String result = reason;
+                        synchronized (PICKER_LOCK) {
+                            sSaveImportResult = (result == null);
+                        }
+                        runOnUiThread(() -> Toast.makeText(
+                            this,
+                            result == null ? "Save imported." : ("Could not import save: " + result),
+                            Toast.LENGTH_LONG
+                        ).show());
+                        importLatch.countDown();
+                        synchronized (PICKER_LOCK) {
+                            sLatch = null;
+                            sTargetPackedPak = null;
+                            sTargetModsDir = null;
+                            sTargetSaveRoot = null;
+                        }
+                    }, "oSBM-save-import").start();
                 }
             }
         } finally {
-            latch.countDown();
-            synchronized (PICKER_LOCK) {
-                sLatch = null;
-                sTargetPackedPak = null;
-                sTargetModsDir = null;
-                sTargetSaveRoot = null;
+            if (!deferLatch) {
+                latch.countDown();
+                synchronized (PICKER_LOCK) {
+                    sLatch = null;
+                    sTargetPackedPak = null;
+                    sTargetModsDir = null;
+                    sTargetSaveRoot = null;
+                }
             }
         }
     }
