@@ -4687,7 +4687,21 @@ private:
     m_touchAdapter->appendGeneratedEvents(events);
     if (m_gamepadAdapter) {
       m_gamepadAdapter->endFrame();
-      m_gamepadAdapter->appendGeneratedEvents(events);
+      if (m_textInput) {
+        // A textbox/chat has focus and the soft keyboard is up. Controller
+        // input (a stick returning to center, a button, aim motion) turns into
+        // gameplay events that would blur the textbox and dismiss the keyboard
+        // the instant the user touches the pad -- exactly when opening chat
+        // FROM the controller. Discard the gamepad-generated events while
+        // typing so the controller can't cancel the keyboard. Raw controller
+        // events are already consumed by the adapter (not passed through), and
+        // touch + typed text still flow, so the user can type and dismiss the
+        // keyboard themselves.
+        List<InputEvent> discard;
+        m_gamepadAdapter->appendGeneratedEvents(discard);
+      } else {
+        m_gamepadAdapter->appendGeneratedEvents(events);
+      }
     }
     return events;
   }
