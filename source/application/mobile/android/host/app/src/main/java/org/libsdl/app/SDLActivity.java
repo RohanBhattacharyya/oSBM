@@ -1441,18 +1441,38 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             mTextEdit.setVisibility(View.VISIBLE);
             mTextEdit.requestFocus();
 
-            InputMethodManager imm = (InputMethodManager) SDL.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-            // oSBM: showSoftInput(view, 0) is a no-op when the system believes a
-            // hardware keyboard is available, and a connected game controller
-            // trips that (its buttons carry SOURCE_KEYBOARD). That left touch/
-            // controller users unable to open the on-screen keyboard for chat.
-            // Force it unless a *true* alphabetic keyboard is attached (in which
-            // case the user can type on that, matching normal Android behavior).
-            if (SDLActivity.hasHardwareKeyboard()) {
-                imm.showSoftInput(mTextEdit, 0);
-            } else {
-                imm.showSoftInput(mTextEdit, InputMethodManager.SHOW_FORCED);
-            }
+            // oSBM: two problems fixed here.
+            //  1) showSoftInput(view, 0) is a no-op when the system believes a
+            //     hardware keyboard is available, and a connected game
+            //     controller trips that (its buttons carry SOURCE_KEYBOARD).
+            //     Force it unless a *true* alphabetic keyboard is attached.
+            //  2) On the very first open, mTextEdit was just addView()'d, so it
+            //     isn't attached/focused yet when we ask for the IME -- the
+            //     request no-ops. That is the "only shows on the second, rapid
+            //     press" symptom, and why opening chat from the controller
+            //     action wheel (a single, un-repeatable trigger) never showed
+            //     the keyboard at all. Post the request so it runs after the
+            //     view is attached, and retry a few times (re-calling
+            //     showSoftInput while already shown is a harmless no-op -- it
+            //     does not toggle it back off).
+            final int showFlags = SDLActivity.hasHardwareKeyboard() ? 0 : InputMethodManager.SHOW_FORCED;
+            mTextEdit.post(new Runnable() {
+                private int attempts = 0;
+                @Override
+                public void run() {
+                    if (mTextEdit == null) {
+                        return;
+                    }
+                    mTextEdit.requestFocus();
+                    InputMethodManager imm = (InputMethodManager) SDL.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+                    if (imm != null) {
+                        imm.showSoftInput(mTextEdit, showFlags);
+                    }
+                    if (++attempts < 4) {
+                        mTextEdit.postDelayed(this, 60);
+                    }
+                }
+            });
 
             mScreenKeyboardShown = true;
         }

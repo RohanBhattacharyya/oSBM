@@ -227,6 +227,7 @@ status.diagnosticsExportUnavailable=Diagnostics export unavailable.
 status.imported=Imported
 status.importingPackedPak=Importing packed.pak
 status.importingMods=Importing mods
+status.importingSave=Importing save
 status.importingModPak=Importing mod (.pak)
 status.importingModFolderZip=Importing mod folder (.zip)
 status.importingModsFolderZip=Importing mods folder (.zip)

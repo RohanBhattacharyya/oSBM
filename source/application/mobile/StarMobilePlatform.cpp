@@ -3244,6 +3244,8 @@ private:
         progressName = launcherText("status.importingModsFolderZip", "Importing mods folder (.zip)");
       else if (actionName == "Import packed.pak")
         progressName = launcherText("status.importingPackedPak", "Importing packed.pak");
+      else if (actionName == "Import save zip")
+        progressName = launcherText("status.importingSave", "Importing save");
 
       {
         std::lock_guard<std::mutex> lock(state.asyncActionMutex);
@@ -3549,6 +3551,32 @@ private:
       }
 
       if (ImGui::Button(launcherText("saveManager.importZip", "Import Save Zip").utf8Ptr())) {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+        // Run the import on the async worker so the launcher keeps rendering
+        // while the native file picker pauses/resumes the activity. A
+        // synchronous call blocks the render thread across the picker, so the
+        // GL surface is never restored on return -- a black screen behind the
+        // "Save imported" toast.
+        auto svc = m_platformServices->externalFileAccessService();
+        runLauncherActionAsync("Import save zip", [this, svc]() {
+          if (svc) {
+            bool ok = svc->importSaveZip();
+            return LauncherActionResult{
+              ok ? launcherText("status.saveZipImportFinished", "Save zip import finished.")
+                 : launcherText("status.noSaveZipImported", "No save zip imported."),
+              ok ? "" : launcherText("error.invalidSaveZipOrImportFailed", "No .zip selected, invalid save archive, or import failed."),
+              false,
+              {}
+            };
+          }
+          return LauncherActionResult{
+            launcherText("status.importUnavailable", "Import unavailable."),
+            launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build."),
+            false,
+            {}
+          };
+        });
+#else
         runLauncherAction("Import save zip", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             if (svc->importSaveZip()) {
@@ -3563,6 +3591,7 @@ private:
             state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
+#endif
       }
       sameLineIfNextFits(imguiButtonWidth(launcherText("saveManager.exportZip", "Export Save Zip").utf8Ptr()));
       if (ImGui::Button(launcherText("saveManager.exportZip", "Export Save Zip").utf8Ptr())) {

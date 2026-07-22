@@ -227,6 +227,7 @@ status.diagnosticsExportUnavailable=无法导出诊断信息。
 status.imported=已导入
 status.importingPackedPak=正在导入 packed.pak
 status.importingMods=正在导入模组
+status.importingSave=正在导入存档
 status.importingModPak=正在导入模组 (.pak)
 status.importingModFolderZip=正在导入模组文件夹 (.zip)
 status.importingModsFolderZip=正在导入模组目录 (.zip)
