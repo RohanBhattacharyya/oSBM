@@ -24,7 +24,9 @@ import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.DisplayCutout;
+import android.view.InputDevice;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -40,6 +42,7 @@ import androidx.core.content.FileProvider;
 import androidx.documentfile.provider.DocumentFile;
 
 import org.libsdl.app.SDLActivity;
+import org.libsdl.app.SDLControllerManager;
 import org.libsdl.app.SDLInputConnection;
 
 import java.io.BufferedReader;
@@ -108,6 +111,17 @@ public final class MainActivity extends SDLActivity {
             return true;
 
         return super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        // SDLDummyEdit has no joystick listener; Android would move view focus
+        // on stick motion and dismiss its IME instead of delivering it to SDL.
+        if (mTextEdit != null && mTextEdit.hasFocus()
+                && event.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK)) {
+            return SDLControllerManager.handleJoystickMotionEvent(event);
+        }
+        return super.dispatchGenericMotionEvent(event);
     }
 
     @Override
