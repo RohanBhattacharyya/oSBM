@@ -260,8 +260,9 @@ void NX_NORETURN __real_fatalThrow(Result err);
 // Diagnostics for svcBreak-style aborts (Ryujinx reports "guest program
 // broke execution" with a zeroed context, hiding the cause). These catch
 // the two most likely sources on a worker thread: an uncaught C++ exception
-// (std::terminate) and a stack-canary failure (__stack_chk_fail).
-extern "C" void __stack_chk_fail(void) {
+// (std::terminate) and, when libc does not provide its own handler, a
+// stack-canary failure (__stack_chk_fail).
+extern "C" __attribute__((weak)) void __stack_chk_fail(void) {
   const char* m = "ABORT: __stack_chk_fail (stack buffer overflow detected)";
   svcOutputDebugString(m, strlen(m));
   starSwitchCrashLog(m, strlen(m));

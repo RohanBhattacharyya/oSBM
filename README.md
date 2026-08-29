@@ -133,6 +133,66 @@ cmake --build --preset android-arm64-debug --target android_apk --parallel
 * Debug APK: `source/application/mobile/android/host/app/build/outputs/apk/debug/app-debug.apk`
 </details>
 <details>
+<summary>Nintendo Switch (homebrew NRO)</summary>
+
+#### Requirements
+* A Linux environment with CMake 3.23+ and Ninja
+* devkitPro with the devkitA64, libnx, and Switch portlibs packages
+* The repo's patched `libdrm_nouveau` and SDL3 portlibs
+
+The Switch build does not use vcpkg. The required third-party libraries are
+provided by devkitPro or must be cross-compiled as Switch static portlibs:
+SDL3, Dear ImGui, re2, cpr, zstd, abseil, freetype, libpng, libjpeg-turbo,
+libogg, libvorbis, libdrm_nouveau, and their dependencies.
+
+Set the devkitPro environment before configuring:
+
+```bash
+export DEVKITPRO=/opt/devkitpro
+export DEVKITA64="$DEVKITPRO/devkitA64"
+```
+
+Apply the repository's required toolchain patches after installing or
+updating devkitPro. The script downloads the matching upstream sources,
+builds the patched libraries, installs them into `$DEVKITPRO`, and patches all
+devkitA64 `libgcc.a` multilib variants:
+
+```bash
+./scripts/switch/apply-toolchain-patches.sh
+```
+
+Configure and build the release NRO from `source/` (the CMake preset file is
+stored there):
+
+```bash
+cd source
+cmake --preset switch-release
+cmake --build --preset switch-release --target starbound_nro --parallel
+```
+
+The output is relative to the repository root:
+
+```text
+build/switch-release/oSBM-<version>-switch.nro
+```
+
+By default, the NRO contains only the distributable launcher assets. Copy
+your legally owned `packed.pak` to the Switch storage separately, or create a
+self-contained NRO by supplying its local path at configure time:
+
+```bash
+cmake --preset switch-release \
+  -DSTAR_SWITCH_PACKED_PAK=/absolute/path/to/packed.pak
+cmake --build --preset switch-release --target starbound_nro --parallel
+```
+
+Copy the resulting NRO to the Switch SD card's `switch/` directory and launch
+it with hbmenu. The optional `scripts/switch-testkit.sh` helper can transfer
+builds and collect logs when sys-ftpd or MTP is available. After replacing a
+system static library, delete `dist/starbound.elf` before rebuilding so Ninja
+relinks the game.
+</details>
+<details>
 <summary>iOS (ARM64)</summary>
 
 #### Requirements
