@@ -97,6 +97,16 @@
     },
     {
       "inherits": "linux-release",
+      "name": "linux-arm-release",
+      "displayName": "Linux ARM",
+      "binaryDir": "${sourceParentDir}/build/linux-arm-release",
+      "architecture": { "value": "arm64", "strategy": "external" },
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-linux-mixed"
+      }
+    },
+    {
+      "inherits": "linux-release",
       "name": "linux-launcher-release",
       "displayName": "Linux x64 (oSBM ImGui launcher)",
       "description": "Desktop Linux build using the oSBM app path: ImGui launcher, touch/gamepad adapters, mobile platform services. Keeps the desktop GL/GLEW renderer and jemalloc.",
@@ -105,6 +115,16 @@
         "STAR_PC_MOBILE_LAUNCHER": true,
         "STAR_ENABLE_STEAM_INTEGRATION": false,
         "STAR_ENABLE_DISCORD_INTEGRATION": false
+      }
+    },
+    {
+      "inherits": "linux-launcher-release",
+      "name": "linux-arm-launcher-release",
+      "displayName": "Linux ARM (oSBM ImGui launcher)",
+      "binaryDir": "${sourceParentDir}/build/linux-arm-launcher-release",
+      "architecture": { "value": "arm64", "strategy": "external" },
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-linux-mixed"
       }
     },
     {
@@ -321,8 +341,16 @@
       "configurePreset": "linux-release"
     },
     {
+      "name": "linux-arm-release",
+      "configurePreset": "linux-arm-release"
+    },
+    {
       "name": "linux-launcher-release",
       "configurePreset": "linux-launcher-release"
+    },
+    {
+      "name": "linux-arm-launcher-release",
+      "configurePreset": "linux-arm-launcher-release"
     },
     {
       "name": "linux-release-clang",
