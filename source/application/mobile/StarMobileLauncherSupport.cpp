@@ -381,19 +381,63 @@ bool hasAndroidGyroSensor() {
 #endif
 
 String defaultMobileStorageRoot() {
+  if (char const* configuredRoot = std::getenv("OSBM_STORAGE_DIRECTORY")) {
+    String root = String(configuredRoot).trim();
+    if (!root.empty())
+      return root;
+  }
 #ifdef STAR_SYSTEM_SWITCH
   // Mount romfs and bring up the socket stack before any file access, then use
   // the deterministic SD-card root instead of SDL_GetPrefPath (which has no
   // meaningful home directory on the Switch homebrew target).
   switchPlatformInit();
   return switchDefaultStorageRoot();
-#else
+#elif defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
   String fallbackStorageRoot = SDL_GetPrefPath("OpenStarbound", "OpenStarbound");
   if (fallbackStorageRoot.empty())
     fallbackStorageRoot = "./";
   return fallbackStorageRoot;
+#else
+  char* prefPath = SDL_GetPrefPath("OpenStarbound", "oSBM Launcher");
+  if (prefPath) {
+    String selectionFile = File::relativeTo(prefPath, "storage-location.txt");
+    SDL_free(prefPath);
+    if (File::isFile(selectionFile)) {
+      String selectedRoot = File::readFileString(selectionFile).trim();
+      if (!selectedRoot.empty())
+        return selectedRoot;
+    }
+  }
+
+  // Launcher desktop builds are portable by default: keep saves beside the
+  // distributed executable instead of hiding them in AppData/XDG data.
+  if (char const* basePath = SDL_GetBasePath())
+    return File::relativeTo(basePath, "storage");
+  return "./storage";
 #endif
 }
+
+#if !defined(STAR_SYSTEM_ANDROID) && !defined(STAR_SYSTEM_IOS) && !defined(STAR_SYSTEM_SWITCH)
+void setDesktopStorageRoot(String const& storageRoot) {
+  char* prefPath = SDL_GetPrefPath("OpenStarbound", "oSBM Launcher");
+  if (!prefPath)
+    throw StarException(strf("Could not locate launcher preferences: {}", SDL_GetError()));
+
+  String selectionFile = File::relativeTo(prefPath, "storage-location.txt");
+  SDL_free(prefPath);
+  String selectedRoot = storageRoot.trim();
+  if (selectedRoot.empty()) {
+    if (File::isFile(selectionFile))
+      File::remove(selectionFile);
+    return;
+  }
+
+  selectedRoot = File::fullPath(selectedRoot);
+  File::makeDirectoryRecursive(selectedRoot);
+  File::makeDirectoryRecursive(File::dirName(selectionFile));
+  File::overwriteFileWithRename(selectedRoot, selectionFile);
+}
+#endif
 
 String writableMobileStorageRoot(String const& fallbackStorageRoot) {
   String storageRoot = fallbackStorageRoot;

@@ -35,6 +35,9 @@ bool hasAndroidGyroSensor();
 #endif
 String defaultMobileStorageRoot();
 String writableMobileStorageRoot(String const& fallbackStorageRoot);
+#if !defined(STAR_SYSTEM_ANDROID) && !defined(STAR_SYSTEM_IOS) && !defined(STAR_SYSTEM_SWITCH)
+void setDesktopStorageRoot(String const& storageRoot);
+#endif
 void convertEventToRenderCoordinatesIfPossible(SDL_Window* window, SDL_Event* event);
 bool isTouchDerivedMouseEvent(SDL_Event const& event);
 bool shouldCancelMobileTouchState(SDL_Event const& event);

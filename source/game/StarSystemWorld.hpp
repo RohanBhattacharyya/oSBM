@@ -117,23 +117,24 @@ private:
   // platform. All cached values are time-independent; only the final orbital
   // angle in planetPosition depends on the clock and stays live.
   //
-  // Correctness: a chunk holds its entire system, so once any parameters()
-  // lookup for this system succeeds the underlying data is complete and
-  // immutable -- m_celestialDataReady gates caching so values computed from
-  // a not-yet-streamed chunk (client slave database) are never frozen.
-  // Lifetime: this object exists for exactly one star system, so the caches
-  // never need invalidation.
-  Vec2I orbitCacheKey(CelestialCoordinate const& coord) const;
+  // Correctness: a chunk holds an entire system, so once parameters() for a
+  // system succeeds its geometry is complete and immutable.
+  // m_celestialDataReady tracks that state per system and the caches use full
+  // coordinates. This matters when the navigation UI previews a visited star:
+  // orbit-number-only keys would collide with the ship's current system, while
+  // limiting caching to the current system would bring the frame drop back.
+  using OrbitCacheKey = tuple<Vec3I, int, int>;
+  OrbitCacheKey orbitCacheKey(CelestialCoordinate const& coord) const;
   bool celestialDataReady(CelestialCoordinate const& coord) const;
   float clusterSizeUncached(CelestialCoordinate const& coord) const;
 
   ClockConstPtr m_universeClock;
   SystemWorldConfig m_config;
 
-  mutable bool m_celestialDataReady = false;
-  mutable HashMap<Vec2I, float> m_planetOrbitDistanceCache;
-  mutable HashMap<Vec2I, float> m_planetSizeCache;
-  mutable HashMap<Vec2I, float> m_clusterSizeCache;
+  mutable HashSet<Vec3I> m_celestialDataReady;
+  mutable HashMap<OrbitCacheKey, float> m_planetOrbitDistanceCache;
+  mutable HashMap<OrbitCacheKey, float> m_planetSizeCache;
+  mutable HashMap<OrbitCacheKey, float> m_clusterSizeCache;
 };
 
 struct SystemObjectConfig {

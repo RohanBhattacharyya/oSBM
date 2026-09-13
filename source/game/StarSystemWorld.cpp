@@ -143,29 +143,30 @@ uint64_t SystemWorld::coordinateSeed(CelestialCoordinate const& coordinate, Stri
   return staticRandomU64(coordinate.location()[0], coordinate.location()[1], coordinate.location()[2], planet, satellite, seedMix);
 }
 
-Vec2I SystemWorld::orbitCacheKey(CelestialCoordinate const& coord) const {
-  if (coord.isSatelliteBody())
-    return Vec2I(coord.parent().orbitNumber(), coord.orbitNumber());
-  return Vec2I(coord.orbitNumber(), 0);
+SystemWorld::OrbitCacheKey SystemWorld::orbitCacheKey(CelestialCoordinate const& coord) const {
+  int planet = coord.isSatelliteBody() ? coord.parent().orbitNumber() : coord.orbitNumber();
+  int satellite = coord.isSatelliteBody() ? coord.orbitNumber() : 0;
+  return {coord.location(), planet, satellite};
 }
 
 bool SystemWorld::celestialDataReady(CelestialCoordinate const& coord) const {
-  // Sticky: chunks hold whole systems, so one successful parameters() lookup
-  // means every value derived from this system's data is final.
-  if (!m_celestialDataReady && (bool)m_celestialDatabase->parameters(coord.system()))
-    m_celestialDataReady = true;
-  return m_celestialDataReady;
+  // Chunks hold whole systems, so one successful parameters() lookup means
+  // every value derived from that system's data is final. Track readiness per
+  // system: the navigation UI can inspect a visited system other than the one
+  // the ship currently occupies.
+  auto location = coord.location();
+  if (!m_celestialDataReady.contains(location) && (bool)m_celestialDatabase->parameters(coord.system()))
+    m_celestialDataReady.add(location);
+  return m_celestialDataReady.contains(location);
 }
 
 float SystemWorld::planetOrbitDistance(CelestialCoordinate const& coordinate) const {
   if (coordinate.isSystem() || coordinate.isNull())
     return 0;
 
-  Vec2I cacheKey = orbitCacheKey(coordinate);
-  if (coordinate.location() == m_location) {
-    if (auto cached = m_planetOrbitDistanceCache.ptr(cacheKey))
-      return *cached;
-  }
+  auto cacheKey = orbitCacheKey(coordinate);
+  if (auto cached = m_planetOrbitDistanceCache.ptr(cacheKey))
+    return *cached;
 
   RandomSource random(coordinateSeed(coordinate, "PlanetOrbitDistance"));
 
@@ -182,7 +183,7 @@ float SystemWorld::planetOrbitDistance(CelestialCoordinate const& coordinate) co
 
   distance += clusterSize(coordinate) / 2.0;
 
-  if (coordinate.location() == m_location && celestialDataReady(coordinate))
+  if (celestialDataReady(coordinate))
     m_planetOrbitDistanceCache.set(cacheKey, distance);
   return distance;
 }
@@ -204,13 +205,12 @@ Vec2F SystemWorld::orbitPosition(CelestialOrbit const& orbit) const {
 }
 
 float SystemWorld::clusterSize(CelestialCoordinate const& coordinate) const {
-  if (coordinate.isPlanetaryBody() && coordinate.location() == m_location) {
-    if (auto cached = m_clusterSizeCache.ptr(orbitCacheKey(coordinate)))
-      return *cached;
-  }
+  auto cacheKey = orbitCacheKey(coordinate);
+  if (auto cached = m_clusterSizeCache.ptr(cacheKey))
+    return *cached;
   float result = clusterSizeUncached(coordinate);
-  if (coordinate.isPlanetaryBody() && coordinate.location() == m_location && celestialDataReady(coordinate))
-    m_clusterSizeCache.set(orbitCacheKey(coordinate), result);
+  if (coordinate.isPlanetaryBody() && celestialDataReady(coordinate))
+    m_clusterSizeCache.set(cacheKey, result);
   return result;
 }
 
@@ -235,13 +235,10 @@ float SystemWorld::planetSize(CelestialCoordinate const& coordinate) const {
   if (coordinate.isSystem())
     return m_config.starSize;
 
-  Vec2I cacheKey = orbitCacheKey(coordinate);
-  bool cacheable = coordinate.location() == m_location;
-  if (cacheable) {
-    if (auto cached = m_planetSizeCache.ptr(cacheKey))
-      return *cached;
-    cacheable = celestialDataReady(coordinate);
-  }
+  auto cacheKey = orbitCacheKey(coordinate);
+  if (auto cached = m_planetSizeCache.ptr(cacheKey))
+    return *cached;
+  bool cacheable = celestialDataReady(coordinate);
 
   if (!m_celestialDatabase->childOrbits(coordinate.parent()).contains(coordinate.orbitNumber())) {
     if (cacheable)

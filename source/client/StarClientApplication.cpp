@@ -81,31 +81,6 @@ Json const AdditionalAssetsSettings = Json::parseJson(R"JSON(
     }
   )JSON");
 
-namespace {
-
-bool mobileDefaultActionMatch(Key key, InterfaceAction action) {
-  switch (action) {
-    case InterfaceAction::PlayerUp:
-      return key == Key::W;
-    case InterfaceAction::PlayerDown:
-      return key == Key::S;
-    case InterfaceAction::PlayerLeft:
-      return key == Key::A;
-    case InterfaceAction::PlayerRight:
-      return key == Key::D;
-    case InterfaceAction::PlayerJump:
-      return key == Key::Space;
-    case InterfaceAction::PlayerInteract:
-      return key == Key::E;
-    case InterfaceAction::InterfaceEscapeMenu:
-      return key == Key::Escape;
-    default:
-      return false;
-  }
-}
-
-}
-
 Json const AdditionalDefaultConfiguration = Json::parseJson(R"JSON(
     {
       "configurationVersion" : {
@@ -2264,8 +2239,10 @@ void ClientApplication::updateRunning(float dt) {
 }
 
 bool ClientApplication::isActionTaken(InterfaceAction action) const {
+  if (m_mainInterface && m_mainInterface->textInputActive())
+    return false;
   for (auto keyEvent : m_heldKeyEvents) {
-    if (m_guiContext->actions(keyEvent).contains(action) || mobileDefaultActionMatch(keyEvent.key, action))
+    if (m_guiContext->actions(keyEvent).contains(action))
       return true;
   }
 
@@ -2273,8 +2250,10 @@ bool ClientApplication::isActionTaken(InterfaceAction action) const {
 }
 
 bool ClientApplication::isActionTakenEdge(InterfaceAction action) const {
+  if (m_mainInterface && m_mainInterface->textInputActive())
+    return false;
   for (auto keyEvent : m_edgeKeyEvents) {
-    if (m_guiContext->actions(keyEvent).contains(action) || mobileDefaultActionMatch(keyEvent.key, action))
+    if (m_guiContext->actions(keyEvent).contains(action))
       return true;
   }
 

@@ -90,6 +90,20 @@ Just click Launch once the packed.pak has been selected! As long as Enable touch
 
 ## Building
 
+Desktop launcher builds keep saves and configuration in a portable `storage`
+directory beside the executable. The launcher's Settings screen can select a
+different folder for all storage; the change takes effect after restarting and
+does not move existing files. `OSBM_STORAGE_DIRECTORY` can also override the
+selected folder, and `OSBM_MODS_DIRECTORY` can use a separate mods directory.
+Both variables accept absolute or working-directory-relative paths.
+They are also honored on mobile platforms when the host environment provides
+them; normal Android/iOS installs should use the launcher's save import/export
+tools because those operating systems restrict arbitrary filesystem access.
+
+Linux ARM64 uses the `linux-arm-release` and
+`linux-arm-launcher-release` presets on a native AArch64 Linux host. The
+manual PC workflow builds the launcher preset on GitHub's ARM64 Ubuntu runner.
+
 <details>
 <summary>Android (ARM64 APK)</summary>
 

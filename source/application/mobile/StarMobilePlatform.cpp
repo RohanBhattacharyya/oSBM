@@ -523,21 +523,50 @@ private:
     }
 
     void setFullscreenWindow(Vec2U size) override {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
       // Mobile surfaces stay fullscreen; the Starbound resolution setting maps
       // to the logical render canvas that is upscaled into the safe area.
       parent->setRequestedRenderResolution(size);
+#else
+      SDL_DisplayID display = SDL_GetDisplayForWindow(parent->m_window);
+      SDL_DisplayMode mode;
+      if (SDL_GetClosestFullscreenDisplayMode(display, (int)size[0], (int)size[1], 0.0f, true, &mode))
+        SDL_SetWindowFullscreenMode(parent->m_window, &mode);
+      if (!SDL_SetWindowFullscreen(parent->m_window, true))
+        Logger::warn("Unable to enter fullscreen mode: {}", SDL_GetError());
+#endif
     }
 
     void setNormalWindow(Vec2U size) override {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
       parent->setRequestedRenderResolution(size);
+#else
+      SDL_SetWindowFullscreen(parent->m_window, false);
+      SDL_SetWindowBordered(parent->m_window, true);
+      SDL_RestoreWindow(parent->m_window);
+      SDL_SetWindowSize(parent->m_window, (int)size[0], (int)size[1]);
+      SDL_SetWindowPosition(parent->m_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+#endif
     }
 
     void setMaximizedWindow() override {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
       parent->setRequestedRenderResolution({});
+#else
+      SDL_SetWindowFullscreen(parent->m_window, false);
+      SDL_SetWindowBordered(parent->m_window, true);
+      SDL_MaximizeWindow(parent->m_window);
+#endif
     }
 
     void setBorderlessWindow() override {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
       parent->setRequestedRenderResolution({});
+#else
+      SDL_SetWindowFullscreenMode(parent->m_window, nullptr);
+      if (!SDL_SetWindowFullscreen(parent->m_window, true))
+        Logger::warn("Unable to enter borderless fullscreen mode: {}", SDL_GetError());
+#endif
     }
 
     void setVSyncEnabled(bool enabled) override {
@@ -1626,6 +1655,56 @@ private:
     };
     auto* ctx = new PackedPakPickContext{this, &state, packedPakTarget};
     SDL_ShowOpenFileDialog(&MobilePlatform::onPackedPakPicked, ctx, m_window, filters, 2, nullptr, false);
+  }
+
+  struct StorageFolderPickContext {
+    MobilePlatform* platform;
+    LauncherState* state;
+  };
+
+  static void onStorageFolderPicked(void* userdata, char const* const* filelist, int) {
+    std::unique_ptr<StorageFolderPickContext> ctx(static_cast<StorageFolderPickContext*>(userdata));
+    LauncherActionResult result;
+    if (!filelist) {
+      result.status = ctx->platform->launcherText("status.nativePickerUnavailable", "Native picker unavailable.");
+      result.error = String(SDL_GetError());
+    } else if (!*filelist) {
+      result.status = ctx->platform->launcherText("status.noFolderSelected", "No folder selected.");
+    } else {
+      try {
+        setDesktopStorageRoot(filelist[0]);
+        result.status = ctx->platform->launcherText("status.storageFolderSaved",
+            "Storage folder saved. Restart oSBM to use the new location.");
+      } catch (std::exception const& e) {
+        result.status = ctx->platform->launcherText("status.storageFolderFailed", "Could not save the storage folder.");
+        result.error = strf("{}", outputException(e, true));
+      }
+    }
+
+    std::lock_guard<std::mutex> lock(ctx->state->asyncActionMutex);
+    ctx->state->asyncActionResult = result;
+    ctx->state->asyncActionCompleted = true;
+  }
+
+  void startDesktopStorageFolderPicker(LauncherState& state) {
+    if (state.asyncActionRunning) {
+      state.lastStatus = launcherText("status.nativePickerAlreadyOpen", "Native file picker is already open.");
+      state.lastError = launcherText("error.finishCurrentPickerFirst", "Finish or cancel the current picker before starting another import.");
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(state.asyncActionMutex);
+      state.asyncActionRunning = true;
+      state.asyncActionCompleted = false;
+      state.asyncActionName = launcherText("status.selectingStorageFolder", "Selecting storage folder");
+      state.asyncActionResult = {};
+    }
+    state.lastStatus = strf("{}...", state.asyncActionName);
+    state.lastError.clear();
+
+    auto* ctx = new StorageFolderPickContext{this, &state};
+    SDL_ShowOpenFolderDialog(&MobilePlatform::onStorageFolderPicked, ctx, m_window, m_storageRoot.utf8Ptr(), false);
   }
 
   // Desktop "Import mods folder" -- the same recursive, flattening scan the
@@ -2805,6 +2884,28 @@ private:
       ImGui::TextDisabled("%s", launcherText("uiSettings.fullscreenRenderHint",
           "Off: the view avoids the notch / camera cutout (black bar). On: the game fills the whole screen and the cutout may cover content.").utf8Ptr());
     }
+#endif
+
+#if !defined(STAR_SYSTEM_ANDROID) && !defined(STAR_SYSTEM_IOS) && !defined(STAR_SYSTEM_SWITCH)
+    ImGui::Dummy(ImVec2(0.0f, 8.0f));
+    ImGui::TextUnformatted(launcherText("uiSettings.storage", "Storage").utf8Ptr());
+    ImGui::TextWrapped("%s", m_storageRoot.utf8Ptr());
+    if (ImGui::Button(launcherText("uiSettings.chooseStorageFolder", "Choose Storage Folder").utf8Ptr()))
+      startDesktopStorageFolderPicker(state);
+    sameLineIfNextFits(imguiButtonWidth(launcherText("uiSettings.useDefaultStorage", "Use Portable Default").utf8Ptr()));
+    if (ImGui::Button(launcherText("uiSettings.useDefaultStorage", "Use Portable Default").utf8Ptr())) {
+      try {
+        setDesktopStorageRoot("");
+        state.lastStatus = launcherText("status.defaultStorageSaved",
+            "Portable storage selected. Restart oSBM to use the default location.");
+        state.lastError.clear();
+      } catch (std::exception const& e) {
+        state.lastStatus = launcherText("status.storageFolderFailed", "Could not save the storage folder.");
+        state.lastError = strf("{}", outputException(e, true));
+      }
+    }
+    ImGui::TextDisabled("%s", launcherText("uiSettings.storageRestartHint",
+        "The selected folder is used for saves, configuration, assets, logs, and mods after restarting. Existing files are not moved.").utf8Ptr());
 #endif
 
     ImGui::Dummy(ImVec2(0.0f, 8.0f));
@@ -5254,6 +5355,11 @@ private:
   }
 
   String modsDirectoryPath() const {
+    if (char const* configuredPath = std::getenv("OSBM_MODS_DIRECTORY")) {
+      String path = String(configuredPath).trim();
+      if (!path.empty())
+        return path;
+    }
     auto fallbackModsPath = File::relativeTo(m_storageRoot, "mods");
 #if STAR_SYSTEM_ANDROID
     if (auto resolvedPath = AndroidFileAccessBridge::resolveModsDirectory(fallbackModsPath))

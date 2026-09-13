@@ -29,9 +29,9 @@ before relying on subtle details.
 
 ## Desktop (Linux / Windows / macOS)
 
-Configure presets: `linux-release`, `linux-release-clang`, `windows-release`,
+Configure presets: `linux-release`, `linux-arm-release`, `linux-release-clang`, `windows-release`,
 `windows-release-VS2022`, `macos-release`, `macos-arm-release`, and the
-launcher variants `linux-launcher-release`, `windows-launcher-release`,
+launcher variants `linux-launcher-release`, `linux-arm-launcher-release`, `windows-launcher-release`,
 `macos-launcher-release`, `macos-arm-launcher-release`
 (launcher = `STAR_PC_MOBILE_LAUNCHER=ON`; these are what `pc-manual.yml`
 ships). Windows/macOS presets only work on those host OSes.
@@ -198,7 +198,8 @@ Three `workflow_dispatch` (manual) workflows; no push-triggered CI:
   type; enforces the release signing identity via a fingerprint-checked
   keystore secret.
 - `ios-manual.yml` — Release/Debug unsigned IPA artifact on macOS runners.
-- `pc-manual.yml` — the four desktop *launcher* presets (all or one OS).
+- `pc-manual.yml` — the five desktop *launcher* presets (all or one OS;
+  selecting Linux builds both x64 and native ARM64).
 
 When a CI run fails with symptoms identical to the bug you just fixed,
 verify the fix was actually pushed (`git status`, `git log origin/main..`)
