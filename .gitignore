@@ -60,3 +60,4 @@ CLAUDE.md
 package-lock.json
 package.json
 ruvector.db
+.agent-safe/
