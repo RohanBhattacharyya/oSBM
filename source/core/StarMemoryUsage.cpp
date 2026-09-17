@@ -167,7 +167,7 @@ uint64_t memoryAccountBytes(MemoryCategory category) {
 }
 
 uint64_t memoryAllocatorMappedBytes() {
-#ifdef STAR_USE_RPMALLOC
+#if defined(STAR_USE_RPMALLOC) && defined(STAR_SYSTEM_SWITCH)
   return (uint64_t)rpmalloc_mapped_bytes();
 #else
   return 0;
