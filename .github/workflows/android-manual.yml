@@ -63,13 +63,11 @@ jobs:
             zip
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Android components
         run: |
-          yes | sdkmanager --licenses || true
           sdkmanager \
-            "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "ndk;26.3.11579264"
@@ -179,6 +177,15 @@ jobs:
         run: |
           cmake --build --preset android-universal-release
           cp -v application/mobile/android/host/app/build/outputs/apk/release/oSBM-*.apk "${GITHUB_WORKSPACE}/apk-staging/"
+
+      - name: Check packaged assets
+        run: |
+          for apk in apk-staging/oSBM-*.apk; do
+            if unzip -Z1 "$apk" | grep -E '(^|/)packed\.pak$' >/dev/null; then
+              echo "Unexpected packed.pak in $apk" >&2
+              exit 1
+            fi
+          done
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4

@@ -87,10 +87,10 @@ TEST(ItemTest, ItemComparison) {
   EXPECT_TRUE(testItemParams->matches(testItem));
 
   // comparisons WITH exactMatch
-    for (ItemDescriptor const& id : testItemDescriptors) {
-    EXPECT_TRUE(testItem->matches(id, true));
+  for (ItemDescriptor const& id : testItemDescriptors) {
+    EXPECT_FALSE(testItem->matches(id, true));
     EXPECT_FALSE(testItemParams->matches(id, true));
-    EXPECT_TRUE(id.matches(testItem, true));
+    EXPECT_FALSE(id.matches(testItem, true));
     EXPECT_FALSE(id.matches(testItemParams, true));
     for (ItemDescriptor const& id2 : testItemDescriptors)
       EXPECT_TRUE(id.matches(id2, true));
@@ -99,9 +99,9 @@ TEST(ItemTest, ItemComparison) {
   }
   for (ItemDescriptor const& id : testItemDescriptorsParams) {
     EXPECT_FALSE(testItem->matches(id, true));
-    EXPECT_TRUE(testItemParams->matches(id, true));
+    EXPECT_FALSE(testItemParams->matches(id, true));
     EXPECT_FALSE(id.matches(testItem, true));
-    EXPECT_TRUE(id.matches(testItemParams, true));
+    EXPECT_FALSE(id.matches(testItemParams, true));
     for (ItemDescriptor const& id2 : testItemDescriptors)
       EXPECT_FALSE(id.matches(id2, true));
     for (ItemDescriptor const& id2 : testItemDescriptorsParams)
@@ -109,6 +109,11 @@ TEST(ItemTest, ItemComparison) {
   }
   EXPECT_FALSE(testItem->matches(testItemParams, true));
   EXPECT_FALSE(testItemParams->matches(testItem, true));
+  // Object items add an empty scriptStorage parameter on creation.
+  EXPECT_TRUE(testItem->matches(testItem->descriptor(), true));
+  EXPECT_TRUE(testItemParams->matches(testItemParams->descriptor(), true));
+  EXPECT_TRUE(testItem->descriptor().matches(testItem, true));
+  EXPECT_TRUE(testItemParams->descriptor().matches(testItemParams, true));
 }
 
 TEST(ItemTest, ConstructItems) {

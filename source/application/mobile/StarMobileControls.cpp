@@ -865,7 +865,13 @@ public:
       } else if (element.kind == MobileTouchElementKind::PerformanceCounter) {
         // Passive display, not a touch target: no shape, just queued text
         // drawn in the un-blended text pass below (same as other labels).
-        labels.push_back({ip(center), perfCounterText(element.perfCounterMode, fps)});
+        String text = perfCounterText(element.perfCounterMode, fps);
+        ImVec2 pos = ip(center);
+        ImVec2 size = ImGui::CalcTextSize(text.utf8Ptr());
+        ImVec2 screen = ImGui::GetIO().DisplaySize;
+        pos.x = std::clamp(pos.x, 1.0f, std::max(1.0f, screen.x - size.x - 1.0f));
+        pos.y = std::clamp(pos.y, 1.0f, std::max(1.0f, screen.y - size.y - 1.0f));
+        labels.push_back({pos, text});
       } else {
         bool held = heldElement(element.id)
             || (element.action.kind == MobileTouchActionKind::GyroToggle && m_gyroAvailable && m_config.gyroEnabled && m_gyroRuntimeEnabled);

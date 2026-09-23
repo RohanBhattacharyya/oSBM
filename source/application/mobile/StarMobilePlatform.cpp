@@ -2725,7 +2725,12 @@ private:
         placeholder = String("60 FPS\n60.00Hz\n00512µs\n00048µs");
       else if (element.perfCounterMode == PerformanceCounterMode::Memory)
         placeholder = String("60 FPS\nRAM 1200/3200MB (37%)\nimg 240MB tex 320MB");
-      labels.push_back({ImVec2(center.x - radius * 0.55f, center.y - radius * 0.4f), placeholder});
+      ImVec2 pos(center.x - radius * 0.55f, center.y - radius * 0.4f);
+      ImVec2 size = ImGui::CalcTextSize(placeholder.utf8Ptr());
+      ImVec2 screen = ImGui::GetIO().DisplaySize;
+      pos.x = std::clamp(pos.x, 1.0f, std::max(1.0f, screen.x - size.x - 1.0f));
+      pos.y = std::clamp(pos.y, 1.0f, std::max(1.0f, screen.y - size.y - 1.0f));
+      labels.push_back({pos, placeholder});
     } else {
       draw->AddCircleFilled(center, radius * 0.55f, fill, 32);
       draw->AddCircle(center, radius * 0.55f, base, 48, thickness);

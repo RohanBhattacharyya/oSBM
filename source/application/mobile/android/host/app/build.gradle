@@ -27,6 +27,8 @@ def osbmAbiSuffix = osbmAbis.size() > 1 ? "universal" : osbmAbis[0]
 android {
     namespace 'com.devoflife.osbm.android'
     compileSdk 35
+    // A local assets/packed.pak must never enter an APK.
+    androidResources.ignoreAssetsPatterns.add('packed.pak')
 
     defaultConfig {
         applicationId "com.devoflife.osbm.android"

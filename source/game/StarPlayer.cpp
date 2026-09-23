@@ -2325,7 +2325,7 @@ void Player::setShipSpecies(String species) {
 }
 
 String Player::shipSpecies() const {
-  return m_shipSpecies;
+  return m_shipSpecies.empty() ? m_identity.species : m_shipSpecies;
 }
 
 String Player::name() const {
