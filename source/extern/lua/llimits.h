@@ -70,6 +70,7 @@ typedef union {
   void *s;
   lua_Integer i;
   long l;
+  long double ld;
 } L_Umaxalign;
 #endif
 

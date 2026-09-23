@@ -100,11 +100,11 @@ namespace PlatformerAStar {
     Vec2F roundedFrom = roundToNode(m_searchFrom);
     Vec2F roundedTo = roundToNode(m_searchTo);
 
-    m_astar = AStar::Search<Edge, Node>(heuristicCostFn,
+    m_astar.emplace(heuristicCostFn,
         neighborsFn,
         goalReachedFn,
         m_searchParams.returnBest,
-        {validateEndFn},
+        Maybe<function<bool(Edge)>>(validateEndFn),
         m_searchParams.maxFScore,
         m_searchParams.maxNodesToSearch);
     m_astar->start(Node{roundedFrom, {}}, Node{roundedTo, {}});

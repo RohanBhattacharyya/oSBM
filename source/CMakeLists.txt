@@ -285,7 +285,7 @@ if(STAR_SYSTEM_FAMILY STREQUAL "windows")
   set_flag(STAR_SYSTEM_FAMILY_WINDOWS)
 elseif(STAR_SYSTEM_FAMILY STREQUAL "mobile")
   set_flag(STAR_SYSTEM_FAMILY_MOBILE)
-  # Switch and Android default to rpmalloc: the system allocators (newlib's
+  # Switch and Android ARM default to rpmalloc: the system allocators (newlib's
   # globally-locked dlmalloc on Switch, hardened scudo on Android) measured
   # as the single largest engine cost -- on Switch under emulation the swap
   # took the whole engine from ~55ms to ~6ms per frame. Engine-only
@@ -296,7 +296,8 @@ elseif(STAR_SYSTEM_FAMILY STREQUAL "mobile")
   # LiveContainer (where the app runs as a guest inside another process) the
   # post-June binaries with rpmalloc die before main. libmalloc is also the
   # least-bad of the three system allocators, so the win was smallest there.
-  if(NOT STAR_SYSTEM STREQUAL "ios")
+  # Android x86_64 aborts during gameplay with rpmalloc, so use bionic there.
+  if(NOT STAR_SYSTEM STREQUAL "ios" AND NOT (STAR_SYSTEM STREQUAL "android" AND CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64"))
     set(STAR_USE_RPMALLOC ON)
   endif()
 elseif(STAR_SYSTEM_FAMILY STREQUAL "unix")

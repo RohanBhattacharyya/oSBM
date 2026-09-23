@@ -95,7 +95,13 @@ float GuiContext::interfaceScale() const {
   return m_interfaceScale;
 #else
   float DisplayScale {std::max(1.0f, std::round(getDisplayScale()))};
+#ifdef STAR_SYSTEM_ANDROID
+  // Character creation is about 480 interface pixels tall; leave room for
+  // its border and buttons on short landscape displays.
+  return std::min(m_interfaceScale * DisplayScale, std::max(1.0f, windowSize()[1] / 500.0f));
+#else
   return m_interfaceScale * DisplayScale;
+#endif
 #endif
 }
 
