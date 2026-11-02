@@ -1054,6 +1054,7 @@ void MainInterface::render() {
       renderMonsterHealthBar();
       renderSpecialDamageBar();
       renderMainBar();
+      renderTargetPreview();
       // Standalone canvases are recorded with the bar group: canvas draw ops
       // are written by Lua scripts that execute inside the sim tick, so the
       // pure-replay frames (which may overlap that tick) must not iterate
@@ -1075,7 +1076,6 @@ void MainInterface::render() {
 #ifdef STAR_SYSTEM_SWITCH
   miLap(s_miCanvases);
 #endif
-  renderTargetPreview();
   renderWindows();
 #ifdef STAR_SYSTEM_SWITCH
   miLap(s_miWindows);
