@@ -1,4 +1,5 @@
 #include "StarMainInterface.hpp"
+#include "StarGamepadInput.hpp"
 #include "StarJsonExtra.hpp"
 #include "StarLogging.hpp"
 #include "StarLexicalCast.hpp"
@@ -325,6 +326,7 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
     m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = mouseMove->mousePosition);
     m_cursorVisible = mouseMove->cursorVisible;
     m_mobileDirectionalAimActive = false;
+    m_gamepadAimOffset.reset();
     if (!mouseMove->cursorVisible)
       return false;
   }
@@ -346,6 +348,14 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
   }
 
   if (m_paneManager.sendInputEvent(effectiveEvent)) {
+    if (effectiveEvent.is<UiNavigationEvent>()) {
+      if (auto position = m_paneManager.uiNavigationPosition()) {
+        m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = *position);
+        m_cursorVisible = true;
+        m_mobileDirectionalAimActive = false;
+        m_gamepadAimOffset.reset();
+      }
+    }
     if (!effectiveEvent.is<MouseButtonUpEvent>() && !effectiveEvent.is<KeyUpEvent>())
       return true;
   }
@@ -1077,6 +1087,13 @@ void MainInterface::render() {
 }
 
 Vec2F MainInterface::cursorWorldPosition() const {
+  if (m_gamepadAimOffset) {
+    auto const& camera = m_worldPainter->camera();
+    Vec2F target = camera.worldToScreen(m_client->mainPlayer()->position() + *m_gamepadAimOffset);
+    target[0] = std::clamp(target[0], 0.0f, (float)windowWidth());
+    target[1] = std::clamp(target[1], 0.0f, (float)windowHeight());
+    return camera.screenToWorld(target);
+  }
   return m_worldPainter->camera().screenToWorld(m_cursorScreenPos);
 }
 
@@ -1829,6 +1846,12 @@ void MainInterface::renderDebug() {
 }
 
 void MainInterface::updateCursor() {
+  if (m_gamepadAimOffset) {
+    Vec2F target = m_worldPainter->camera().worldToScreen(cursorWorldPosition());
+    target[0] = std::clamp(target[0], 0.0f, (float)windowWidth());
+    target[1] = std::clamp(target[1], 0.0f, (float)windowHeight());
+    m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = target);
+  }
   Maybe<String> cursorOverride = m_actionBar->cursorOverride(m_cursorScreenIPos);
 
   if (!cursorOverride) {
@@ -2027,9 +2050,25 @@ bool MainInterface::handleActionWheelEvent(ActionWheelEvent const& event) {
 }
 
 bool MainInterface::handleDirectionalAimEvent(DirectionalAimEvent const& event) {
+  // D-pad focus owns open windows. A held/recentered aim stick must not
+  // move the inventory cursor back into the world before a trigger click.
+  if (event.useToolRange && m_paneManager.topPane({PaneLayer::Window, PaneLayer::ModalWindow})) {
+    m_mobileDirectionalAimActive = false;
+    m_gamepadAimOffset.reset();
+    return true;
+  }
+
   auto player = m_client->mainPlayer();
-  Vec2F anchor = m_worldPainter->camera().worldToScreen(player->position());
-  Vec2F target = anchor + event.direction * event.radius;
+  auto const& camera = m_worldPainter->camera();
+  Vec2F anchor = camera.worldToScreen(player->position());
+  Vec2F target;
+  if (event.useToolRange) {
+    m_gamepadAimOffset = event.direction * GamepadInput::aimRadius(player->toolRadius());
+    target = anchor + *m_gamepadAimOffset * camera.pixelRatio() * TilePixels;
+  } else {
+    m_gamepadAimOffset.reset();
+    target = anchor + event.direction * event.radius;
+  }
   target[0] = std::clamp(target[0], 0.0f, (float)windowWidth());
   target[1] = std::clamp(target[1], 0.0f, (float)windowHeight());
 

@@ -295,6 +295,7 @@ private:
   Maybe<size_t> m_actionWheelSelection;
   Vec2F m_actionWheelDirection;
   bool m_mobileDirectionalAimActive = false;
+  Maybe<Vec2F> m_gamepadAimOffset;
 
   String m_lastCommand;
 

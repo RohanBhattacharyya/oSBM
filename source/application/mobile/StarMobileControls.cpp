@@ -9,6 +9,7 @@
 #include "StarSignalHandler.hpp"
 #include "StarTickRateMonitor.hpp"
 #include "StarTime.hpp"
+#include "StarGamepadInput.hpp"
 #include "StarPlatformServices_mobile.hpp"
 #if STAR_SYSTEM_ANDROID
 #include "mobile/android/StarAndroidFileAccessBridge.hpp"
@@ -501,7 +502,7 @@ MobileGamepadStickConfig gamepadStickFromJson(Json const& json, MobileGamepadSti
 MobileGamepadConfig gamepadConfigFromConfig(Json const& config) {
   MobileGamepadConfig out;
   out.enabled = config.queryBool("gamepad.enabled", true);
-  out.triggerThreshold = config.queryFloat("gamepad.triggerThreshold", 0.45f);
+  out.triggerThreshold = config.queryFloat("gamepad.triggerThreshold", out.triggerThreshold);
   out.leftStick = gamepadStickFromJson(config.query("gamepad.leftStick", JsonObject()), out.leftStick);
   out.rightStick = gamepadStickFromJson(config.query("gamepad.rightStick", JsonObject()), out.rightStick);
   return out;
@@ -2266,7 +2267,8 @@ public:
   }
 
   void beginFrame() {
-    m_generatedEvents.clear();
+    // appendGeneratedEvents drains the queue. Keep releases queued by
+    // setBindings/setConfig between frames until the client receives them.
     if (!m_config.enabled)
       cancelAll();
   }
@@ -2301,21 +2303,19 @@ public:
     }
 
     if (auto axis = event.ptr<ControllerAxisEvent>()) {
-      ControllerAxisEvent filtered = *axis;
-      filtered.controllerAxisValue = applyAxisDeadzone(axis->controllerAxis, axis->controllerAxisValue);
-      updateAxisState(filtered.controllerAxis, filtered.controllerAxisValue);
+      updateAxisState(axis->controllerAxis, axis->controllerAxisValue);
 
       if (axis->controllerAxis == ControllerAxis::LeftX || axis->controllerAxis == ControllerAxis::LeftY
           || axis->controllerAxis == ControllerAxis::RightX || axis->controllerAxis == ControllerAxis::RightY)
         return true;
 
       if (axis->controllerAxis == ControllerAxis::TriggerLeft) {
-        updateVirtualButton(ControllerButton::TriggerLeft, filtered.controllerAxisValue >= std::clamp(m_config.triggerThreshold, 0.05f, 0.95f));
+        updateTrigger(ControllerButton::TriggerLeft, axis->controllerAxisValue);
         return true;
       }
 
       if (axis->controllerAxis == ControllerAxis::TriggerRight) {
-        updateVirtualButton(ControllerButton::TriggerRight, filtered.controllerAxisValue >= std::clamp(m_config.triggerThreshold, 0.05f, 0.95f));
+        updateTrigger(ControllerButton::TriggerRight, axis->controllerAxisValue);
         return true;
       }
 
@@ -2332,6 +2332,16 @@ public:
       return true;
     }
 
+    if (auto move = event.ptr<MouseMoveEvent>()) {
+      m_cursorPosition = move->mousePosition;
+      m_hasDirectionalAim = false;
+    } else if (event.is<DirectionalAimEvent>()) {
+      // A touch aim joystick is another pointer owner, just like a mouse.
+      m_hasDirectionalAim = false;
+    }
+    // Preserve ordering when physical pointer/keyboard input follows generated
+    // gamepad input in the same SDL poll batch.
+    appendGeneratedEvents(passthroughEvents);
     passthroughEvents.append(event);
     return false;
   }
@@ -2357,8 +2367,14 @@ public:
     m_keyHoldCounts.clear();
     m_mouseActionOwners.clear();
     m_mouseHoldCounts.clear();
+    m_activeButtons.clear();
+    m_triggerStates.clear();
+    m_rawLeftStick = {};
+    m_rawRightStick = {};
     m_leftStick = {};
     m_rightStick = {};
+    m_hasDirectionalAim = false;
+    m_lastAimFrameMs = Time::monotonicMilliseconds();
   }
 
 private:
@@ -2379,43 +2395,30 @@ private:
     m_lastAimFrameMs = Time::monotonicMilliseconds();
   }
 
-  float applyAxisDeadzone(ControllerAxis axis, float value) const {
-    MobileGamepadStickConfig stick;
-    bool useStick = true;
-    if (axis == ControllerAxis::LeftX || axis == ControllerAxis::LeftY)
-      stick = m_config.leftStick;
-    else if (axis == ControllerAxis::RightX || axis == ControllerAxis::RightY)
-      stick = m_config.rightStick;
-    else
-      useStick = false;
-
-    if (!useStick)
-      return std::clamp(value, 0.0f, 1.0f);
-
-    float deadzone = std::clamp(stick.deadzone, 0.0f, 0.85f);
-    if (std::abs(value) < deadzone)
-      return 0.0f;
-
-    float scaled = (std::abs(value) - deadzone) / std::max(0.001f, 1.0f - deadzone);
-    scaled = std::copysign(std::clamp(scaled, 0.0f, 1.0f), value);
-    if (axis == ControllerAxis::RightY)
-      scaled = -scaled;
-    if ((axis == ControllerAxis::LeftX || axis == ControllerAxis::RightX) && stick.invertX)
-      scaled = -scaled;
-    if ((axis == ControllerAxis::LeftY || axis == ControllerAxis::RightY) && stick.invertY)
-      scaled = -scaled;
-    return scaled;
-  }
-
   void updateAxisState(ControllerAxis axis, float value) {
     if (axis == ControllerAxis::LeftX)
-      m_leftStick[0] = value;
+      m_rawLeftStick[0] = value;
     else if (axis == ControllerAxis::LeftY)
-      m_leftStick[1] = value;
+      m_rawLeftStick[1] = value;
     else if (axis == ControllerAxis::RightX)
-      m_rightStick[0] = value;
+      m_rawRightStick[0] = value;
     else if (axis == ControllerAxis::RightY)
-      m_rightStick[1] = value;
+      m_rawRightStick[1] = value;
+
+    auto filter = [](Vec2F raw, MobileGamepadStickConfig const& stick) {
+      auto v = GamepadInput::radialStick(raw[0], raw[1], stick.deadzone, stick.invertX, stick.invertY);
+      return stick.enabled ? Vec2F{v[0], v[1]} : Vec2F{};
+    };
+    m_leftStick = filter(m_rawLeftStick, m_config.leftStick);
+    m_rightStick = filter(m_rawRightStick, m_config.rightStick);
+  }
+
+  void updateTrigger(ControllerButton button, float value) {
+    bool previous = m_triggerStates.value(button, false);
+    bool pressed = GamepadInput::triggerPressed(value, m_config.triggerThreshold, previous);
+    m_triggerStates.set(button, pressed);
+    if (pressed != previous)
+      updateVirtualButton(button, pressed);
   }
 
   MobileGamepadBinding const* bindingForButton(ControllerButton button) const {
@@ -2483,9 +2486,10 @@ private:
 
     m_heldButtons.remove(owner);
     if (auto active = m_activeButtons.ptr(owner)) {
-      if (active->action.kind == MobileTouchActionKind::ActionWheel || active->action.kind == MobileTouchActionKind::InventoryWheel)
-        closeActionWheel(true);
-      else if (active->pressMode == MobileTouchPressMode::Hold)
+      if (active->action.kind == MobileTouchActionKind::ActionWheel || active->action.kind == MobileTouchActionKind::InventoryWheel) {
+        if (owner == m_actionWheelOwner)
+          closeActionWheel(true);
+      } else if (active->pressMode == MobileTouchPressMode::Hold)
         setAction(active->action, owner, false);
       else if (active->pressMode == MobileTouchPressMode::Repeat) {
         m_nextButtonRepeatMs.remove(owner);
@@ -2530,11 +2534,11 @@ private:
 
   MobileGamepadStickConfig* activeAimStick(Vec2F& value) {
     if (m_config.rightStick.enabled && m_config.rightStick.mode == MobileGamepadStickMode::Aim && m_rightStick.magnitudeSquared() > 0.0001f) {
-      value = m_rightStick;
+      value = {m_rightStick[0], -m_rightStick[1]};
       return &m_config.rightStick;
     }
     if (m_config.leftStick.enabled && m_config.leftStick.mode == MobileGamepadStickMode::Aim && m_leftStick.magnitudeSquared() > 0.0001f) {
-      value = m_leftStick;
+      value = {m_leftStick[0], -m_leftStick[1]};
       return &m_config.leftStick;
     }
     return nullptr;
@@ -2553,16 +2557,25 @@ private:
     auto stick = activeAimStick(stickValue);
     if (!stick) {
       m_lastAimFrameMs = Time::monotonicMilliseconds();
+      // Keep the last target relative to the player while walking/mining.
+      // Real mouse input clears this latch, so it retains control at rest.
+      if (m_hasDirectionalAim && !m_actionWheelActive)
+        emitEvent(m_lastDirectionalAim);
       return;
     }
+
+    if (m_actionWheelActive)
+      return;
 
     Vec2F canvas = canvasSize();
     int64_t now = Time::monotonicMilliseconds();
     float dt = std::clamp((float)(now - m_lastAimFrameMs) / 1000.0f, 0.0f, 0.05f);
     m_lastAimFrameMs = now;
 
-    Vec2F aim{stickValue[0], stickValue[1]};
+    float magnitude = stickValue.magnitude();
+    Vec2F aim = stickValue / magnitude * GamepadInput::aimResponse(magnitude, stick->sensitivity);
     if (stick->preciseAim) {
+      m_hasDirectionalAim = false;
       float shortSide = std::max(1.0f, std::min(canvas[0], canvas[1]));
       float speed = shortSide * 1.35f * std::clamp(stick->sensitivity, 0.10f, 5.0f);
       m_cursorPosition += aim * speed * dt;
@@ -2571,11 +2584,15 @@ private:
       emitEvent(MouseMoveEvent{{0.0f, 0.0f}, m_cursorPosition, m_config.joystickAimCursorEnabled});
     } else {
       Vec2F center{canvas[0] * 0.5f, canvas[1] * 0.5f};
-      float radius = std::min(canvas[0], canvas[1]) * 0.34f * std::clamp(stick->sensitivity, 0.25f, 2.5f);
+      // The screen-space estimate is only a fallback for non-game UI. In
+      // gameplay the frontend resolves the real player anchor/tool reach.
+      float radius = std::min(canvas[0], canvas[1]) * 0.34f;
       m_cursorPosition = center + aim * radius;
       m_cursorPosition[0] = std::clamp(m_cursorPosition[0], 0.0f, canvas[0]);
       m_cursorPosition[1] = std::clamp(m_cursorPosition[1], 0.0f, canvas[1]);
-      emitEvent(DirectionalAimEvent{aim, radius, m_config.joystickAimCursorEnabled});
+      m_lastDirectionalAim = DirectionalAimEvent{aim, radius, m_config.joystickAimCursorEnabled, true};
+      m_hasDirectionalAim = true;
+      emitEvent(m_lastDirectionalAim);
     }
   }
 
@@ -2642,6 +2659,7 @@ private:
     } else if (desired && action.kind == MobileTouchActionKind::GamepadAimModeToggle) {
       auto stick = aimModeToggleStick();
       stick->preciseAim = !stick->preciseAim;
+      m_hasDirectionalAim = false;
     } else if (action.kind == MobileTouchActionKind::ActionWheel || action.kind == MobileTouchActionKind::InventoryWheel) {
       if (desired)
         openActionWheel(owner, action.kind == MobileTouchActionKind::InventoryWheel ? ActionWheelType::Inventory : ActionWheelType::Actions);
@@ -2736,7 +2754,7 @@ private:
 
   Vec2F actionWheelDirection() const {
     if (m_rightStick.magnitudeSquared() >= m_leftStick.magnitudeSquared())
-      return {m_rightStick[0], -m_rightStick[1]};
+      return m_rightStick;
     return m_leftStick;
   }
 
@@ -2766,9 +2784,14 @@ private:
   MobileGamepadConfig m_config;
   std::vector<MobileGamepadBinding> m_bindings = defaultGamepadBindings();
   List<InputEvent> m_generatedEvents;
+  Vec2F m_rawLeftStick;
+  Vec2F m_rawRightStick;
   Vec2F m_leftStick;
   Vec2F m_rightStick;
   Vec2F m_cursorPosition;
+  bool m_hasDirectionalAim = false;
+  DirectionalAimEvent m_lastDirectionalAim;
+  HashMap<ControllerButton, bool> m_triggerStates;
   int64_t m_lastAimFrameMs = 0;
   StringSet m_heldButtons;
   StringSet m_toggledButtons;

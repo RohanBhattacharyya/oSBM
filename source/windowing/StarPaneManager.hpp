@@ -78,6 +78,8 @@ public:
   bool keyboardCapturedForTextInput() const;
 
   bool sendInputEvent(InputEvent const& event);
+  // Current D-pad selection in input/screen pixels, for the visible cursor.
+  Maybe<Vec2F> uiNavigationPosition() const;
 
   void render();
   void update(float dt);

@@ -100,7 +100,8 @@ struct MobileGamepadStickConfig {
 
 struct MobileGamepadConfig {
   bool enabled = true;
-  float triggerThreshold = 0.45f;
+  // Saved thresholds take precedence; new setups respond earlier in the pull.
+  float triggerThreshold = 0.20f;
   MobileGamepadStickConfig leftStick;
   MobileGamepadStickConfig rightStick;
   // Mirrors MobileTouchConfig::joystickAimCursorEnabled -- see there for why
