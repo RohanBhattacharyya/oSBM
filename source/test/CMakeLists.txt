@@ -13,6 +13,11 @@ INCLUDE_DIRECTORIES (
 # Add top-level test directory so  gtest-all.cc can find its own include file
 INCLUDE_DIRECTORIES (.)
 
+# No SDL, game assets or engine startup needed for the shared input math.
+ADD_EXECUTABLE (gamepad_input_tests gamepad_input_test.cpp)
+ADD_TEST (NAME gamepad_input_tests COMMAND gamepad_input_tests)
+SET_TESTS_PROPERTIES(gamepad_input_tests PROPERTIES LABELS "NoAssets")
+
 SET (star_core_tests_SOURCES
       gtest/gtest-all.cc
 
