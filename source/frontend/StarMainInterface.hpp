@@ -157,7 +157,9 @@ private:
     MatterManipulator,
     SwapHotbar,
     Deploy,
-    BeamDown
+    BeamDown,
+    ZoomIn,
+    ZoomOut
   };
 
   struct ActionWheelItem {
@@ -185,6 +187,8 @@ private:
   void renderSpecialDamageBar();
   void renderMainBar();
   void renderActionWheel();
+  void updateTargetPreview();
+  void renderTargetPreview();
   void renderWindows();
   void renderDebug();
 
@@ -202,6 +206,7 @@ private:
   void updateActionWheelSelection(Vec2F const& direction);
   void activateActionWheelSelection();
   void activateActionWheelAction(ActionWheelAction action);
+  Maybe<float> actionWheelZoomLevel(bool zoomIn) const;
   void activateInventoryWheelLocation(SelectedActionBarLocation const& location);
 
   void displayScriptPane(ScriptPanePtr& scriptPane, EntityId sourceEntity);
@@ -295,6 +300,10 @@ private:
   Maybe<size_t> m_actionWheelSelection;
   Vec2F m_actionWheelDirection;
   bool m_mobileDirectionalAimActive = false;
+  Maybe<Vec2F> m_gamepadAimOffset;
+  List<pair<Vec2I, Vec4B>> m_targetPreviewTiles;
+  String m_targetPreviewStatus;
+  bool m_targetPreviewAlt = false;
 
   String m_lastCommand;
 

@@ -294,6 +294,9 @@ struct DirectionalAimEvent {
   Vec2F direction;
   float radius = 0.0f;
   bool cursorVisible = true;
+  // Gamepads use a zoom-independent player/tool radius. Touch keeps its
+  // existing screen-space radius and event behavior.
+  bool useToolRange = false;
 };
 
 struct ControllerAxisEvent {

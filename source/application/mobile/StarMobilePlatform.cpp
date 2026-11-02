@@ -1455,7 +1455,7 @@ private:
       {launcherText("touchActionChoice.tech", "Tech / F"), keyAction(Key::F)},
       {launcherText("touchActionChoice.swapHotbar", "Swap Hotbar / X"), keyAction(Key::X)},
       {launcherText("touchActionChoice.dropItem", "Drop Item / Q"), keyAction(Key::Q)},
-      {launcherText("touchActionChoice.shift", "Shift"), keyAction(Key::LShift)},
+      {launcherText("touchActionChoice.precisionShift", "Precision / Single Block / Quick Transfer (Shift)"), keyAction(Key::LShift)},
       {launcherText("touchActionChoice.ctrl", "Ctrl"), keyAction(Key::LCtrl)},
       {launcherText("touchActionChoice.moveUp", "Move Up / W"), keyAction(Key::W)},
       {launcherText("touchActionChoice.moveDown", "Move Down / S"), keyAction(Key::S)},
@@ -4780,6 +4780,16 @@ private:
 
   List<InputEvent> processEvents() {
     List<InputEvent> events;
+    auto appendTouchEvents = [&]() {
+      List<InputEvent> touchEvents;
+      m_touchAdapter->appendGeneratedEvents(touchEvents);
+      for (auto const& input : touchEvents) {
+        if (m_gamepadAdapter)
+          m_gamepadAdapter->processInputEvent(input, events);
+        else
+          events.append(input);
+      }
+    };
 
     SDL_Event event;
     bool overlayEnabled = m_touchAdapter && m_touchAdapter->overlayEnabled();
@@ -4832,11 +4842,19 @@ private:
         continue;
       }
 
-      if (overlayEnabled && shouldCancelMobileTouchState(event))
-        m_touchAdapter->cancelAll();
+      if (shouldCancelMobileTouchState(event)) {
+        if (overlayEnabled)
+          m_touchAdapter->cancelAll();
+        if (m_gamepadAdapter)
+          m_gamepadAdapter->cancelAll();
+      }
 
-      if (m_touchAdapter->processSdlEvent(event))
+      if (m_touchAdapter->processSdlEvent(event)) {
+        appendTouchEvents();
+        if (m_gamepadAdapter)
+          m_gamepadAdapter->appendGeneratedEvents(events);
         continue;
+      }
       if (overlayEnabled && touchDerivedMouse)
         continue;
 
@@ -4881,13 +4899,16 @@ private:
         else
           events.append(input.take());
       }
+      appendTouchEvents();
+      if (m_gamepadAdapter)
+        m_gamepadAdapter->appendGeneratedEvents(events);
     }
 
     syncWindowMetrics(true);
 
     updateGyroInput();
     m_touchAdapter->endFrame();
-    m_touchAdapter->appendGeneratedEvents(events);
+    appendTouchEvents();
     if (m_gamepadAdapter) {
       m_gamepadAdapter->endFrame();
       m_gamepadAdapter->appendGeneratedEvents(events);

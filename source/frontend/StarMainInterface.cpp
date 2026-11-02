@@ -1,4 +1,5 @@
 #include "StarMainInterface.hpp"
+#include "StarGamepadInput.hpp"
 #include "StarJsonExtra.hpp"
 #include "StarLogging.hpp"
 #include "StarLexicalCast.hpp"
@@ -38,6 +39,9 @@
 #include "StarPlayerInventory.hpp"
 #include "StarCelestialDatabase.hpp"
 #include "StarItem.hpp"
+#include "StarObjectItem.hpp"
+#include "StarMaterialItem.hpp"
+#include "StarTools.hpp"
 #include "StarAiInterface.hpp"
 #include "StarDrawable.hpp"
 #include "StarFireableItem.hpp"
@@ -325,6 +329,7 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
     m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = mouseMove->mousePosition);
     m_cursorVisible = mouseMove->cursorVisible;
     m_mobileDirectionalAimActive = false;
+    m_gamepadAimOffset.reset();
     if (!mouseMove->cursorVisible)
       return false;
   }
@@ -346,6 +351,14 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
   }
 
   if (m_paneManager.sendInputEvent(effectiveEvent)) {
+    if (effectiveEvent.is<UiNavigationEvent>()) {
+      if (auto position = m_paneManager.uiNavigationPosition()) {
+        m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = *position);
+        m_cursorVisible = true;
+        m_mobileDirectionalAimActive = false;
+        m_gamepadAimOffset.reset();
+      }
+    }
     if (!effectiveEvent.is<MouseButtonUpEvent>() && !effectiveEvent.is<KeyUpEvent>())
       return true;
   }
@@ -435,16 +448,20 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
     } else {
       if (mouseButton == MouseButton::Left)
         player->beginPrimaryFire();
-      if (mouseButton == MouseButton::Right)
+      if (mouseButton == MouseButton::Right) {
+        m_targetPreviewAlt = true;
         player->beginAltFire();
+      }
       if (mouseButton == MouseButton::Middle)
         player->beginTrigger();
     }
   } else if (auto mouseUp = effectiveEvent.ptr<MouseButtonUpEvent>()) {
     if (mouseUp->mouseButton == MouseButton::Left)
       player->endPrimaryFire();
-    if (mouseUp->mouseButton == MouseButton::Right)
+    if (mouseUp->mouseButton == MouseButton::Right) {
+      m_targetPreviewAlt = false;
       player->endAltFire();
+    }
     if (mouseUp->mouseButton == MouseButton::Middle)
       player->endTrigger();
   }
@@ -617,6 +634,7 @@ void MainInterface::update(float dt) {
 
   auto player = m_client->mainPlayer();
   auto cursorWorldPos = cursorWorldPosition();
+  updateTargetPreview();
   if (player->wireToolInUse()) {
     m_paneManager.displayRegisteredPane(MainInterfacePanes::WireInterface);
     player->setWireConnector(m_wireInterface.get());
@@ -870,6 +888,7 @@ void MainInterface::update(float dt) {
     m_paneManager.dismissRegisteredPane(MainInterfacePanes::PlanetText);
   }
 
+  m_inventoryWindow->updateMaterialDeposit();
   for (auto& containerResult : m_containerInteractor->pullContainerResults()) {
     if (!m_containerPane || !m_containerPane->giveContainerResult(containerResult)) {
       if (!m_inventoryWindow->giveContainerResult(containerResult)) {
@@ -1035,6 +1054,7 @@ void MainInterface::render() {
       renderMonsterHealthBar();
       renderSpecialDamageBar();
       renderMainBar();
+      renderTargetPreview();
       // Standalone canvases are recorded with the bar group: canvas draw ops
       // are written by Lua scripts that execute inside the sim tick, so the
       // pure-replay frames (which may overlap that tick) must not iterate
@@ -1077,6 +1097,13 @@ void MainInterface::render() {
 }
 
 Vec2F MainInterface::cursorWorldPosition() const {
+  if (m_gamepadAimOffset) {
+    auto const& camera = m_worldPainter->camera();
+    Vec2F target = camera.worldToScreen(m_client->mainPlayer()->position() + *m_gamepadAimOffset);
+    target[0] = std::clamp(target[0], 0.0f, (float)windowWidth());
+    target[1] = std::clamp(target[1], 0.0f, (float)windowHeight());
+    return camera.screenToWorld(target);
+  }
   return m_worldPainter->camera().screenToWorld(m_cursorScreenPos);
 }
 
@@ -1604,6 +1631,77 @@ void MainInterface::renderMainBar() {
       assets->json("/interface.config:cursorTooltip.questsText").toString());
 }
 
+void MainInterface::updateTargetPreview() {
+  // Snapshot gameplay state in the simulation/update phase. Drawing only
+  // consumes this cache, including on Switch's overlapped HUD replay frames.
+  m_targetPreviewTiles.clear();
+  m_targetPreviewStatus = {};
+  auto player = m_client->mainPlayer();
+  if (!player->inWorld() || m_disableHud || m_actionWheelActive
+      || m_paneManager.topPane({PaneLayer::Window, PaneLayer::ModalWindow}))
+    return;
+
+  auto item = player->handItem(m_targetPreviewAlt ? ToolHand::Alt : ToolHand::Primary);
+  if (!item)
+    item = player->handItem(ToolHand::Primary);
+  auto material = as<MaterialItem>(item);
+  auto object = as<ObjectItem>(item);
+  auto mining = as<BeamMiningTool>(item);
+  if (!material && !object && !mining)
+    return;
+
+  Vec2I target = Vec2I::floor(player->aimPosition());
+  bool inRange = player->inToolRange(Vec2F(target) + Vec2F::filled(0.5f));
+  Vec4B good(65, 225, 110, 220), bad(245, 75, 70, 230);
+  bool anyValid = false, anyInvalid = false;
+  List<Vec2I> tiles;
+  if (auto preview = as<PreviewTileTool>(item)) {
+    for (auto const& tile : preview->previewTiles(player->shifting())) {
+      if (!tiles.contains(tile.position))
+        tiles.append(tile.position);
+      if (tiles.size() >= 1024)
+        break;
+    }
+  }
+  if (tiles.empty())
+    tiles.append(target);
+  for (auto const& tile : tiles) {
+    bool valid = inRange;
+    if (material)
+      valid = material->canPlaceAt(tile, m_targetPreviewAlt && material->twoHanded()
+          ? TileLayer::Background : TileLayer::Foreground);
+    else if (object)
+      valid = inRange && object->canPlace(player->shifting());
+    anyValid |= valid;
+    anyInvalid |= !valid;
+    m_targetPreviewTiles.append({tile, valid ? good : bad});
+  }
+  if (!inRange)
+    m_targetPreviewStatus = "Out of reach";
+  else if ((material || object) && anyInvalid)
+    m_targetPreviewStatus = anyValid ? "Partially blocked" : "Blocked";
+}
+
+void MainInterface::renderTargetPreview() {
+  auto const& camera = m_worldPainter->camera();
+  float pixels = TilePixels * camera.pixelRatio();
+  for (auto const& tile : m_targetPreviewTiles) {
+    Vec2F position = camera.worldToScreen(Vec2F(tile.first));
+    RectF rect = RectF::withSize(position, Vec2F::filled(pixels));
+    Vec4B fill = tile.second;
+    fill[3] = 35;
+    m_guiContext->drawQuad(rect, fill);
+    m_guiContext->drawPolyLines(PolyF(rect), tile.second, 1.5f);
+  }
+  if (!m_targetPreviewStatus.empty() && !m_targetPreviewTiles.empty()) {
+    Vec2F position = camera.worldToScreen(Vec2F(m_targetPreviewTiles.first().first)) + Vec2F(0, pixels + 4);
+    m_guiContext->setFontSize(6);
+    m_guiContext->setFontColor(Vec4B(255, 180, 160, 255));
+    m_guiContext->renderText(m_targetPreviewStatus, TextPositioning(position));
+    m_guiContext->clearTextStyle();
+  }
+}
+
 void MainInterface::renderActionWheel() {
   if (!m_actionWheelActive)
     return;
@@ -1712,6 +1810,14 @@ void MainInterface::renderActionWheel() {
       Vec2F iconSize = Vec2F(m_guiContext->textureSize(items[i].icon)) * iconScale;
       Vec2F iconPos = point(mid, (innerRadius + outerRadius) * 0.5f) - iconSize / 2.0f;
       m_guiContext->drawQuad(items[i].icon, iconPos, iconScale, enabled ? Vec4B::filled(255) : Vec4B(170, 170, 170, 155));
+    } else if (items[i].action == ActionWheelAction::ZoomIn || items[i].action == ActionWheelAction::ZoomOut) {
+      m_guiContext->setTextStyle(m_config->textStyle);
+      m_guiContext->setFontSize(12, scale);
+      m_guiContext->setFontColor(selected ? Vec4B(22, 26, 28, 255)
+          : enabled ? Vec4B(245, 245, 230, 255) : Vec4B(120, 120, 120, 180));
+      m_guiContext->renderText(items[i].action == ActionWheelAction::ZoomIn ? "+" : "-",
+          TextPositioning(point(mid, (innerRadius + outerRadius) * 0.5f), HorizontalAnchor::HMidAnchor, VerticalAnchor::VMidAnchor));
+      m_guiContext->clearTextStyle();
     }
   }
 
@@ -1829,6 +1935,12 @@ void MainInterface::renderDebug() {
 }
 
 void MainInterface::updateCursor() {
+  if (m_gamepadAimOffset) {
+    Vec2F target = m_worldPainter->camera().worldToScreen(cursorWorldPosition());
+    target[0] = std::clamp(target[0], 0.0f, (float)windowWidth());
+    target[1] = std::clamp(target[1], 0.0f, (float)windowHeight());
+    m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = target);
+  }
   Maybe<String> cursorOverride = m_actionBar->cursorOverride(m_cursorScreenIPos);
 
   if (!cursorOverride) {
@@ -2027,9 +2139,25 @@ bool MainInterface::handleActionWheelEvent(ActionWheelEvent const& event) {
 }
 
 bool MainInterface::handleDirectionalAimEvent(DirectionalAimEvent const& event) {
+  // D-pad focus owns open windows. A held/recentered aim stick must not
+  // move the inventory cursor back into the world before a trigger click.
+  if (event.useToolRange && m_paneManager.topPane({PaneLayer::Window, PaneLayer::ModalWindow})) {
+    m_mobileDirectionalAimActive = false;
+    m_gamepadAimOffset.reset();
+    return true;
+  }
+
   auto player = m_client->mainPlayer();
-  Vec2F anchor = m_worldPainter->camera().worldToScreen(player->position());
-  Vec2F target = anchor + event.direction * event.radius;
+  auto const& camera = m_worldPainter->camera();
+  Vec2F anchor = camera.worldToScreen(player->position());
+  Vec2F target;
+  if (event.useToolRange) {
+    m_gamepadAimOffset = event.direction * GamepadInput::aimRadius(player->toolRadius());
+    target = anchor + *m_gamepadAimOffset * camera.pixelRatio() * TilePixels;
+  } else {
+    m_gamepadAimOffset.reset();
+    target = anchor + event.direction * event.radius;
+  }
   target[0] = std::clamp(target[0], 0.0f, (float)windowWidth());
   target[1] = std::clamp(target[1], 0.0f, (float)windowHeight());
 
@@ -2064,6 +2192,9 @@ List<MainInterface::ActionWheelItem> MainInterface::actionWheelItems() const {
 
   if (m_client->canBeamDown())
     items.append({ActionWheelAction::BeamDown, {}, "Beam Down", m_config->beamDownImage, {}, {}, true});
+
+  items.append({ActionWheelAction::ZoomIn, {}, "Zoom +", {}, {}, {}, (bool)actionWheelZoomLevel(true)});
+  items.append({ActionWheelAction::ZoomOut, {}, "Zoom -", {}, {}, {}, (bool)actionWheelZoomLevel(false)});
 
   return items;
 }
@@ -2143,6 +2274,26 @@ void MainInterface::activateActionWheelSelection() {
     activateActionWheelAction(item.action);
 }
 
+Maybe<float> MainInterface::actionWheelZoomLevel(bool zoomIn) const {
+  auto& root = Root::singleton();
+  float current = root.configuration()->get("zoomLevel").toFloat();
+  auto levels = jsonToFloatList(root.assets()->json("/interface/windowconfig/graphicsmenu.config:zoomList"));
+  Maybe<float> next;
+  // Use the same available levels as Graphics, including modded lists.
+  // Choose the nearest level in the requested direction even if the current
+  // zoom is fractional or the list isn't sorted. At a limit, disable only
+  // that direction; never reset the user's zoom just by opening the wheel.
+  for (float level : levels) {
+    if (!std::isfinite(level) || level < 1.0f)
+      continue;
+    if (zoomIn ? level > current + 0.001f : level < current - 0.001f) {
+      if (!next || (zoomIn ? level < *next : level > *next))
+        next = level;
+    }
+  }
+  return next;
+}
+
 void MainInterface::activateActionWheelAction(ActionWheelAction action) {
   switch (action) {
     case ActionWheelAction::Inventory:
@@ -2179,6 +2330,13 @@ void MainInterface::activateActionWheelAction(ActionWheelAction action) {
     case ActionWheelAction::BeamDown:
       if (m_client->canBeamDown())
         warpToOrbitedWorld();
+      break;
+    case ActionWheelAction::ZoomIn:
+    case ActionWheelAction::ZoomOut:
+      if (auto zoom = actionWheelZoomLevel(action == ActionWheelAction::ZoomIn)) {
+        Root::singleton().configuration()->set("zoomLevel", *zoom);
+        queueMessage(strf("Zoom: {}x", *zoom), 2.0f, 0.0f);
+      }
       break;
   }
 }

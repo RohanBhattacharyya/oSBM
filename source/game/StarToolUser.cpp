@@ -165,25 +165,24 @@ Maybe<float> ToolUser::toolRadius() const {
   return {};
 }
 
-List<Drawable> ToolUser::renderObjectPreviews(Vec2F aimPosition, Direction walkingDirection, bool inToolRange, Color favoriteColor) {
+List<Drawable> ToolUser::renderObjectPreviews(Vec2F aimPosition, Direction walkingDirection, bool inToolRange, Color) {
   if (m_suppress.get() || !m_user)
     return {};
 
   auto generate = [&](ObjectItemPtr item) -> List<Drawable> {
     Vec2I aimPos(aimPosition.floor());
-    if ((aimPos == m_cachedObjectPreviewPosition) && (item == m_cachedObjectItem))
-      return m_cachedObjectPreview;
-
     auto objectDatabase = Root::singleton().objectDatabase();
+    bool valid = inToolRange && item->canPlace(false);
+    if ((aimPos == m_cachedObjectPreviewPosition) && (item == m_cachedObjectItem)
+        && valid == m_cachedObjectPreviewValid && walkingDirection == m_cachedObjectPreviewDirection)
+      return m_cachedObjectPreview;
 
     auto drawables = objectDatabase->cursorHintDrawables(m_user->world(), item->objectName(),
         aimPos, walkingDirection, item->objectParameters());
 
     Color opacityMask = Color::White;
     opacityMask.setAlphaF(item->getAppropriateOpacity());
-    Color favoriteColorTrans = favoriteColor;
-    if (!inToolRange || !objectDatabase->canPlaceObject(m_user->world(), aimPos, item->objectName()))
-      favoriteColorTrans.setHue(favoriteColor.hue() + 120);
+    Color favoriteColorTrans = valid ? Color::rgb(65, 225, 110) : Color::rgb(245, 75, 70);
 
     favoriteColorTrans.setAlphaF(m_objectPreviewOuterAlpha);
     Color nearWhite = favoriteColorTrans;
@@ -200,6 +199,8 @@ List<Drawable> ToolUser::renderObjectPreviews(Vec2F aimPosition, Direction walki
     m_cachedObjectPreview = drawables;
     m_cachedObjectItem = item;
     m_cachedObjectPreviewPosition = aimPos;
+    m_cachedObjectPreviewValid = valid;
+    m_cachedObjectPreviewDirection = walkingDirection;
     return drawables;
   };
 

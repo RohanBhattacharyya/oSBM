@@ -8,6 +8,8 @@
 #include "StarImageWidget.hpp"
 #include "StarLabelWidget.hpp"
 #include "StarPortraitWidget.hpp"
+#include "StarItemGridWidget.hpp"
+#include "StarItemSlotWidget.hpp"
 
 #include <limits>
 #include <typeinfo>
@@ -202,6 +204,8 @@ bool PaneManager::keyboardCapturedForTextInput() const {
 }
 
 bool PaneManager::sendInputEvent(InputEvent const& event) {
+  if (m_hasUiSelection && !m_sendingUiNavigationMouseButton)
+    clearInvalidUiSelection();
   if (auto navigation = event.ptr<UiNavigationEvent>())
     return handleUiNavigation(navigation->direction);
 
@@ -209,10 +213,11 @@ bool PaneManager::sendInputEvent(InputEvent const& event) {
     if (event.is<MouseButtonDownEvent>())
       clearUiNavigationTextInputFocus();
     m_sendingUiNavigationMouseButton = true;
-    bool handled = sendInputEvent(uiNavigationMouseEvent(event));
+    sendInputEvent(uiNavigationMouseEvent(event));
     m_sendingUiNavigationMouseButton = false;
     clearInvalidUiSelection();
-    return handled;
+    // Even an inert focused widget must not fire a tool behind the window.
+    return true;
   }
 
   if (event.is<MouseMoveEvent>()) {
@@ -559,6 +564,10 @@ void PaneManager::collectUiNavigationCandidates(Widget* widget, List<UiNavigatio
     }
   }
 
+  // Slot decorations (durability/count overlays) are not separate targets.
+  if (is<ItemSlotWidget>(widget))
+    return;
+
   for (size_t i = 0; i < widget->numChildren(); ++i)
     collectUiNavigationCandidates(widget->getChildNum(i).get(), candidates, true, selectableAncestorRect);
 }
@@ -566,7 +575,8 @@ void PaneManager::collectUiNavigationCandidates(Widget* widget, List<UiNavigatio
 bool PaneManager::uiNavigationCandidateWidget(Widget* widget) const {
   if (!widget->interactive() || widget->mouseTransparent())
     return false;
-  if (is<LabelWidget>(widget) || is<ImageWidget>(widget) || is<PortraitWidget>(widget))
+  // Select individual item slots, never the bounding box of the entire bag.
+  if (is<ItemGridWidget>(widget) || is<LabelWidget>(widget) || is<ImageWidget>(widget) || is<PortraitWidget>(widget))
     return false;
   return true;
 }
@@ -632,6 +642,12 @@ Vec2I PaneManager::uiNavigationOrigin(UiNavigationDirection direction) const {
     default:
       return {0, size[1] / 2};
   }
+}
+
+Maybe<Vec2F> PaneManager::uiNavigationPosition() const {
+  if (m_hasUiSelection)
+    return Vec2F(uiNavigationSelectedCenter()) * m_context->interfaceScale();
+  return {};
 }
 
 Vec2I PaneManager::uiNavigationSelectedCenter() const {

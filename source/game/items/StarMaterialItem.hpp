@@ -37,6 +37,7 @@ public:
   MaterialHue materialHueShift() const;
 
   bool canPlace(bool shifting) const;
+  bool canPlaceAt(Vec2I const& position, TileLayer layer) const;
   bool multiplaceEnabled() const;
 
   float& blockRadius();

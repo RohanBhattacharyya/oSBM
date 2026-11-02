@@ -145,6 +145,8 @@ private:
   List<Drawable> m_cachedObjectPreview;
   Vec2I m_cachedObjectPreviewPosition;
   ObjectItemPtr m_cachedObjectItem;
+  bool m_cachedObjectPreviewValid = false;
+  Direction m_cachedObjectPreviewDirection = Direction::Right;
 };
 
 }
