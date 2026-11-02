@@ -1,4 +1,4 @@
-name: Android Build (Manual)
+name: Gerar APK Android
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
         options:
           - Release
           - Debug
-        default: Release
+        default: Debug
       arch:
         description: Target architecture (universal builds all ABIs into one APK plus the per-ABI APKs)
         required: true
@@ -21,6 +21,10 @@ on:
           - x86_64
           - universal
         default: arm64
+  # Lightweight syntax check whenever the workflow itself changes.
+  push:
+    paths:
+      - '.github/workflows/android.yml'
 
 permissions:
   contents: read
@@ -33,7 +37,16 @@ env:
   CCACHE_COMPILERCHECK: content
 
 jobs:
+  workflow_check:
+    name: Workflow válido
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Workflow carregado pelo GitHub Actions
+        run: echo 'Workflow válido; compilação de APK disponível pelo botão Run workflow.'
+
   build_android:
+    if: github.event_name == 'workflow_dispatch'
     name: Build Android APK (${{ inputs.arch }})
     runs-on: ubuntu-24.04
     steps:
