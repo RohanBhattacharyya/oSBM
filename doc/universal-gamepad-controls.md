@@ -23,14 +23,30 @@ its existing controller path.
 | D-pad | Select UI widgets and inventory slots |
 | Start | Escape / close a window |
 | L3 | Existing Ctrl binding |
-| R3 | Existing optional precise-cursor toggle |
+| R3 | Hold precision / Shift on new configurations; saved bindings retain their configured action |
 
-R3 and the saved `preciseAim` setting remain compatible, but the default
-directional aim now provides fine adjustment without toggling them. Existing
-bindings, disabled buttons, inversions, stick assignments, macros and press
-modes are still loaded. Remapping a button to Shift remains available for
-the game's smaller mining/building brush and inventory quick transfer; no
-existing button is reassigned to Shift by this change.
+The saved `preciseAim` setting and the old aim-toggle action remain
+compatible. New configurations bind R3 to a **held Shift modifier**. Existing
+configurations retain their saved R3 binding: choose **Precision / Single
+Block / Quick Transfer (Shift)** in the launcher and use **Hold** to opt in.
+No saved binding is silently replaced.
+
+While this modifier is held, the default aim moves incrementally at a slower
+rate from its current target. Legacy precise-cursor speed is reduced to 20%.
+Shift also uses the game's smaller tool brush (single block for the standard
+matter manipulator) and existing inventory/container quick-transfer behavior:
+select a slot with the D-pad, hold the modifier and press RT to transfer its
+stack. Custom tools may implement Shift differently. Mouse/touch Shift remains
+available; gamepad fine adjustment uses the gamepad's own held modifier.
+
+D-pad navigation fires once on press, waits 350 ms, then repeats every 100 ms
+until released. This applies to navigation actions configured as SinglePress,
+Hold or Repeat; Toggle and unrelated button press modes remain unchanged.
+
+Rapid inward stick motion is treated as a possible spring return: the last
+accepted target is kept until neutral. A deliberate inward adjustment is
+accepted after a 100 ms dwell, and outward motion resumes immediately. This
+is a heuristic, not enemy or block targeting, and needs controller testing.
 
 ### Zoom from the controller
 
@@ -40,7 +56,8 @@ The wheel uses the same zoom levels and saved `zoomLevel` setting as the
 Graphics menu (normally 1x through 32x), and disables a direction at its
 limit. Modded zoom lists are respected. Existing keyboard shortcuts (`=`
 and `-` by default) and the Graphics menu remain available; no controller
-binding or gameplay profile needs to change.
+binding or gameplay profile needs to change. Each wheel change also displays
+`Zoom: Nx` for two seconds using the existing message overlay.
 
 ## Input behavior
 
@@ -90,7 +107,7 @@ input (including existing 45% configurations), release, and tile-center
 range boundaries. It is also a `NoAssets` CTest target named
 `gamepad_input_tests` when `BUILD_TESTING` is enabled.
 
-Validation performed for this change: 31,638 checks passed on Windows using
+Validation performed for this change: 31,695 checks passed on Windows using
 Zig 0.16.0's C++ compiler. The four changed implementation files
 `StarMobileControls.cpp`, `StarMobilePlatform.cpp`, `StarMainInterface.cpp`
 and `StarPaneManager.cpp` compiled individually to Windows objects with
@@ -116,9 +133,13 @@ cases with the user's game assets on Android and a desktop launcher build:
 4. Hold movement and a trigger, then disconnect/reconnect or background the
    app. Verify no stuck actions. Check disabled controls, inverted axes,
    swapped stick assignments and previously saved bindings.
-5. Open one wheel, press/release the other shoulder, and confirm only the
+5. Hold D-pad navigation and check initial delay, repeat, release and a
+   rapid direction change. Hold R3/Shift with RT to transfer a stack between
+   inventory and a chest; verify release ends Shift. Check single-block mining
+   and incremental fine aim, plus the older saved R3 toggle mapping.
+6. Open one wheel, press/release the other shoulder, and confirm only the
    original wheel's owner can confirm it.
-6. Select Zoom + / Zoom - from the RB wheel, verify one step per release,
+7. Select Zoom + / Zoom - from the RB wheel, verify one step per release,
    both limits, fractional starting zoom, and the new value in Graphics.
    Verify cursor/tool reach at the changed zoom and persistence after restart.
 

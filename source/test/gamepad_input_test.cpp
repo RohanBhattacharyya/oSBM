@@ -20,6 +20,30 @@ bool near(float a, float b, float tolerance = 0.00001f) {
 }
 
 int main() {
+  AimReturnFilter release;
+  check(release.accept(0.9f, 0), "initial aim accepted");
+  check(!release.accept(0.6f, 0.016), "spring return does not pull target inward");
+  check(!release.accept(0.25f, 0.032), "intermediate spring sample stays latched");
+  check(!release.accept(0, 0.048), "neutral preserves last accepted target");
+  check(release.accept(0.4f, 0.064), "new aim after neutral accepted immediately");
+  check(!release.accept(0.2f, 0.080), "rapid inward movement waits for intent");
+  check(release.accept(0.2f, 0.190), "deliberate inward dwell accepted");
+  check(release.accept(0.18f, 0.206), "slow inward correction remains available");
+  check(release.accept(0.8f, 0.222), "outward movement resumes immediately");
+  check(!release.accept(0.5f, 0.238), "second rapid return detected");
+  check(release.accept(0.7f, 0.254), "renewed outward aim cancels return suppression");
+  release = {};
+  check(release.accept(0.3f, 1), "cancel/reset clears return state");
+  for (int fps : {30, 60, 120, 240}) {
+    AimReturnFilter spring;
+    spring.accept(0.9f, 0);
+    for (int frame = 1; frame <= fps / 10; ++frame) {
+      float t = (float)frame / fps;
+      float magnitude = std::max(0.0f, 0.9f - t * 15.0f);
+      check(!spring.accept(magnitude, t), "spring suppression across render rates");
+    }
+  }
+
   for (float deadzone : {0.0f, 0.18f, 0.85f}) {
     auto center = radialStick(0, 0, deadzone);
     check(center[0] == 0 && center[1] == 0, "center is finite and still");

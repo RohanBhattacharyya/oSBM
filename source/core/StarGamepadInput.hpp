@@ -6,6 +6,40 @@
 
 namespace Star::GamepadInput {
 
+// A spring return can cross several nonzero SDL samples before neutral.
+// Keep the last accepted target during a rapid inward sweep. A deliberate
+// inward adjustment still works after a short dwell, or immediately on
+// renewed outward motion. Time is supplied by the caller for deterministic
+// tests and independence from render rate.
+struct AimReturnFilter {
+  float previous = 0;
+  double previousTime = 0;
+  double settleUntil = 0;
+  bool returning = false;
+
+  bool accept(float magnitude, double seconds) {
+    double elapsed = seconds - previousTime;
+    previousTime = seconds;
+    if (magnitude <= 0.01f) {
+      previous = 0;
+      returning = false;
+      return false;
+    }
+    if (previous > 0 && elapsed > 0 && elapsed < 0.1
+        && previous - magnitude > 0.02f && (previous - magnitude) / elapsed > 5.0) {
+      returning = true;
+      settleUntil = seconds + 0.10;
+    } else if (magnitude > previous + 0.04f) {
+      returning = false;
+    }
+    previous = magnitude;
+    if (returning && seconds < settleUntil)
+      return false;
+    returning = false;
+    return true;
+  }
+};
+
 // SDL stick space: right and down are positive. Filter the pair, never each
 // axis separately: axial deadzones distort angles and lose shallow diagonals.
 inline std::array<float, 2> radialStick(float x, float y, float deadzone, bool invertX = false, bool invertY = false) {

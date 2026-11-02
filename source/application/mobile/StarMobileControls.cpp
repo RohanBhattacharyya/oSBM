@@ -240,7 +240,7 @@ std::vector<MobileGamepadBinding> defaultGamepadBindings() {
     {ControllerButton::Start, "Start", true, keyAction(Key::Escape), MobileTouchPressMode::Hold},
     {ControllerButton::Guide, "Guide", false, noneAction(), MobileTouchPressMode::SinglePress},
     {ControllerButton::LeftStick, "L3", true, keyAction(Key::LCtrl), MobileTouchPressMode::Hold},
-    {ControllerButton::RightStick, "R3", true, gamepadAimModeToggleAction(), MobileTouchPressMode::SinglePress},
+    {ControllerButton::RightStick, "R3", true, keyAction(Key::LShift), MobileTouchPressMode::Hold},
     {ControllerButton::DPadUp, "Up", true, uiNavigationAction(UiNavigationDirection::Up), MobileTouchPressMode::SinglePress},
     {ControllerButton::DPadDown, "Down", true, uiNavigationAction(UiNavigationDirection::Down), MobileTouchPressMode::SinglePress},
     {ControllerButton::DPadLeft, "Left", true, uiNavigationAction(UiNavigationDirection::Left), MobileTouchPressMode::SinglePress},
@@ -2369,6 +2369,7 @@ public:
     m_mouseHoldCounts.clear();
     m_activeButtons.clear();
     m_triggerStates.clear();
+    m_aimReturnFilter = {};
     m_rawLeftStick = {};
     m_rawRightStick = {};
     m_leftStick = {};
@@ -2477,6 +2478,8 @@ private:
       if (binding->pressMode == MobileTouchPressMode::Repeat)
         m_nextButtonRepeatMs[owner] = Time::monotonicMilliseconds() + 120;
     }
+    if (binding->action.kind == MobileTouchActionKind::UiNavigation && binding->pressMode != MobileTouchPressMode::Toggle)
+      m_nextButtonRepeatMs[owner] = Time::monotonicMilliseconds() + 350;
   }
 
   void releaseButton(ControllerButton button) {
@@ -2496,6 +2499,7 @@ private:
         cancelPulsedAction(owner);
       }
     }
+    m_nextButtonRepeatMs.remove(owner);
     m_activeButtons.remove(owner);
   }
 
@@ -2503,13 +2507,17 @@ private:
     int64_t now = Time::monotonicMilliseconds();
     for (auto const& owner : m_heldButtons.values()) {
       auto active = m_activeButtons.ptr(owner);
-      if (!active || active->pressMode != MobileTouchPressMode::Repeat)
+      if (!active)
+        continue;
+      bool navigation = active->action.kind == MobileTouchActionKind::UiNavigation
+          && active->pressMode != MobileTouchPressMode::Toggle;
+      if (!navigation && active->pressMode != MobileTouchPressMode::Repeat)
         continue;
       auto next = m_nextButtonRepeatMs.value(owner, 0);
       if (next > now)
         continue;
       startPulsedAction(active->action, owner);
-      m_nextButtonRepeatMs[owner] = now + 120;
+      m_nextButtonRepeatMs[owner] = now + (navigation ? 100 : 120);
     }
   }
 
@@ -2556,6 +2564,7 @@ private:
     Vec2F stickValue;
     auto stick = activeAimStick(stickValue);
     if (!stick) {
+      m_aimReturnFilter.accept(0, Time::monotonicMilliseconds() / 1000.0);
       m_lastAimFrameMs = Time::monotonicMilliseconds();
       // Keep the last target relative to the player while walking/mining.
       // Real mouse input clears this latch, so it retains control at rest.
@@ -2573,16 +2582,30 @@ private:
     m_lastAimFrameMs = now;
 
     float magnitude = stickValue.magnitude();
+    if (!m_aimReturnFilter.accept(magnitude, now / 1000.0)) {
+      if (m_hasDirectionalAim)
+        emitEvent(m_lastDirectionalAim);
+      return;
+    }
+    bool precisionHeld = m_keyHoldCounts.value(Key::LShift, 0) > 0
+        || m_keyHoldCounts.value(Key::RShift, 0) > 0;
     Vec2F aim = stickValue / magnitude * GamepadInput::aimResponse(magnitude, stick->sensitivity);
     if (stick->preciseAim) {
       m_hasDirectionalAim = false;
       float shortSide = std::max(1.0f, std::min(canvas[0], canvas[1]));
       float speed = shortSide * 1.35f * std::clamp(stick->sensitivity, 0.10f, 5.0f);
-      m_cursorPosition += aim * speed * dt;
+      m_cursorPosition += aim * speed * dt * (precisionHeld ? 0.20f : 1.0f);
       m_cursorPosition[0] = std::clamp(m_cursorPosition[0], 0.0f, canvas[0]);
       m_cursorPosition[1] = std::clamp(m_cursorPosition[1], 0.0f, canvas[1]);
       emitEvent(MouseMoveEvent{{0.0f, 0.0f}, m_cursorPosition, m_config.joystickAimCursorEnabled});
     } else {
+      if (precisionHeld) {
+        Vec2F target = m_hasDirectionalAim ? m_lastDirectionalAim.direction : Vec2F{};
+        aim = target + aim * dt * 0.40f;
+        float length = aim.magnitude();
+        if (length > 1.0f)
+          aim /= length;
+      }
       Vec2F center{canvas[0] * 0.5f, canvas[1] * 0.5f};
       // The screen-space estimate is only a fallback for non-game UI. In
       // gameplay the frontend resolves the real player anchor/tool reach.
@@ -2792,6 +2815,7 @@ private:
   bool m_hasDirectionalAim = false;
   DirectionalAimEvent m_lastDirectionalAim;
   HashMap<ControllerButton, bool> m_triggerStates;
+  GamepadInput::AimReturnFilter m_aimReturnFilter;
   int64_t m_lastAimFrameMs = 0;
   StringSet m_heldButtons;
   StringSet m_toggledButtons;

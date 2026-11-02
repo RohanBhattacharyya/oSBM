@@ -1455,7 +1455,7 @@ private:
       {launcherText("touchActionChoice.tech", "Tech / F"), keyAction(Key::F)},
       {launcherText("touchActionChoice.swapHotbar", "Swap Hotbar / X"), keyAction(Key::X)},
       {launcherText("touchActionChoice.dropItem", "Drop Item / Q"), keyAction(Key::Q)},
-      {launcherText("touchActionChoice.shift", "Shift"), keyAction(Key::LShift)},
+      {launcherText("touchActionChoice.precisionShift", "Precision / Single Block / Quick Transfer (Shift)"), keyAction(Key::LShift)},
       {launcherText("touchActionChoice.ctrl", "Ctrl"), keyAction(Key::LCtrl)},
       {launcherText("touchActionChoice.moveUp", "Move Up / W"), keyAction(Key::W)},
       {launcherText("touchActionChoice.moveDown", "Move Down / S"), keyAction(Key::S)},

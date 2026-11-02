@@ -2252,8 +2252,10 @@ void MainInterface::activateActionWheelAction(ActionWheelAction action) {
       break;
     case ActionWheelAction::ZoomIn:
     case ActionWheelAction::ZoomOut:
-      if (auto zoom = actionWheelZoomLevel(action == ActionWheelAction::ZoomIn))
+      if (auto zoom = actionWheelZoomLevel(action == ActionWheelAction::ZoomIn)) {
         Root::singleton().configuration()->set("zoomLevel", *zoom);
+        queueMessage(strf("Zoom: {}x", *zoom), 2.0f, 0.0f);
+      }
       break;
   }
 }
