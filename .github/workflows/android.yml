@@ -1,4 +1,4 @@
-name: Android Build (Manual)
+name: Gerar APK Android
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
         options:
           - Release
           - Debug
-        default: Release
+        default: Debug
       arch:
         description: Target architecture (universal builds all ABIs into one APK plus the per-ABI APKs)
         required: true
@@ -21,6 +21,10 @@ on:
           - x86_64
           - universal
         default: arm64
+  # Lightweight syntax check whenever the workflow itself changes.
+  push:
+    paths:
+      - '.github/workflows/android.yml'
 
 permissions:
   contents: read
@@ -33,7 +37,16 @@ env:
   CCACHE_COMPILERCHECK: content
 
 jobs:
+  workflow_check:
+    name: Workflow válido
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Workflow carregado pelo GitHub Actions
+        run: echo 'Workflow válido; compilação de APK disponível pelo botão Run workflow.'
+
   build_android:
+    if: github.event_name == 'workflow_dispatch'
     name: Build Android APK (${{ inputs.arch }})
     runs-on: ubuntu-24.04
     steps:
@@ -79,25 +92,34 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      # Release APKs sign with the default debug signingConfig, so the
-      # signing identity IS ~/.android/debug.keystore. Restore the same
-      # keystore the published releases were signed with -- without this
-      # every runner mints a fresh key and users hit
-      # INSTALL_FAILED_UPDATE_INCOMPATIBLE on upgrade.
-            - name: Generate APK signing keystore
+      # Debug builds use Android's automatically generated debug keystore.
+      # Release builds use the original signing key if the secret is set.
+      # Without the secret, a temporary signing key allows test release APKs,
+      # but those APKs cannot update apps signed with another certificate.
+      - name: Configure release APK signing
+        if: ${{ inputs.build_type == 'Release' }}
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+          EXPECTED_SHA256: "6F:31:13:89:82:35:1C:A7:08:66:2C:36:B7:45:C2:9F:A6:E5:53:BB:88:5B:C9:DA:F3:C8:64:12:45:D0:D4:A5"
         run: |
-          mkdir -p "$HOME/.android"
-          keytool -genkeypair -noprompt \
-            -keystore "$HOME/.android/debug.keystore" \
-            -storepass android \
-            -alias androiddebugkey \
-            -keypass android \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
-
-          echo "STAR_SIGNING_KEYSTORE=$HOME/.android/debug.keystore" >> "$GITHUB_ENV"
+          mkdir -p "${HOME}/.android"
+          if [ -n "${KEYSTORE_B64}" ]; then
+            printf '%s' "${KEYSTORE_B64}" | base64 -d > "${HOME}/.android/debug.keystore"
+            ACTUAL=$(keytool -list -v -keystore "${HOME}/.android/debug.keystore" -alias androiddebugkey -storepass android 2>/dev/null | sed -n 's/.*SHA256: //p' | head -1)
+            if [ "${ACTUAL}" != "${EXPECTED_SHA256}" ]; then
+              echo "::error::Keystore secret does not match the certificate used for published releases."
+              exit 1
+            fi
+            echo "Restored original release signing certificate."
+          else
+            echo "::warning::Temporary release signing key: this APK will not update previously installed versions and cannot be upgraded by future CI builds."
+            keytool -genkeypair -noprompt \
+              -keystore "${HOME}/.android/debug.keystore" \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          echo "STAR_SIGNING_KEYSTORE=${HOME}/.android/debug.keystore" >> "${GITHUB_ENV}"
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
