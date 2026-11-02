@@ -40,6 +40,7 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -210,8 +211,8 @@ std::vector<MobileTouchElement> defaultTouchElements() {
     {"aimJoystick", launcherTextStatic("touchElement.aimJoystick", "Aim"), MobileTouchElementKind::AimJoystick, true, {0.66f, 0.78f}, 1.15f, noneAction(), {}, {}, {}, {}},
     {"leftHand", launcherTextStatic("touchElement.leftHand", "L"), MobileTouchElementKind::Button, true, {0.30f, 0.16f}, 0.92f, mouseAction(MouseButton::Left), {}, {}, {}, {}},
     {"rightHand", launcherTextStatic("touchElement.rightHand", "R"), MobileTouchElementKind::Button, true, {0.64f, 0.16f}, 0.92f, mouseAction(MouseButton::Right), {}, {}, {}, {}},
-    {"jump", launcherTextStatic("touchElement.jump", "J"), MobileTouchElementKind::Button, true, {0.88f, 0.78f}, 1.00f, keyAction(Key::Space), {}, {}, {}, {}},
-    {"interact", launcherTextStatic("touchElement.interact", "E"), MobileTouchElementKind::Button, true, {0.76f, 0.73f}, 0.92f, keyAction(Key::E), {}, {}, {}, {}},
+    {"jump", launcherTextStatic("touchElement.jump", "J"), MobileTouchElementKind::Button, true, {0.88f, 0.78f}, 1.15f, keyAction(Key::Space), {}, {}, {}, {}},
+    {"interact", launcherTextStatic("touchElement.interact", "E"), MobileTouchElementKind::Button, true, {0.77f, 0.66f}, 1.00f, keyAction(Key::E), {}, {}, {}, {}},
     {"pause", launcherTextStatic("touchElement.pause", "ESC"), MobileTouchElementKind::Button, true, {0.10f, 0.15f}, 0.96f, keyAction(Key::Escape), {}, {}, {}, {}},
     {"chat", launcherTextStatic("touchElement.chat", "T"), MobileTouchElementKind::Button, true, {0.83f, 0.90f}, 0.72f, keyAction(Key::Return), {}, {}, {}, {}},
     {"tech", launcherTextStatic("touchElement.tech", "F"), MobileTouchElementKind::Button, true, {0.92f, 0.58f}, 0.86f, keyAction(Key::F), {}, {}, {}, {}},
@@ -723,6 +724,7 @@ public:
     m_joystickFinger = 0;
     m_joystickElementId.clear();
     m_moveVec = {};
+    m_joyRight = m_joyLeft = m_joyUp = m_joyDown = false;
     m_aimJoystickActive = false;
     m_aimJoystickFinger = 0;
     m_aimJoystickElementId.clear();
@@ -853,11 +855,37 @@ public:
       float drawRadius = elementRadius / radiusScale;
 
       if (element.kind == MobileTouchElementKind::Joystick) {
-        draw->AddCircle(ip(center), drawRadius, base, 48, thickness);
-        if (m_joystickActive && m_joystickElementId == element.id)
+        bool joystickLive = m_joystickActive && m_joystickElementId == element.id;
+        // The ring follows the thumb's touch-down point (floating joystick),
+        // and snaps back to its resting spot on release.
+        ImVec2 ringCenter = ip(joystickLive ? m_joystickOrigin : center);
+        draw->AddCircle(ringCenter, drawRadius, base, 48, thickness);
+        if (!joystickLive) {
+          // Idle hint: four small arrows on the ring show it is a move stick.
+          float a = drawRadius * 0.13f;
+          float d = drawRadius * 0.72f;
+          draw->AddTriangleFilled(ImVec2(ringCenter.x, ringCenter.y - d - a), ImVec2(ringCenter.x - a, ringCenter.y - d + a), ImVec2(ringCenter.x + a, ringCenter.y - d + a), base);
+          draw->AddTriangleFilled(ImVec2(ringCenter.x, ringCenter.y + d + a), ImVec2(ringCenter.x - a, ringCenter.y + d - a), ImVec2(ringCenter.x + a, ringCenter.y + d - a), base);
+          draw->AddTriangleFilled(ImVec2(ringCenter.x - d - a, ringCenter.y), ImVec2(ringCenter.x - d + a, ringCenter.y - a), ImVec2(ringCenter.x - d + a, ringCenter.y + a), base);
+          draw->AddTriangleFilled(ImVec2(ringCenter.x + d + a, ringCenter.y), ImVec2(ringCenter.x + d - a, ringCenter.y - a), ImVec2(ringCenter.x + d - a, ringCenter.y + a), base);
+        } else {
+          draw->AddCircle(ringCenter, drawRadius * 0.12f, base, 16, thickness);
+        }
+        if (joystickLive)
           draw->AddCircleFilled(ip(m_joystickCurrent), drawRadius * 0.45f, fill, 32);
       } else if (element.kind == MobileTouchElementKind::AimJoystick) {
         draw->AddCircle(ip(center), drawRadius, base, 48, thickness);
+        {
+          // Crosshair so the aim stick reads as "aim" at a glance.
+          ImVec2 cc = ip(center);
+          float inner = drawRadius * 0.18f;
+          float outer = drawRadius * 0.42f;
+          draw->AddLine(ImVec2(cc.x - outer, cc.y), ImVec2(cc.x - inner, cc.y), base, thickness);
+          draw->AddLine(ImVec2(cc.x + inner, cc.y), ImVec2(cc.x + outer, cc.y), base, thickness);
+          draw->AddLine(ImVec2(cc.x, cc.y - outer), ImVec2(cc.x, cc.y - inner), base, thickness);
+          draw->AddLine(ImVec2(cc.x, cc.y + inner), ImVec2(cc.x, cc.y + outer), base, thickness);
+          draw->AddCircleFilled(cc, std::max(1.5f, thickness), base, 12);
+        }
         if (m_aimJoystickActive && m_aimJoystickElementId == element.id)
           draw->AddCircleFilled(ip(m_aimJoystickCurrent), drawRadius * 0.35f, fill, 32);
       } else if (element.kind == MobileTouchElementKind::DPad) {
@@ -875,7 +903,7 @@ public:
       } else {
         bool held = heldElement(element.id)
             || (element.action.kind == MobileTouchActionKind::GyroToggle && m_gyroAvailable && m_config.gyroEnabled && m_gyroRuntimeEnabled);
-        drawButton(draw, ip(center), drawRadius * 0.55f, held, element.label.utf8Ptr(), base, fill, thickness, labels);
+        drawButton(draw, ip(center), drawRadius * 0.55f, held, element.label.utf8Ptr(), base, fill, thickness, labels, buttonIconFor(element));
       }
     }
 
@@ -883,7 +911,7 @@ public:
     draw->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 
     for (auto const& label : labels)
-      drawLabelWithOutline(draw, label.pos, label.text.utf8Ptr(), labelColor, labelOutline);
+      drawLabelWithOutline(draw, label.pos, label.text.utf8Ptr(), labelColor, labelOutline, label.fontSize);
   }
 
   bool overlayEnabled() const {
@@ -1081,49 +1109,81 @@ private:
     state.downTimeMs = Time::monotonicMilliseconds();
 
     bool claimedControl = false;
+
+    // Pass 1: buttons and d-pads. The nearest center wins, so two overlapping
+    // hit areas never fire the wrong (first-listed) button.
+    MobileTouchElement const* bestElement = nullptr;
+    float bestDistance = 0.0f;
     for (auto const& element : m_elements) {
       if (!element.enabled)
+        continue;
+      if (element.kind != MobileTouchElementKind::Button && element.kind != MobileTouchElementKind::DPad)
         continue;
 
       Vec2F center = elementCenter(element);
       float elementRadius = radius * std::clamp(element.size, 0.45f, 2.4f);
-      if (element.kind == MobileTouchElementKind::Button && insideCircle(pos, center, elementRadius * 0.70f)) {
+      float reach = element.kind == MobileTouchElementKind::Button ? 0.85f : 1.15f;
+      if (!insideCircle(pos, center, elementRadius * reach))
+        continue;
+
+      float distance = (pos - center).magnitude() / std::max(1.0f, elementRadius * reach);
+      if (!bestElement || distance < bestDistance) {
+        bestElement = &element;
+        bestDistance = distance;
+      }
+    }
+
+    if (bestElement) {
+      state.elementId = bestElement->id;
+      if (bestElement->kind == MobileTouchElementKind::Button) {
         state.role = FingerRole::ActionButton;
-        state.elementId = element.id;
-        state.action = element.action;
-        state.pressMode = element.pressMode;
-        pressActionButton(element);
-        claimedControl = true;
-        break;
-      } else if (element.kind == MobileTouchElementKind::DPad && insideCircle(pos, center, elementRadius * 1.15f)) {
+        state.action = bestElement->action;
+        state.pressMode = bestElement->pressMode;
+        pressActionButton(*bestElement);
+      } else {
         state.role = FingerRole::DPad;
-        state.elementId = element.id;
         updateDPadFinger(state, pos);
-        claimedControl = true;
-        break;
-      } else if (element.kind == MobileTouchElementKind::Joystick && insideCircle(pos, center, elementRadius * 1.25f) && !m_joystickActive) {
-        state.role = FingerRole::Joystick;
-        state.elementId = element.id;
-        m_joystickActive = true;
-        m_joystickFinger = finger;
-        m_joystickElementId = element.id;
-        m_joystickOrigin = center;
-        m_joystickCurrent = pos;
-        m_moveVec = {};
-        claimedControl = true;
-        break;
-      } else if (element.kind == MobileTouchElementKind::AimJoystick && insideCircle(pos, center, elementRadius * 1.25f) && !m_aimJoystickActive) {
-        state.role = FingerRole::AimJoystick;
-        state.elementId = element.id;
-        m_aimJoystickActive = true;
-        m_aimJoystickFinger = finger;
-        m_aimJoystickElementId = element.id;
-        m_aimJoystickOrigin = center;
-        m_aimJoystickCurrent = pos;
-        ensureAimTarget();
-        updateAimJoystickFinger(state, pos);
-        claimedControl = true;
-        break;
+      }
+      claimedControl = true;
+    }
+
+    // Pass 2: joysticks, only if no button took the touch.
+    if (!claimedControl) {
+      for (auto const& element : m_elements) {
+        if (!element.enabled)
+          continue;
+
+        Vec2F center = elementCenter(element);
+        float elementRadius = radius * std::clamp(element.size, 0.45f, 2.4f);
+        if (element.kind == MobileTouchElementKind::Joystick && !m_joystickActive
+            && insideCircle(pos, center, elementRadius * 1.9f)) {
+          // Floating joystick: the wide touch zone around the stick starts it
+          // right where the thumb lands, so the player never has to find the
+          // ring by sight. The ring is drawn at this origin until release.
+          state.role = FingerRole::Joystick;
+          state.elementId = element.id;
+          m_joystickActive = true;
+          m_joystickFinger = finger;
+          m_joystickElementId = element.id;
+          m_joystickOrigin = pos;
+          m_joystickCurrent = pos;
+          m_moveVec = {};
+          claimedControl = true;
+          break;
+        } else if (element.kind == MobileTouchElementKind::AimJoystick && !m_aimJoystickActive
+            && insideCircle(pos, center, elementRadius * 1.4f)) {
+          state.role = FingerRole::AimJoystick;
+          state.elementId = element.id;
+          m_aimJoystickActive = true;
+          m_aimJoystickFinger = finger;
+          m_aimJoystickElementId = element.id;
+          m_aimJoystickOrigin = center;
+          m_aimJoystickCurrent = pos;
+          ensureAimTarget();
+          updateAimJoystickFinger(state, pos);
+          claimedControl = true;
+          break;
+        }
       }
     }
 
@@ -1201,6 +1261,7 @@ private:
       if (mag > radius)
         delta = delta / mag * radius;
 
+      m_joystickCurrent = m_joystickOrigin + delta;
       float normMag = delta.magnitude() / radius;
       if (normMag < m_config.deadzone)
         m_moveVec = {};
@@ -1425,10 +1486,7 @@ private:
   }
 
   void emitActionEdges() {
-    setKeyOwner("joystick:right", Key::D, m_moveVec[0] > 0.30f);
-    setKeyOwner("joystick:left", Key::A, m_moveVec[0] < -0.30f);
-    setKeyOwner("joystick:up", Key::W, m_moveVec[1] < -0.30f);
-    setKeyOwner("joystick:down", Key::S, m_moveVec[1] > 0.30f);
+    updateJoystickKeys();
     updateVirtualAimTarget();
     releaseExpiredPulsedActions();
     processMacroEvents();
@@ -1443,6 +1501,42 @@ private:
       m_primaryMouseHeld = false;
       emitMouseUp(m_primaryTouchPos);
     }
+  }
+
+  // Turns the movement stick into W/A/S/D. Two things make it feel much
+  // better for a platformer than plain thresholds:
+  //  - hysteresis: a direction turns on at 0.30 but only off at 0.20, so a
+  //    thumb hovering at the edge does not make the key flicker;
+  //  - axis lock: when the stick is mostly horizontal, small vertical drift
+  //    is ignored (no accidental crouch/climb/jump), and when it is mostly
+  //    vertical, small horizontal drift is ignored (stay on the ladder/rope).
+  void updateJoystickKeys() {
+    float const on = 0.30f;
+    float const off = 0.20f;
+    float x = m_moveVec[0];
+    float y = m_moveVec[1];
+    bool right = x > (m_joyRight ? off : on);
+    bool left = -x > (m_joyLeft ? off : on);
+    bool up = -y > (m_joyUp ? off : on);
+    bool down = y > (m_joyDown ? off : on);
+
+    float ax = std::fabs(x);
+    float ay = std::fabs(y);
+    if ((right || left) && (up || down)) {
+      if (ay < ax * 0.60f)
+        up = down = false;
+      else if (ax < ay * 0.45f)
+        right = left = false;
+    }
+
+    m_joyRight = right;
+    m_joyLeft = left;
+    m_joyUp = up;
+    m_joyDown = down;
+    setKeyOwner("joystick:right", Key::D, right);
+    setKeyOwner("joystick:left", Key::A, left);
+    setKeyOwner("joystick:up", Key::W, up);
+    setKeyOwner("joystick:down", Key::S, down);
   }
 
   void ensureAimTarget() {
@@ -1863,9 +1957,151 @@ private:
   // A deferred label to be drawn (with a contrast outline) after the inversion
   // blended shape pass has completed. Text can't use the inversion blend, so its
   // draw commands must land under ImGui's default blend state.
+  enum class ButtonIcon {
+    None, Jump, Hand, Pickaxe, Cube, Pause, Chat, Bolt, Shift, Bag, Gyro, ArrowUp, ArrowDown
+  };
+
+  // Picks a vector icon from what the button does. Known default ids first,
+  // then the bound action, so custom buttons the player adds get a fitting
+  // icon too. Anything unrecognized keeps its text label.
+  static ButtonIcon buttonIconFor(MobileTouchElement const& element) {
+    if (element.id == "jump") return ButtonIcon::Jump;
+    if (element.id == "interact") return ButtonIcon::Hand;
+    if (element.id == "leftHand") return ButtonIcon::Pickaxe;
+    if (element.id == "rightHand") return ButtonIcon::Cube;
+    if (element.id == "pause") return ButtonIcon::Pause;
+    if (element.id == "chat") return ButtonIcon::Chat;
+    if (element.id == "tech") return ButtonIcon::Bolt;
+    if (element.id == "shift") return ButtonIcon::Shift;
+    if (element.id == "gyroToggle") return ButtonIcon::Gyro;
+
+    MobileTouchAction const& a = element.action;
+    switch (a.kind) {
+      case MobileTouchActionKind::GyroToggle: return ButtonIcon::Gyro;
+      case MobileTouchActionKind::InventoryWheel: return ButtonIcon::Bag;
+      case MobileTouchActionKind::MouseWheelUp: return ButtonIcon::ArrowUp;
+      case MobileTouchActionKind::MouseWheelDown: return ButtonIcon::ArrowDown;
+      case MobileTouchActionKind::MouseButton:
+        return a.mouseButton == MouseButton::Left ? ButtonIcon::Pickaxe
+             : a.mouseButton == MouseButton::Right ? ButtonIcon::Cube : ButtonIcon::None;
+      case MobileTouchActionKind::Key:
+        if (a.key == Key::Space) return ButtonIcon::Jump;
+        if (a.key == Key::E) return ButtonIcon::Hand;
+        if (a.key == Key::Escape) return ButtonIcon::Pause;
+        if (a.key == Key::Return) return ButtonIcon::Chat;
+        if (a.key == Key::F) return ButtonIcon::Bolt;
+        if (a.key == Key::LShift) return ButtonIcon::Shift;
+        if (a.key == Key::I) return ButtonIcon::Bag;
+        return ButtonIcon::None;
+      default:
+        return ButtonIcon::None;
+    }
+  }
+
+  // Strokes a polyline with plain AddLine segments (independent of the ImGui
+  // version's AddPolyline/PathStroke signatures).
+  static void strokeLines(ImDrawList* draw, std::initializer_list<ImVec2> points, bool closed, ImU32 col, float t) {
+    std::vector<ImVec2> pts(points);
+    for (size_t i = 0; i + 1 < pts.size(); ++i)
+      draw->AddLine(pts[i], pts[i + 1], col, t);
+    if (closed && pts.size() > 2)
+      draw->AddLine(pts.back(), pts.front(), col, t);
+  }
+
+  static void strokeArc(ImDrawList* draw, ImVec2 c, float rad, float a0, float a1, ImU32 col, float t) {
+    int const segments = 12;
+    ImVec2 prev(c.x + std::cos(a0) * rad, c.y + std::sin(a0) * rad);
+    for (int i = 1; i <= segments; ++i) {
+      float a = a0 + (a1 - a0) * (float)i / (float)segments;
+      ImVec2 next(c.x + std::cos(a) * rad, c.y + std::sin(a) * rad);
+      draw->AddLine(prev, next, col, t);
+      prev = next;
+    }
+  }
+
+  // Draws the icon inside a button circle of the given radius. All shapes use
+  // the same difference-blend pass as the rest of the overlay, so they stay
+  // visible on any background.
+  static void drawButtonIcon(ImDrawList* draw, ImVec2 c, float r, ButtonIcon icon, ImU32 col, float baseThickness) {
+    float k = r * 0.70f;
+    float t = std::max(baseThickness, r * 0.09f);
+    auto P = [&](float x, float y) { return ImVec2(c.x + x * k, c.y + y * k); };
+
+    switch (icon) {
+      case ButtonIcon::Jump:
+        // Double chevron pointing up.
+        strokeLines(draw, {P(-0.75f, 0.05f), P(0.0f, -0.65f), P(0.75f, 0.05f)}, false, col, t);
+        strokeLines(draw, {P(-0.75f, 0.65f), P(0.0f, -0.05f), P(0.75f, 0.65f)}, false, col, t);
+        break;
+      case ButtonIcon::ArrowUp:
+        strokeLines(draw, {P(-0.7f, 0.3f), P(0.0f, -0.4f), P(0.7f, 0.3f)}, false, col, t);
+        break;
+      case ButtonIcon::ArrowDown:
+        strokeLines(draw, {P(-0.7f, -0.3f), P(0.0f, 0.4f), P(0.7f, -0.3f)}, false, col, t);
+        break;
+      case ButtonIcon::Hand:
+        // Open hand: palm, four fingers and a thumb.
+        draw->AddRect(P(-0.55f, -0.05f), P(0.55f, 0.8f), col, k * 0.25f, 0, t);
+        draw->AddLine(P(-0.4f, -0.05f), P(-0.4f, -0.55f), col, t);
+        draw->AddLine(P(-0.13f, -0.05f), P(-0.13f, -0.8f), col, t);
+        draw->AddLine(P(0.14f, -0.05f), P(0.14f, -0.8f), col, t);
+        draw->AddLine(P(0.41f, -0.05f), P(0.41f, -0.55f), col, t);
+        draw->AddLine(P(-0.55f, 0.35f), P(-0.9f, 0.05f), col, t);
+        break;
+      case ButtonIcon::Pickaxe:
+        // Mining/attack: curved head on a diagonal handle.
+        draw->AddLine(P(-0.75f, 0.8f), P(0.3f, -0.25f), col, t);
+        draw->AddBezierQuadratic(P(-0.55f, -0.55f), P(0.6f, -0.95f), P(0.85f, 0.25f), col, t);
+        break;
+      case ButtonIcon::Cube:
+        // Place/use: an isometric block.
+        strokeLines(draw, {P(0.0f, -0.85f), P(0.75f, -0.42f), P(0.75f, 0.42f), P(0.0f, 0.85f), P(-0.75f, 0.42f), P(-0.75f, -0.42f)}, true, col, t);
+        strokeLines(draw, {P(-0.75f, -0.42f), P(0.0f, 0.0f), P(0.75f, -0.42f)}, false, col, t);
+        draw->AddLine(P(0.0f, 0.0f), P(0.0f, 0.85f), col, t);
+        break;
+      case ButtonIcon::Pause:
+        draw->AddLine(P(-0.3f, -0.65f), P(-0.3f, 0.65f), col, t * 1.6f);
+        draw->AddLine(P(0.3f, -0.65f), P(0.3f, 0.65f), col, t * 1.6f);
+        break;
+      case ButtonIcon::Chat:
+        // Speech bubble with three dots.
+        draw->AddRect(P(-0.85f, -0.65f), P(0.85f, 0.35f), col, k * 0.3f, 0, t);
+        strokeLines(draw, {P(-0.35f, 0.35f), P(-0.55f, 0.85f), P(0.05f, 0.35f)}, false, col, t);
+        draw->AddCircleFilled(P(-0.4f, -0.15f), t * 0.7f, col, 12);
+        draw->AddCircleFilled(P(0.0f, -0.15f), t * 0.7f, col, 12);
+        draw->AddCircleFilled(P(0.4f, -0.15f), t * 0.7f, col, 12);
+        break;
+      case ButtonIcon::Bolt:
+        // Tech/ability: lightning bolt.
+        strokeLines(draw, {P(0.25f, -0.9f), P(-0.45f, 0.1f), P(0.0f, 0.1f), P(-0.25f, 0.9f), P(0.45f, -0.15f), P(0.0f, -0.15f)}, true, col, t);
+        break;
+      case ButtonIcon::Shift:
+        strokeLines(draw, {P(0.0f, -0.85f), P(0.75f, 0.0f), P(0.32f, 0.0f), P(0.32f, 0.75f), P(-0.32f, 0.75f), P(-0.32f, 0.0f), P(-0.75f, 0.0f)}, true, col, t);
+        break;
+      case ButtonIcon::Bag:
+        // Inventory: backpack with handle and pocket.
+        draw->AddRect(P(-0.6f, -0.15f), P(0.6f, 0.85f), col, k * 0.3f, 0, t);
+        draw->AddBezierQuadratic(P(-0.35f, -0.15f), P(0.0f, -1.0f), P(0.35f, -0.15f), col, t);
+        draw->AddLine(P(-0.6f, 0.35f), P(0.6f, 0.35f), col, t);
+        break;
+      case ButtonIcon::Gyro:
+        // Gyro/tilt: a dot with two orbiting arcs.
+        draw->AddCircleFilled(c, k * 0.22f, col, 16);
+        strokeArc(draw, c, k * 0.85f, -2.4f, -0.75f, col, t);
+        strokeArc(draw, c, k * 0.85f, 0.75f, 2.4f, col, t);
+        break;
+      case ButtonIcon::None:
+      default:
+        break;
+    }
+  }
+
   struct OverlayLabel {
     ImVec2 pos;
     String text;
+    // 0 = default ImGui font size. >0 = scaled label (used by buttons so the
+    // text stays readable on high-density phone screens).
+    float fontSize = 0.0f;
   };
 
   // ImGui render callback that switches OpenGL to the inversion (difference)
@@ -1881,22 +2117,43 @@ private:
   // legible on any background (light glyph shows on dark scenery, dark outline
   // shows on light scenery) — the touch-control analogue of Minecraft's
   // drop-shadowed HUD text.
-  static void drawLabelWithOutline(ImDrawList* draw, ImVec2 pos, char const* text, ImU32 color, ImU32 outline) {
+  static void drawLabelWithOutline(ImDrawList* draw, ImVec2 pos, char const* text, ImU32 color, ImU32 outline, float fontSize = 0.0f) {
     static ImVec2 const offsets[8] = {
       {-1.0f, -1.0f}, {0.0f, -1.0f}, {1.0f, -1.0f},
       {-1.0f,  0.0f},                {1.0f,  0.0f},
       {-1.0f,  1.0f}, {0.0f,  1.0f}, {1.0f,  1.0f}
     };
+    if (fontSize > 0.0f) {
+      ImFont* font = ImGui::GetFont();
+      for (auto const& o : offsets)
+        draw->AddText(font, fontSize, ImVec2(pos.x + o.x, pos.y + o.y), outline, text);
+      draw->AddText(font, fontSize, pos, color, text);
+      return;
+    }
     for (auto const& o : offsets)
       draw->AddText(ImVec2(pos.x + o.x, pos.y + o.y), outline, text);
     draw->AddText(pos, color, text);
   }
 
-  static void drawButton(ImDrawList* draw, ImVec2 center, float radius, bool held, char const* label, ImU32 base, ImU32 fill, float thickness, std::vector<OverlayLabel>& labels) {
+  static void drawButton(ImDrawList* draw, ImVec2 center, float radius, bool held, char const* label, ImU32 base, ImU32 fill, float thickness, std::vector<OverlayLabel>& labels, ButtonIcon icon = ButtonIcon::None) {
     draw->AddCircle(center, radius, base, 48, thickness);
-    if (held)
+    if (held) {
       draw->AddCircleFilled(center, radius, fill, 32);
-    labels.push_back({ImVec2(center.x - radius * 0.2f, center.y - radius * 0.35f), label});
+      // Pressed feedback: an extra outer ring so the press is obvious even
+      // when the thumb covers the button.
+      draw->AddCircle(center, radius * 1.18f, fill, 48, thickness);
+    }
+    if (icon != ButtonIcon::None) {
+      drawButtonIcon(draw, center, radius, icon, base, thickness);
+      return;
+    }
+    // Size the label to the button and center it, so short ("J") and long
+    // ("Shift", "ESC") labels both sit in the middle of the circle.
+    float baseSize = ImGui::GetFontSize();
+    float length = (float)std::max<size_t>(2, std::strlen(label));
+    float fontSize = std::clamp(std::min(radius * 0.80f, radius * 1.7f / length), baseSize, baseSize * 3.5f);
+    ImVec2 textSize = ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label);
+    labels.push_back({ImVec2(center.x - textSize.x * 0.5f, center.y - textSize.y * 0.5f), label, fontSize});
   }
 
   void drawDPad(ImDrawList* draw, ImVec2 center, float radius, String const& id, ImU32 base, ImU32 fill, float thickness, std::vector<OverlayLabel>& labels) const {
@@ -1954,6 +2211,10 @@ private:
   Vec2F m_joystickOrigin;
   Vec2F m_joystickCurrent;
   Vec2F m_moveVec;
+  bool m_joyRight = false;
+  bool m_joyLeft = false;
+  bool m_joyUp = false;
+  bool m_joyDown = false;
 
   bool m_aimJoystickActive = false;
   uint64_t m_aimJoystickFinger = 0;
