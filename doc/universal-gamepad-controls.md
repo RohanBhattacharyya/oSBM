@@ -19,7 +19,7 @@ its existing controller path.
 | X | Interact |
 | Y / Back | Inventory |
 | LB | Hold item wheel, select with either stick, release to confirm |
-| RB | Hold action wheel, select with either stick, release to confirm |
+| RB | Hold action wheel, select with either stick, release to confirm (including Zoom + / Zoom -) |
 | D-pad | Select UI widgets and inventory slots |
 | Start | Escape / close a window |
 | L3 | Existing Ctrl binding |
@@ -31,6 +31,16 @@ bindings, disabled buttons, inversions, stick assignments, macros and press
 modes are still loaded. Remapping a button to Shift remains available for
 the game's smaller mining/building brush and inventory quick transfer; no
 existing button is reassigned to Shift by this change.
+
+### Zoom from the controller
+
+Hold **RB / R1**, point either stick at **Zoom +** (closer) or **Zoom -**
+(farther), then release RB / R1 to apply one step. Repeat to adjust further.
+The wheel uses the same zoom levels and saved `zoomLevel` setting as the
+Graphics menu (normally 1x through 32x), and disables a direction at its
+limit. Modded zoom lists are respected. Existing keyboard shortcuts (`=`
+and `-` by default) and the Graphics menu remain available; no controller
+binding or gameplay profile needs to change.
 
 ## Input behavior
 
@@ -108,6 +118,9 @@ cases with the user's game assets on Android and a desktop launcher build:
    swapped stick assignments and previously saved bindings.
 5. Open one wheel, press/release the other shoulder, and confirm only the
    original wheel's owner can confirm it.
+6. Select Zoom + / Zoom - from the RB wheel, verify one step per release,
+   both limits, fractional starting zoom, and the new value in Graphics.
+   Verify cursor/tool reach at the changed zoom and persistence after restart.
 
 Save formats, Android signing/packaging, APK compression and dependencies
 are unchanged.

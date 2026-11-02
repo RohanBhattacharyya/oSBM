@@ -157,7 +157,9 @@ private:
     MatterManipulator,
     SwapHotbar,
     Deploy,
-    BeamDown
+    BeamDown,
+    ZoomIn,
+    ZoomOut
   };
 
   struct ActionWheelItem {
@@ -202,6 +204,7 @@ private:
   void updateActionWheelSelection(Vec2F const& direction);
   void activateActionWheelSelection();
   void activateActionWheelAction(ActionWheelAction action);
+  Maybe<float> actionWheelZoomLevel(bool zoomIn) const;
   void activateInventoryWheelLocation(SelectedActionBarLocation const& location);
 
   void displayScriptPane(ScriptPanePtr& scriptPane, EntityId sourceEntity);

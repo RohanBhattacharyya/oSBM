@@ -1729,6 +1729,14 @@ void MainInterface::renderActionWheel() {
       Vec2F iconSize = Vec2F(m_guiContext->textureSize(items[i].icon)) * iconScale;
       Vec2F iconPos = point(mid, (innerRadius + outerRadius) * 0.5f) - iconSize / 2.0f;
       m_guiContext->drawQuad(items[i].icon, iconPos, iconScale, enabled ? Vec4B::filled(255) : Vec4B(170, 170, 170, 155));
+    } else if (items[i].action == ActionWheelAction::ZoomIn || items[i].action == ActionWheelAction::ZoomOut) {
+      m_guiContext->setTextStyle(m_config->textStyle);
+      m_guiContext->setFontSize(12, scale);
+      m_guiContext->setFontColor(selected ? Vec4B(22, 26, 28, 255)
+          : enabled ? Vec4B(245, 245, 230, 255) : Vec4B(120, 120, 120, 180));
+      m_guiContext->renderText(items[i].action == ActionWheelAction::ZoomIn ? "+" : "-",
+          TextPositioning(point(mid, (innerRadius + outerRadius) * 0.5f), HorizontalAnchor::HMidAnchor, VerticalAnchor::VMidAnchor));
+      m_guiContext->clearTextStyle();
     }
   }
 
@@ -2104,6 +2112,9 @@ List<MainInterface::ActionWheelItem> MainInterface::actionWheelItems() const {
   if (m_client->canBeamDown())
     items.append({ActionWheelAction::BeamDown, {}, "Beam Down", m_config->beamDownImage, {}, {}, true});
 
+  items.append({ActionWheelAction::ZoomIn, {}, "Zoom +", {}, {}, {}, (bool)actionWheelZoomLevel(true)});
+  items.append({ActionWheelAction::ZoomOut, {}, "Zoom -", {}, {}, {}, (bool)actionWheelZoomLevel(false)});
+
   return items;
 }
 
@@ -2182,6 +2193,26 @@ void MainInterface::activateActionWheelSelection() {
     activateActionWheelAction(item.action);
 }
 
+Maybe<float> MainInterface::actionWheelZoomLevel(bool zoomIn) const {
+  auto& root = Root::singleton();
+  float current = root.configuration()->get("zoomLevel").toFloat();
+  auto levels = jsonToFloatList(root.assets()->json("/interface/windowconfig/graphicsmenu.config:zoomList"));
+  Maybe<float> next;
+  // Use the same available levels as Graphics, including modded lists.
+  // Choose the nearest level in the requested direction even if the current
+  // zoom is fractional or the list isn't sorted. At a limit, disable only
+  // that direction; never reset the user's zoom just by opening the wheel.
+  for (float level : levels) {
+    if (!std::isfinite(level) || level < 1.0f)
+      continue;
+    if (zoomIn ? level > current + 0.001f : level < current - 0.001f) {
+      if (!next || (zoomIn ? level < *next : level > *next))
+        next = level;
+    }
+  }
+  return next;
+}
+
 void MainInterface::activateActionWheelAction(ActionWheelAction action) {
   switch (action) {
     case ActionWheelAction::Inventory:
@@ -2218,6 +2249,11 @@ void MainInterface::activateActionWheelAction(ActionWheelAction action) {
     case ActionWheelAction::BeamDown:
       if (m_client->canBeamDown())
         warpToOrbitedWorld();
+      break;
+    case ActionWheelAction::ZoomIn:
+    case ActionWheelAction::ZoomOut:
+      if (auto zoom = actionWheelZoomLevel(action == ActionWheelAction::ZoomIn))
+        Root::singleton().configuration()->set("zoomLevel", *zoom);
       break;
   }
 }
