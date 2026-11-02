@@ -439,6 +439,18 @@ bool MaterialItem::canPlace(bool shifting) const {
   return false;
 }
 
+bool MaterialItem::canPlaceAt(Vec2I const& position, TileLayer layer) const {
+  if (!initialized() || count() == 0
+      || (!owner()->isAdmin() && !owner()->inToolRange(Vec2F(position) + Vec2F::filled(0.5f))))
+    return false;
+  CollisionKind collisionKind = m_collisionOverride != TileCollisionOverride::None
+      ? collisionKindFromOverride(m_collisionOverride)
+      : Root::singleton().materialDatabase()->materialCollisionKind(m_material);
+  return world()->canModifyTile(position,
+      PlaceMaterial{layer, materialId(), placementHueShift(position), m_collisionOverride},
+      collisionKind <= CollisionKind::Platform);
+}
+
 bool MaterialItem::multiplaceEnabled() const {
   return m_multiplace && count() > 1;
 }

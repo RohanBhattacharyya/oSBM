@@ -39,6 +39,9 @@
 #include "StarPlayerInventory.hpp"
 #include "StarCelestialDatabase.hpp"
 #include "StarItem.hpp"
+#include "StarObjectItem.hpp"
+#include "StarMaterialItem.hpp"
+#include "StarTools.hpp"
 #include "StarAiInterface.hpp"
 #include "StarDrawable.hpp"
 #include "StarFireableItem.hpp"
@@ -445,16 +448,20 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
     } else {
       if (mouseButton == MouseButton::Left)
         player->beginPrimaryFire();
-      if (mouseButton == MouseButton::Right)
+      if (mouseButton == MouseButton::Right) {
+        m_targetPreviewAlt = true;
         player->beginAltFire();
+      }
       if (mouseButton == MouseButton::Middle)
         player->beginTrigger();
     }
   } else if (auto mouseUp = effectiveEvent.ptr<MouseButtonUpEvent>()) {
     if (mouseUp->mouseButton == MouseButton::Left)
       player->endPrimaryFire();
-    if (mouseUp->mouseButton == MouseButton::Right)
+    if (mouseUp->mouseButton == MouseButton::Right) {
+      m_targetPreviewAlt = false;
       player->endAltFire();
+    }
     if (mouseUp->mouseButton == MouseButton::Middle)
       player->endTrigger();
   }
@@ -627,6 +634,7 @@ void MainInterface::update(float dt) {
 
   auto player = m_client->mainPlayer();
   auto cursorWorldPos = cursorWorldPosition();
+  updateTargetPreview();
   if (player->wireToolInUse()) {
     m_paneManager.displayRegisteredPane(MainInterfacePanes::WireInterface);
     player->setWireConnector(m_wireInterface.get());
@@ -880,6 +888,7 @@ void MainInterface::update(float dt) {
     m_paneManager.dismissRegisteredPane(MainInterfacePanes::PlanetText);
   }
 
+  m_inventoryWindow->updateMaterialDeposit();
   for (auto& containerResult : m_containerInteractor->pullContainerResults()) {
     if (!m_containerPane || !m_containerPane->giveContainerResult(containerResult)) {
       if (!m_inventoryWindow->giveContainerResult(containerResult)) {
@@ -1066,6 +1075,7 @@ void MainInterface::render() {
 #ifdef STAR_SYSTEM_SWITCH
   miLap(s_miCanvases);
 #endif
+  renderTargetPreview();
   renderWindows();
 #ifdef STAR_SYSTEM_SWITCH
   miLap(s_miWindows);
@@ -1619,6 +1629,77 @@ void MainInterface::renderMainBar() {
       m_config->questLogImageOpen,
       m_config->questLogImageHoverOpen,
       assets->json("/interface.config:cursorTooltip.questsText").toString());
+}
+
+void MainInterface::updateTargetPreview() {
+  // Snapshot gameplay state in the simulation/update phase. Drawing only
+  // consumes this cache, including on Switch's overlapped HUD replay frames.
+  m_targetPreviewTiles.clear();
+  m_targetPreviewStatus = {};
+  auto player = m_client->mainPlayer();
+  if (!player->inWorld() || m_disableHud || m_actionWheelActive
+      || m_paneManager.topPane({PaneLayer::Window, PaneLayer::ModalWindow}))
+    return;
+
+  auto item = player->handItem(m_targetPreviewAlt ? ToolHand::Alt : ToolHand::Primary);
+  if (!item)
+    item = player->handItem(ToolHand::Primary);
+  auto material = as<MaterialItem>(item);
+  auto object = as<ObjectItem>(item);
+  auto mining = as<BeamMiningTool>(item);
+  if (!material && !object && !mining)
+    return;
+
+  Vec2I target = Vec2I::floor(player->aimPosition());
+  bool inRange = player->inToolRange(Vec2F(target) + Vec2F::filled(0.5f));
+  Vec4B good(65, 225, 110, 220), bad(245, 75, 70, 230);
+  bool anyValid = false, anyInvalid = false;
+  List<Vec2I> tiles;
+  if (auto preview = as<PreviewTileTool>(item)) {
+    for (auto const& tile : preview->previewTiles(player->shifting())) {
+      if (!tiles.contains(tile.position))
+        tiles.append(tile.position);
+      if (tiles.size() >= 1024)
+        break;
+    }
+  }
+  if (tiles.empty())
+    tiles.append(target);
+  for (auto const& tile : tiles) {
+    bool valid = inRange;
+    if (material)
+      valid = material->canPlaceAt(tile, m_targetPreviewAlt && material->twoHanded()
+          ? TileLayer::Background : TileLayer::Foreground);
+    else if (object)
+      valid = inRange && object->canPlace(player->shifting());
+    anyValid |= valid;
+    anyInvalid |= !valid;
+    m_targetPreviewTiles.append({tile, valid ? good : bad});
+  }
+  if (!inRange)
+    m_targetPreviewStatus = "Out of reach";
+  else if ((material || object) && anyInvalid)
+    m_targetPreviewStatus = anyValid ? "Partially blocked" : "Blocked";
+}
+
+void MainInterface::renderTargetPreview() {
+  auto const& camera = m_worldPainter->camera();
+  float pixels = TilePixels * camera.pixelRatio();
+  for (auto const& tile : m_targetPreviewTiles) {
+    Vec2F position = camera.worldToScreen(Vec2F(tile.first));
+    RectF rect = RectF::withSize(position, Vec2F::filled(pixels));
+    Vec4B fill = tile.second;
+    fill[3] = 35;
+    m_guiContext->drawQuad(rect, fill);
+    m_guiContext->drawPolyLines(PolyF(rect), tile.second, 1.5f);
+  }
+  if (!m_targetPreviewStatus.empty() && !m_targetPreviewTiles.empty()) {
+    Vec2F position = camera.worldToScreen(Vec2F(m_targetPreviewTiles.first().first)) + Vec2F(0, pixels + 4);
+    m_guiContext->setFontSize(6);
+    m_guiContext->setFontColor(Vec4B(255, 180, 160, 255));
+    m_guiContext->renderText(m_targetPreviewStatus, TextPositioning(position));
+    m_guiContext->clearTextStyle();
+  }
 }
 
 void MainInterface::renderActionWheel() {

@@ -21,9 +21,37 @@
 #include "StarStatistics.hpp"
 #include "StarAugmentItem.hpp"
 #include "StarObjectItem.hpp"
+#include "StarMaterialItem.hpp"
+#include "StarLogging.hpp"
 #include "StarInteractionTypes.hpp"
 
 namespace Star {
+
+static bool isStorableMaterial(ItemPtr const& item) {
+  return item && (is<MaterialItem>(item) || item->category() == "craftingMaterial");
+}
+
+// Text buttons with a drawn background, avoiding dependencies on a particular
+// vanilla/mod inventory skin. Normal ButtonWidget events provide mouse,
+// touch and D-pad focus activation.
+class InventoryQuickButton : public ButtonWidget {
+protected:
+  void renderImpl() override {
+    RectF rect = RectF::withSize(Vec2F(screenPosition()), Vec2F(size()));
+    auto fill = m_disabled ? Vec4B(25, 30, 35, 245)
+        : isPressed() ? Vec4B(65, 95, 115, 255)
+        : isHovered() ? Vec4B(50, 75, 90, 255) : Vec4B(35, 45, 55, 250);
+    context()->drawInterfaceQuad(rect, fill);
+    context()->drawInterfacePolyLines(PolyF(rect), Vec4B(130, 165, 185, 220), 1.0f);
+    // No image-backed ButtonWidget render: empty skin paths must never be
+    // requested from the texture cache, including the disabled state.
+    context()->setTextStyle(m_textStyle);
+    context()->setFontColor(m_disabled ? Vec4B(125, 135, 145, 255) : Vec4B(240, 245, 250, 255));
+    context()->renderInterfaceText(m_text,
+        {rect.center() + (isPressed() ? Vec2F(m_pressedOffset) : Vec2F{}), HorizontalAnchor::HMidAnchor, VerticalAnchor::VMidAnchor});
+    context()->clearTextStyle();
+  }
+};
 
 InventoryPane::InventoryPane(MainInterface* parent, PlayerPtr player, ContainerInteractorPtr containerInteractor) {
   m_parent = parent;
@@ -34,6 +62,8 @@ InventoryPane::InventoryPane(MainInterface* parent, PlayerPtr player, ContainerI
   auto config = Root::singleton().assets()->json("/interface/windowconfig/playerinventory.config");
 
   auto leftClickCallback = [this](String const& bagType, Widget* widget) {
+    if (quickActionsBusy())
+      return;
     auto itemGrid = convert<ItemGridWidget>(widget);
     InventorySlot inventorySlot = BagSlot(bagType, itemGrid->selectedIndex());
 
@@ -140,13 +170,7 @@ InventoryPane::InventoryPane(MainInterface* parent, PlayerPtr player, ContainerI
       dismiss();
     });
 
-  invWindowReader.registerCallback("sort", [=](Widget*) {
-      m_player->inventory()->condenseBagStacks(m_selectedTab);
-      m_player->inventory()->sortBag(m_selectedTab);
-      // Don't show sorted items as new items
-      m_itemGrids[m_selectedTab]->updateItemState();
-      m_itemGrids[m_selectedTab]->clearChangedSlots();
-    });
+  invWindowReader.registerCallback("sort", [=](Widget*) { organizeSelectedBag(true); });
 
   invWindowReader.registerCallback("gridModeSelector", [=](Widget* widget) {
       auto selected = convert<ButtonWidget>(widget)->data().toString();
@@ -179,6 +203,25 @@ InventoryPane::InventoryPane(MainInterface* parent, PlayerPtr player, ContainerI
   registerSlotCallbacks("trash", TrashSlot());
 
   invWindowReader.construct(config.get("paneLayout"), this);
+
+  // Add a separate strip above the native pane. Existing slots, artwork and
+  // callbacks retain their positions; the strip participates in pane bounds.
+  Vec2I originalSize = size();
+  int width = std::max(1, (originalSize[0] - 8) / 3);
+  auto addQuickButton = [&](String name, String label, WidgetCallbackFunc callback) {
+    auto button = make_shared<InventoryQuickButton>();
+    button->setText(label);
+    button->setFontSize(6);
+    button->setCallback(std::move(callback));
+    button->setSize({width - 2, 18});
+    button->setPosition({4 + (int)m_quickActionButtons.size() * width, originalSize[1] + 2});
+    addChild(name, button);
+    m_quickActionButtons.append(button);
+  };
+  addQuickButton("osbmQuickSort", "Ordenar", [this](Widget*) { organizeSelectedBag(true); });
+  addQuickButton("osbmQuickStack", "Juntar", [this](Widget*) { organizeSelectedBag(false); });
+  addQuickButton("osbmStoreMaterials", "Guardar materiais", [this](Widget*) { startMaterialDeposit(); });
+  setSize(originalSize + Vec2I(0, 22));
 
   m_trashSlot = fetchChild<ItemSlotWidget>("trash");
   m_trashBurn = GameTimer(config.get("trashBurnTimeout").toFloat());
@@ -231,6 +274,82 @@ InventoryPane::InventoryPane(MainInterface* parent, PlayerPtr player, ContainerI
   m_putDownSounds = jsonToStringList(config.get("sounds").get("putdown"));
   m_someUpSounds = jsonToStringList(config.get("sounds").get("someup"));
   m_someDownSounds = jsonToStringList(config.get("sounds").get("somedown"));
+}
+
+bool InventoryPane::quickActionsBusy() const {
+  return m_expectingSwap || (bool)m_materialDeposit || !m_materialDepositSlots.empty();
+}
+
+void InventoryPane::organizeSelectedBag(bool sort) {
+  if (quickActionsBusy() || m_player->inventory()->swapSlotItem())
+    return;
+  auto inventory = m_player->inventory();
+  inventory->condenseBagStacks(m_selectedTab);
+  if (sort)
+    inventory->sortBag(m_selectedTab);
+  m_itemGrids[m_selectedTab]->updateItemState();
+  m_itemGrids[m_selectedTab]->clearChangedSlots();
+}
+
+void InventoryPane::startMaterialDeposit() {
+  if (quickActionsBusy() || m_player->inventory()->swapSlotItem() || !m_containerInteractor->containerOpen())
+    return;
+  m_materialDepositContainer = m_containerInteractor->openContainerId();
+  for (auto const& entry : m_itemGrids) {
+    auto bag = m_player->inventory()->bagContents(entry.first);
+    for (size_t i = 0; i < bag->size(); ++i) {
+      if (isStorableMaterial(bag->at(i)))
+        m_materialDepositSlots.append(InventorySlot(BagSlot(entry.first, i)));
+    }
+  }
+}
+
+void InventoryPane::updateMaterialDeposit() {
+  auto inventory = m_player->inventory();
+  if (m_materialDeposit) {
+    if (!m_materialDeposit->result.finished())
+      return;
+    ItemPtr remainder;
+    if (auto result = m_materialDeposit->result.result())
+      remainder = *result;
+    else {
+      remainder = m_materialDeposit->original;
+      m_materialDepositSlots.clear();
+      m_parent->queueMessage("Transfer failed; materials returned");
+    }
+    if (remainder && !remainder->empty())
+      m_player->giveItem(inventory->stackWith(m_materialDeposit->source, remainder));
+    m_materialDeposit.reset();
+  }
+  // Closing/changing the chest stops the queue; an already sent request is
+  // still resolved above. Requests bypass the normal swap-slot result queue.
+  if (isDismissed() || m_containerInteractor->openContainerId() != m_materialDepositContainer)
+    m_materialDepositSlots.clear();
+  while (!m_materialDepositSlots.empty() && !m_expectingSwap) {
+    auto slot = m_materialDepositSlots.takeAt(0);
+    auto item = inventory->itemsAt(slot);
+    if (!isStorableMaterial(item))
+      continue;
+    // Keep materials linked to the action bar available for building.
+    bool linked = false;
+    for (uint8_t i = 0; i < inventory->customBarIndexes(); ++i)
+      linked |= inventory->customBarPrimarySlot(i) == Maybe<InventorySlot>(slot)
+          || inventory->customBarSecondarySlot(i) == Maybe<InventorySlot>(slot);
+    if (linked)
+      continue;
+    auto original = item->clone();
+    auto taken = inventory->takeSlot(slot);
+    try {
+      auto result = m_containerInteractor->openContainer()->addItems(taken);
+      m_materialDeposit = MaterialDeposit{slot, original, result};
+    } catch (std::exception const& e) {
+      m_player->giveItem(inventory->stackWith(slot, original));
+      m_materialDepositSlots.clear();
+      Logger::warn("Material deposit failed: {}", e.what());
+      m_parent->queueMessage("Transfer failed; materials returned");
+    }
+    return;
+  }
 }
 
 void InventoryPane::displayed() {
@@ -344,6 +463,9 @@ void InventoryPane::clearChangedSlots() {
 void InventoryPane::update(float dt) {
   auto inventory = m_player->inventory();
   auto context = Widget::context();
+  bool canOrganize = !quickActionsBusy() && !inventory->swapSlotItem();
+  for (size_t i = 0; i < m_quickActionButtons.size(); ++i)
+    m_quickActionButtons[i]->setEnabled(canOrganize && (i != 2 || m_containerInteractor->containerOpen()));
 
   HashSet<ItemPtr> customBarItems;
   for (uint8_t i = 0; i < inventory->customBarIndexes(); ++i) {

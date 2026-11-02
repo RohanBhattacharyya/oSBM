@@ -187,6 +187,8 @@ private:
   void renderSpecialDamageBar();
   void renderMainBar();
   void renderActionWheel();
+  void updateTargetPreview();
+  void renderTargetPreview();
   void renderWindows();
   void renderDebug();
 
@@ -299,6 +301,9 @@ private:
   Vec2F m_actionWheelDirection;
   bool m_mobileDirectionalAimActive = false;
   Maybe<Vec2F> m_gamepadAimOffset;
+  List<pair<Vec2I, Vec4B>> m_targetPreviewTiles;
+  String m_targetPreviewStatus;
+  bool m_targetPreviewAlt = false;
 
   String m_lastCommand;
 

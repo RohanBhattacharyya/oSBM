@@ -17,6 +17,7 @@ STAR_CLASS(ItemSlotWidget);
 STAR_CLASS(ItemGridWidget);
 STAR_CLASS(ImageWidget);
 STAR_CLASS(Widget);
+STAR_CLASS(ButtonWidget);
 STAR_CLASS(InventoryPane);
 
 class InventoryPane : public Pane {
@@ -34,6 +35,9 @@ public:
   void updateItems();
   bool containsNewItems() const;
   void clearChangedSlots();
+  // Called by MainInterface even when the inventory pane has been dismissed,
+  // so an in-flight server reply always returns leftovers to the player.
+  void updateMaterialDeposit();
 
 protected:
   virtual void update(float dt) override;
@@ -41,6 +45,19 @@ protected:
   void selectTab(String const& selected);
 
 private:
+  void organizeSelectedBag(bool sort);
+  void startMaterialDeposit();
+  bool quickActionsBusy() const;
+  struct MaterialDeposit {
+    InventorySlot source;
+    ItemPtr original;
+    RpcPromise<ItemPtr> result;
+  };
+  List<InventorySlot> m_materialDepositSlots;
+  Maybe<MaterialDeposit> m_materialDeposit;
+  EntityId m_materialDepositContainer = NullEntityId;
+  List<ButtonWidgetPtr> m_quickActionButtons;
+
   MainInterface* m_parent;
   PlayerPtr m_player;
   ContainerInteractorPtr m_containerInteractor;
