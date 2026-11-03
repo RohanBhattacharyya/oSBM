@@ -17,6 +17,9 @@ INCLUDE_DIRECTORIES (.)
 ADD_EXECUTABLE (gamepad_input_tests gamepad_input_test.cpp)
 ADD_TEST (NAME gamepad_input_tests COMMAND gamepad_input_tests)
 SET_TESTS_PROPERTIES(gamepad_input_tests PROPERTIES LABELS "NoAssets")
+ADD_EXECUTABLE (touch_input_tests touch_input_test.cpp)
+ADD_TEST (NAME touch_input_tests COMMAND touch_input_tests)
+SET_TESTS_PROPERTIES(touch_input_tests PROPERTIES LABELS "NoAssets")
 
 SET (star_core_tests_SOURCES
       gtest/gtest-all.cc

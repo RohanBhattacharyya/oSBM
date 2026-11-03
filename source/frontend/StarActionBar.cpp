@@ -137,7 +137,7 @@ bool ActionBar::trackHotbarSwipe(InputEvent const& event) {
       auto position = GuiContext::singleton().mousePosition(event);
       m_swipeTracking = position && positionInHotbar(*position);
       m_swipeConsumed = false;
-      m_swipeAccum = 0.0f;
+      m_hotbarSwipe = {};
       if (m_swipeTracking)
         m_swipeLastX = (*position)[0];
     }
@@ -146,14 +146,13 @@ bool ActionBar::trackHotbarSwipe(InputEvent const& event) {
 
   if (event.is<MouseMoveEvent>() && m_swipeTracking) {
     if (auto position = GuiContext::singleton().mousePosition(event)) {
-      m_swipeAccum += (float)((*position)[0] - m_swipeLastX);
+      int steps = m_hotbarSwipe.move((float)((*position)[0] - m_swipeLastX), SwipeStep);
       m_swipeLastX = (*position)[0];
-      while (std::fabs(m_swipeAccum) >= SwipeStep) {
-        // Dragging left moves to the next slot, dragging right to the previous.
-        bool next = m_swipeAccum < 0.0f;
-        m_swipeAccum += next ? SwipeStep : -SwipeStep;
-        m_swipeConsumed = true;
-        sendEvent(MouseWheelEvent{next ? MouseWheel::Down : MouseWheel::Up, Vec2F(event.get<MouseMoveEvent>().mousePosition)});
+      m_swipeConsumed |= steps != 0;
+      while (steps != 0) {
+        bool next = steps > 0;
+        steps += next ? -1 : 1;
+        sendEvent(MouseWheelEvent{next ? MouseWheel::Down : MouseWheel::Up, event.get<MouseMoveEvent>().mousePosition});
       }
     }
     return false;
@@ -164,7 +163,7 @@ bool ActionBar::trackHotbarSwipe(InputEvent const& event) {
       bool consumed = m_swipeConsumed;
       m_swipeTracking = false;
       m_swipeConsumed = false;
-      m_swipeAccum = 0.0f;
+      m_hotbarSwipe = {};
       // A swipe must not also count as a click on whichever slot the finger
       // happens to lift over.
       return consumed;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "StarTouchInput.hpp"
+
 #include "StarInventoryTypes.hpp"
 #include "StarMainInterfaceTypes.hpp"
 
@@ -48,7 +50,7 @@ private:
   bool m_swipeTracking = false;
   bool m_swipeConsumed = false;
   int m_swipeLastX = 0;
-  float m_swipeAccum = 0.0f;
+  TouchInput::Swipe m_hotbarSwipe;
 
   MainInterfacePaneManager* m_paneManager;
   PlayerPtr m_player;
