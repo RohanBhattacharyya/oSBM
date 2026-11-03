@@ -164,6 +164,12 @@ function init()
 end
 
 function displayed()
+	-- Mobile can omit the voice backend; getSettings then returns an empty
+	-- object. Do not initialize controls that require a running backend.
+	if type(settings.inputMode) ~= "string" then
+		pane.dismiss()
+		return
+	end
 	devicesToWidgets = {}
 	widgetsToDevices = {}
 	widget.clearListItems(DEVICE_LIST_WIDGET)
@@ -190,6 +196,7 @@ function displayed()
 end
 
 function update()
+	if type(settings.inputMode) ~= "string" then return end
 	updateThresholdCanvas(thresholdCanvas, settings.threshold)
 end
 

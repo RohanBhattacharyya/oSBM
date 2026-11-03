@@ -692,7 +692,7 @@ void ClientApplication::render() {
 #if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
   else {
     float shortSide = std::min(m_guiContext->windowWidth(), m_guiContext->windowHeight());
-    m_guiContext->setInterfaceScale(std::clamp(shortSide / 500.0f, 1.35f, 2.4f));
+    m_guiContext->setInterfaceScale(std::clamp(shortSide / 500.0f, 1.35f, 2.4f), true);
   }
 #else
   else if (m_guiContext->windowWidth() >= m_crossoverRes[0] && m_guiContext->windowHeight() >= m_crossoverRes[1])

@@ -54,6 +54,15 @@ opens the world successfully, that is an isolation result, not proof of a
 specific root cause: allocator, optimization and instrumentation differ.
 Device reproduction is still required before declaring the crash resolved.
 
+The user subsequently reported that the HWASan APK opened the world, with much
+slower startup/loading and gameplay. This is an isolation result, not proof
+of a root cause: instrumentation, allocator, C++ runtime and optimization
+differ from the crashing build. A follow-up optimized Release test can use
+`STAR_ANDROID_SYSTEM_ALLOCATOR=ON` with `STAR_ANDROID_HWASAN=OFF`, retaining
+the usual static C++ runtime, O3 and LTO. The option is Android-only, disabled
+by default, and changes no saves or runtime configuration keys. Its purpose
+is to test the system allocator without sanitizer overhead.
+
 ## Validation on the Windows build host
 
 - Android arm64 configure and complete `starbound` HWASan build: passed.

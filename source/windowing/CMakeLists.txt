@@ -18,6 +18,7 @@ SET (star_windowing_HEADERS
         StarGuiContext.hpp
         StarGuiReader.hpp
         StarGuiTypes.hpp
+        StarInterfaceScale.hpp
         StarImageWidget.hpp
         StarImageStretchWidget.hpp
         StarItemGridWidget.hpp
