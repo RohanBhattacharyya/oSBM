@@ -2,7 +2,10 @@
 #include "StarBuffer.hpp"
 #include "StarFile.hpp"
 #include "StarImage.hpp"
+#include "StarLogging.hpp"
 #include "StarThread.hpp"
+
+#include <cstring>
 
 #include "gtest/gtest.h"
 
@@ -58,6 +61,39 @@ TEST(AssetsTest, ConcurrentImagePatches) {
       reader.finish();
     EXPECT_EQ(failures.load(), 0u);
   }
+}
+
+TEST(AssetsTest, NonImagePatchReturnKeepsOriginal) {
+  struct WarningSink : LogSink {
+    WarningSink() { setLevel(LogLevel::Warn); }
+    void log(char const* message, LogLevel level) override {
+      if (level == LogLevel::Warn && std::strstr(message, "/test.png.patch.lua")
+          && std::strstr(message, "non-Image value"))
+        ++warnings;
+    }
+    std::atomic<unsigned> warnings{0};
+  };
+  auto warnings = make_shared<WarningSink>();
+  Logger::addSink(warnings);
+  auto removeSink = finally([&]() { Logger::removeSink(warnings); });
+  String directory = File::temporaryDirectory();
+  auto cleanup = finally([&]() { File::removeDirectoryRecursive(directory); });
+  auto png = make_shared<Buffer>();
+  Vec4B color(20, 40, 60, 255);
+  Image::filled(Vec2U(8, 8), color).writePng(png);
+  File::writeFile(png->data(), File::relativeTo(directory, "test.png"));
+  File::writeFile(String("function patch(image) return 17 end"),
+      File::relativeTo(directory, "test.png.patch.lua"));
+
+  Assets::Settings settings{};
+  settings.assetTimeToLive = 10;
+  settings.skipDigest = true;
+  settings.skipPreload = true;
+  Assets assets(settings, {directory});
+  auto image = assets.image("/test.png");
+  EXPECT_EQ(image->size(), Vec2U(8, 8));
+  EXPECT_EQ(image->get(Vec2U()), color);
+  EXPECT_EQ(warnings->warnings.load(), 1u);
 }
 
 TEST(AssetsTest, All) {

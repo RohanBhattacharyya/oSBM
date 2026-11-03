@@ -1281,9 +1281,9 @@ ImageConstPtr Assets::applyImagePatches(ImageConstPtr image, String const& path,
           if (ud->is<Image>())
             result = std::move(newResult);
           else
-            Logger::warn("Patch '{}' for image '{}' returned a non-Image userdata value, ignoring");
+            Logger::warn("Patch '{}' for image '{}' returned a non-Image userdata value, ignoring", patchPath, path);
         } else {
-          Logger::warn("Patch '{}' for image '{}' returned a non-Image value, ignoring");
+          Logger::warn("Patch '{}' for image '{}' returned a non-Image value, ignoring", patchPath, path);
         }
       }
     } else {

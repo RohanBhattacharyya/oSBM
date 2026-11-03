@@ -133,10 +133,18 @@ inline void ByteArray::resize(size_t size) {
 }
 
 inline void ByteArray::append(ByteArray const& b) {
-  append(b.ptr(), b.size());
+  if (this == &b) {
+    // Growing the buffer can invalidate the source pointer.
+    ByteArray copy(b);
+    append(copy.ptr(), copy.size());
+  } else {
+    append(b.ptr(), b.size());
+  }
 }
 
 inline void ByteArray::append(const char* data, size_t len) {
+  if (!len)
+    return;
   resize(m_size + len);
   std::memcpy(m_data + m_size - len, data, len);
 }

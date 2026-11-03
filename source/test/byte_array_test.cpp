@@ -5,6 +5,31 @@
 
 using namespace Star;
 
+TEST(ByteArrayTest, SliceBounds) {
+  auto bytes = ByteArray::fromCString("abcdef");
+  EXPECT_EQ(bytes.sub(2, 2), ByteArray::fromCString("cd"));
+  EXPECT_EQ(bytes.sub(4, 100), ByteArray::fromCString("ef"));
+  EXPECT_EQ(bytes.sub(1, NPos), ByteArray::fromCString("bcdef"));
+  EXPECT_TRUE(bytes.sub(6, 1).empty());
+  EXPECT_TRUE(bytes.sub(NPos, 2).empty());
+  EXPECT_TRUE(bytes.sub(1, 0).empty());
+  EXPECT_TRUE(ByteArray().sub(0, NPos).empty());
+  EXPECT_EQ(bytes.left(2), ByteArray::fromCString("ab"));
+  EXPECT_EQ(bytes.right(2), ByteArray::fromCString("ef"));
+  EXPECT_TRUE(bytes.right(0).empty());
+  EXPECT_EQ(bytes.right(100), bytes);
+}
+
+TEST(ByteArrayTest, AppendSelfAcrossGrowth) {
+  for (size_t size : {size_t(0), size_t(1), size_t(64), size_t(4096)}) {
+    ByteArray bytes(size, 'x');
+    bytes.append(bytes);
+    EXPECT_EQ(bytes.size(), size * 2);
+    for (auto c : bytes)
+      EXPECT_EQ(c, 'x');
+  }
+}
+
 TEST(ByteArrayTest, All) {
   auto res = ByteArray::fromCString("foobar");
   res.insert(2, 'a');

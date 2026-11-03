@@ -126,11 +126,9 @@ void ByteArray::fill(char c) {
 }
 
 ByteArray ByteArray::sub(size_t b, size_t s) const {
-  if (b == 0 && s >= m_size) {
-    return ByteArray(*this);
-  } else {
-    return ByteArray(m_data + b, min(m_size, b + s));
-  }
+  if (b >= m_size || s == 0)
+    return {};
+  return ByteArray(m_data + b, min(s, m_size - b));
 }
 
 ByteArray ByteArray::left(size_t s) const {
