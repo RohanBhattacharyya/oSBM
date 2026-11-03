@@ -1257,17 +1257,19 @@ ImageConstPtr Assets::readImage(String const& path) const {
 }
 
 ImageConstPtr Assets::applyImagePatches(ImageConstPtr image, String const& path, List<pair<String, AssetSourcePtr>> patches) const {
+  // Keep the lock until all LuaValues have been destroyed: extracting userdata
+  // touches the shared Lua stack, and even destroying a handle mutates the
+  // engine's free list and non-atomic reference count. Asset workers can run
+  // collectGarbage() concurrently whenever this mutex is released.
   RecursiveMutexLocker luaLocker(m_luaMutex);
   LuaEngine* luaEngine = as<LuaEngine>(m_luaEngine.get());
   LuaValue result = luaEngine->createUserData(*image);
-  luaLocker.unlock();
   for (auto const& pair : patches) {
     auto& patchPath = pair.first;
     auto& patchSource = pair.second;
     auto patchStream = patchSource->read(patchPath);
     if (patchPath.endsWith(".lua")) {
       std::pair<AssetSource*, String> contextKey = make_pair(patchSource.get(), patchPath);
-      luaLocker.lock();
       LuaContextPtr& context = m_patchContexts[contextKey];
       if (!context) {
         context = make_shared<LuaContext>(luaEngine->createContext());
@@ -1284,7 +1286,6 @@ ImageConstPtr Assets::applyImagePatches(ImageConstPtr image, String const& path,
           Logger::warn("Patch '{}' for image '{}' returned a non-Image value, ignoring");
         }
       }
-      luaLocker.unlock();
     } else {
       Logger::warn("Patch '{}' for image '{}' isn't a Lua script, ignoring", patchPath, path);
     }

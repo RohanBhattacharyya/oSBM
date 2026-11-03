@@ -1,71 +1,86 @@
-﻿# Falha ao entrar no mundo no Android
+# Correção do carregamento de imagens com patches Lua
 
-Base investigada: main `d9ce0ccee45ddb2474314ed42b024e9736dba18f`.
-Branch: `codex/android-world-entry-diagnostics`.
+A branch `codex/android-world-entry-diagnostics` corrige acessos sem proteção ao
+estado Lua compartilhado em `Assets::applyImagePatches`, além de proteger os
+saves contra lotes inválidos e melhorar o diagnóstico Android. O formato dos
+saves, remapeamentos e configurações de APK permanecem iguais.
 
-O diagnóstico fornecido pelo usuário confirma essa revisão no APK. A trava de
-alvo do PR #4 não está nesse executável. O problema persiste com o overlay
-oculto. Não há mods externos carregados no registro analisado.
+## Evidência do aparelho
 
-O registro mais antigo mostra, ao receber ClientContextUpdate, `DBException:
-Wrong key size 0`. Nas sessões seguintes a nave não pode ser carregada
-(`InvalidMaybeAccessException`), e o jogo registra `Segfault Encountered!`.
-Um registro também contém `No such material id: 55978`. Isso identifica
-falhas reais, mas não prova qual componente produziu a chave vazia nem qual
-instrução provocou a falha de memória. Não há pilha utilizável no ZIP original.
-A memória registrada não demonstra encerramento por falta de memória.
+O primeiro diagnóstico veio da main `d9ce0cc`: `Wrong key size 0` ao aplicar os
+dados da nave, seguido de falhas ao carregar a nave e segfault. Isso permitiu
+identificar uma falha de proteção na gravação, mas não localizar o crash.
 
-Correção limitada e confirmada por inspeção: applyWorldChunksUpdateToFile abria
-ou criava o arquivo antes de validar todas as chaves. O destrutor de
-BTreeDatabase chama close(), que pode confirmar modificações anteriores mesmo
-quando uma inserção lança exceção. Agora o lote inteiro é validado antes de
-abrir o arquivo, e erros durante a aplicação provocam rollback. Lotes vazios
-não criam arquivos. O formato World4, remapeamentos e saves existentes não
-são convertidos, apagados ou reparados por essa mudança.
+O novo diagnóstico confirma o APK arm64 `6acb4b353561aae6d9a5af27248ef0ea24db6fab`.
+Ele inclui `crashes/native-0.pb` e a pilha no log. O primeiro segfault registrado
+ocorre na thread de interface em `Assets::applyImagePatches`, chamado por
+`GraphicsMenu -> OptionsMenu -> MainInterface` na entrada do mundo. O menu de
+gráficos usa o patch incluído no projeto:
+`assets/opensb/interface/graphicsmenu/body.png.patch.lua`.
 
-Diagnóstico adicional:
+Cerca de 58 ms depois há outro segfault na thread de geração de mundo, passando
+por `jsonIntern` ao ler tilesets. Isso não prova uma falha independente nessa
+função: corrupção anterior de memória pode aparecer em outras threads. A
+correção deve ser retestada no aparelho para confirmar se elimina ambos.
 
-- Exceções no Android capturam endereços com `_Unwind_Backtrace` e mostram
-  deslocamentos relativos à biblioteca usando `dladdr`. Android liga libdl
-  explicitamente. Windows, iOS e Switch mantêm seu caminho de captura.
-- Export Diagnostics inclui até três registros de encerramento do próprio
-  aplicativo no Android 11+. No Android 12+, tenta incluir os tombstones de
-  crashes nativos como protobuf em `crashes/native-*.pb`. A indisponibilidade
-  é registrada em `crashes/exits.txt`; cada relatório tem limite de 4 MiB.
-  Isso usa a [API oficial ApplicationExitInfo](https://developer.android.com/reference/android/app/ApplicationExitInfo#getTraceInputStream()).
-- Nenhum relatório é enviado automaticamente. O usuário continua exportando
-  e compartilhando o ZIP pelo botão existente.
+O tombstone foi lido usando os campos do
+[schema oficial do Android](https://android.googlesource.com/platform/system/core/+/refs/heads/main/debuggerd/proto/tombstone.proto).
+Os arquivos privados, nomes de personagens e identificadores do aparelho não
+fazem parte do commit.
 
-Validação executada neste ambiente Windows:
+## Falha corrigida
 
-- NDK r26d / Android arm64 API 28: StarWorldStorage.cpp e
-  StarException_unix.cpp passaram na verificação de sintaxe, sem avisos.
-- Zig 0.16 / Windows desktop e launcher: StarWorldStorage.cpp compilou nas
-  duas variantes; cinco avisos preexistentes em cada uma, nenhum novo.
-- world_chunks_test.cpp compilou no Android arm64 e nas duas variantes
-  Windows. Os três testes verificam rejeição antes de criar o arquivo,
-  preservação byte a byte de um save em lote inválido, e inserção,
-  substituição e remoção após serialização. **Não foram executados**: não há
-  uma compilação completa do engine disponível neste host.
-- javac --release 17: todos os fontes Java do aplicativo compilaram contra
-  android.jar da API 35 e AndroidX core 1.13.1/documentfile 1.0.1. Apenas
-  notas de APIs obsoletas preexistentes.
-- CrashDiagnosticsReadTest executou na JVM local: 12 verificações passaram,
-  incluindo limite de 4 MiB, leitura incompleta por erro e rejeição de excesso.
-  Não exercita o serviço ActivityManager de um aparelho.
+applyImagePatches liberava m_luaMutex antes de destruir `newResult`, e acessava
+o userdata final e destruía `result` sem a trava. LuaEngine::getUserData altera
+a pilha Lua; LuaHandle::~LuaHandle chama destroyHandle, que modifica a lista
+m_handleFree, e seu RefPtr também tem contagem não atômica. Ao mesmo tempo,
+Assets::workerMain usa a mesma trava para collectGarbage, que retira essa lista
+e modifica o estado Lua. A trava incompleta permitia operações concorrentes
+sobre essas estruturas.
+
+A função agora mantém a trava recursiva durante todo o tempo de vida dos valores
+Lua, incluindo extração da imagem, destrutores temporários e saída por exceção.
+A ordem de declaração garante que os valores sejam destruídos antes da trava.
+Imagens sem patches já evitavam esse caminho; seu comportamento não foi mudado.
+O resultado e a ordem de aplicação dos patches permanecem os mesmos. A leitura
+dos pequenos scripts também fica nesse trecho serializado.
+
+A proteção anterior da nave continua presente: valida todas as chaves antes de
+abrir ou criar o arquivo e faz rollback em erro durante a aplicação. Isso impede
+que um lote de chaves inválidas seja parcialmente confirmado pelo destrutor do
+banco. Não é uma conversão ou recuperação automática de um save já danificado.
+
+## Validação
+
+Correção nova, comparada com o APK `6acb4b3`:
+
+- StarAssets.cpp: NDK r26d / Android arm64 API 28 passou na verificação de sintaxe
+  com dois avisos, os mesmos da base.
+- StarAssets.cpp: compilação por Zig 0.16 no Windows launcher e desktop passou;
+  sete e oito avisos respectivamente, os mesmos da base, nenhum novo.
+- Novo AssetsTest.ConcurrentImagePatches compilou nas três variantes. Gera 128
+  imagens PNG temporárias, alternando sem patch, retorno da imagem original,
+  retorno de imagem recortada e nil; solicita quatro rodadas com dois workers e
+  oito leitores. **Não foi executado**: este host não dispõe do engine completo
+  compilado. O teste usa fixtures próprias; o runner game_tests ainda inicializa
+  Root e precisa dos assets do proprietário.
 - git diff --check passou.
 
-Os comandos e logs locais estão em work/validation-world-entry (fora do repo).
-Não foram validados runtime Android, iOS ou Switch nem um APK completo local.
-Esta alteração NÃO confirma resolução do crash de entrada no mundo e NÃO
-recupera automaticamente a nave que já apresentou erro. O próximo passo é
-gerar um APK dessa branch, reproduzir uma vez e exportar o diagnóstico novo.
-O ZIP e os saves privados do usuário não fazem parte do commit.
+Comandos executados: `python ../validate_world_entry.py --baseline 6acb4b3 ...`
+e `python ../check_image_tests.py`. Comandos completos, logs e objetos locais
+estão em work/validation-image-patches, fora do repositório.
 
-Para repetir o teste Java, compile os fontes Java do aplicativo com o SDK e
-AndroidX, acrescente source/test/CrashDiagnosticsReadTest.java à compilação e
-execute io.github.openstarbound.mobile.CrashDiagnosticsReadTest com o diretório
-de classes e android.jar no classpath. Os testes de armazenamento estão em
-`game_tests --gtest_filter=WorldChunks.*`; o runner atual de game_tests também
-inicializa Root e precisa de assets próprios, apesar de esses testes usarem
-apenas arquivos temporários e operações estáticas de armazenamento.
+A etapa anterior também compilou o armazenamento no Android arm64 e Windows,
+compilou todos os fontes Java contra Android API 35 e executou 12 verificações
+de leitura limitada de relatérios na JVM. Os três testes novos de armazenamento
+compilaram, mas não foram executados. Esses checks não foram repetidos porque
+esta correção só altera Assets.cpp e seu teste.
+
+O ZIP novo e a execução GitHub Actions #12 demonstram que a versóo de diagnóstico
+foi compilada e executada no Android do usuário, ainda com crash. Isso NÃO valida
+esta correção posterior. Nenhum APK da correção nova foi executado neste host ou
+no aparelho; iOS e Switch não foram compilados ou executados.
+
+Próximo passo: gerar Release / arm64 da branch atualizada, tentar entrar no mundo
+e, caso ainda feche, exportar o diagnóstico novamente. O PR permanece separado
+da main até revisóo e confirmação no aparelho.
