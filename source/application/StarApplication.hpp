@@ -44,6 +44,10 @@ public:
 
   // Called before update, once for every pending event.
   virtual void processInput(InputEvent const& event);
+#ifdef STAR_PLATFORM_MOBILE
+  // 0: jogo, 1: janela, 2: tela/menu sem controles de gameplay.
+  virtual unsigned touchInputMode() const { return 2; }
+#endif
 
   // Will be called at updateRate hz, or as close as possible.
   virtual void update();

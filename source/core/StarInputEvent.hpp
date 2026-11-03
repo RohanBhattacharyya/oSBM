@@ -239,38 +239,55 @@ enum class ControllerButton : uint8_t {
 };
 extern EnumMap<ControllerButton> const ControllerButtonNames;
 
+enum class InputSource { Mouse, Touch, Gamepad };
 struct KeyDownEvent {
   Key key;
   KeyMod mods;
+  InputSource source = InputSource::Mouse;
 };
 
 struct KeyUpEvent {
   Key key;
+  InputSource source = InputSource::Mouse;
 };
 
 struct TextInputEvent {
   String text;
 };
 
+#ifdef STAR_PLATFORM_MOBILE
+enum class TouchPhase { Down, Move, Up, Cancel };
+struct TouchPointerEvent {
+  uint64_t finger;
+  TouchPhase phase;
+  Vec2F position;
+  float minimumTargetPixels = 48;
+};
+#endif
+
 struct MouseMoveEvent {
   Vec2F mouseMove;
   Vec2F mousePosition;
   bool cursorVisible = true;
+  InputSource source = InputSource::Mouse;
 };
 
 struct MouseButtonDownEvent {
   MouseButton mouseButton;
   Vec2F mousePosition;
+  InputSource source = InputSource::Mouse;
 };
 
 struct MouseButtonUpEvent {
   MouseButton mouseButton;
   Vec2F mousePosition;
+  InputSource source = InputSource::Mouse;
 };
 
 struct MouseWheelEvent {
   MouseWheel mouseWheel;
   Vec2F mousePosition;
+  InputSource source = InputSource::Mouse;
 };
 
 struct UiNavigationEvent {
@@ -288,6 +305,7 @@ struct ActionWheelEvent {
   bool cancel = false;
   Vec2F direction;
   ActionWheelType type = ActionWheelType::Actions;
+  bool directionYUp = false;
 };
 
 struct DirectionalAimEvent {
@@ -297,6 +315,7 @@ struct DirectionalAimEvent {
   // Gamepads use a zoom-independent player/tool radius. Touch keeps its
   // existing screen-space radius and event behavior.
   bool useToolRange = false;
+  InputSource source = InputSource::Gamepad;
 };
 
 struct ControllerAxisEvent {
@@ -319,6 +338,9 @@ typedef Variant<
     KeyDownEvent,
     KeyUpEvent,
     TextInputEvent,
+#ifdef STAR_PLATFORM_MOBILE
+    TouchPointerEvent,
+#endif
     MouseMoveEvent,
     MouseButtonDownEvent,
     MouseButtonUpEvent,

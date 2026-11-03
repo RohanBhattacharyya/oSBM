@@ -1,5 +1,7 @@
 #include "StarLogging.hpp"
 
+#include <cstdio>
+
 namespace Star {
 
 EnumMap<LogLevel> const LogLevelNames{
@@ -96,6 +98,13 @@ Mutex Logger::s_mutex;
 String LogMap::getValue(String const& key) {
   MutexLocker locker(s_logMapMutex);
   return s_logMap.value(key);
+}
+
+void LogMap::copyValue(String const& key, char* output, size_t capacity) {
+  MutexLocker locker(s_logMapMutex);
+  auto value = s_logMap.ptr(key);
+  if (capacity)
+    std::snprintf(output, capacity, "%s", value ? value->utf8Ptr() : "");
 }
 
 void LogMap::setValue(String const& key, String const& value) {

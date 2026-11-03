@@ -50,6 +50,10 @@ There are many features that oSBM has that you should know about.
 - etc. in the Controls manager.
 
 ### Controls Manager
+
+Neste fork, veja o [guia de controles de toque](doc/touch-controls.md) para mira,
+ataque opcional, bloco único, layouts, gestos de inventário e testes no Android.
+
 The Controls manager is a menu in the oSBM launcher that can be accessed by clicking the Controls button in the main menu. Opening it up, you will be presented with many options.
 
 There are touch control settings directly in the Controls manager, and a Gamepad Controls button that opens gamepad-specific settings. For touch controls, there are two sections to the manager: the general toggles at the top, and the configurable buttons/joysticks below. In the top section, you can enable/disable various options about the touch controls.

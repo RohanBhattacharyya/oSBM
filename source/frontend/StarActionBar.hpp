@@ -1,5 +1,7 @@
 #pragma once
 
+#include "StarTouchInput.hpp"
+
 #include "StarInventoryTypes.hpp"
 #include "StarMainInterfaceTypes.hpp"
 
@@ -39,6 +41,16 @@ private:
   void customBarClickRight(uint8_t index, bool primary);
   void essentialBarClick(uint8_t index);
   void swapCustomBar();
+
+  // Touch-friendly hotbar: dragging a finger sideways along the bar steps the
+  // selected slot (like a mouse wheel), so you do not have to hit tiny slots.
+  bool trackHotbarSwipe(InputEvent const& event);
+  bool positionInHotbar(Vec2I const& position) const;
+
+  bool m_swipeTracking = false;
+  bool m_swipeConsumed = false;
+  int m_swipeLastX = 0;
+  TouchInput::Swipe m_hotbarSwipe;
 
   MainInterfacePaneManager* m_paneManager;
   PlayerPtr m_player;

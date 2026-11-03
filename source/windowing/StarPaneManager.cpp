@@ -10,6 +10,13 @@
 #include "StarPortraitWidget.hpp"
 #include "StarItemGridWidget.hpp"
 #include "StarItemSlotWidget.hpp"
+#ifdef STAR_PLATFORM_MOBILE
+#include "StarScrollArea.hpp"
+#include "StarButtonWidget.hpp"
+#include "StarTextBoxWidget.hpp"
+#include "StarListWidget.hpp"
+#include "StarSliderBar.hpp"
+#endif
 
 #include <limits>
 #include <typeinfo>
@@ -36,6 +43,10 @@ void PaneManager::displayPane(PaneLayer paneLayer, PanePtr const& pane, DismissC
   if (!m_displayedPanes[paneLayer].insertFront(pane, std::move(onDismiss)).second)
     throw GuiException("Pane displayed twice in PaneManager::displayPane");
   ++m_displayedPanesVersion;
+#ifdef STAR_PLATFORM_MOBILE
+  if (paneLayer != PaneLayer::Tooltip)
+    ++m_touchWindowVersion;
+#endif
 
   if (!pane->hasDisplayed() && pane->anchor() == PaneAnchor::None)
     pane->setPosition(Vec2I((windowSize() - pane->size()) / 2) + pane->centerOffset()); // center it
@@ -204,6 +215,12 @@ bool PaneManager::keyboardCapturedForTextInput() const {
 }
 
 bool PaneManager::sendInputEvent(InputEvent const& event) {
+#ifdef STAR_PLATFORM_MOBILE
+  if (auto touch = event.ptr<TouchPointerEvent>())
+    return handleTouchPointer(*touch);
+  if (auto move = event.ptr<MouseMoveEvent>(); move && move->source == InputSource::Mouse && m_touchContact.active)
+    cancelTouchPointer();
+#endif
   if (m_hasUiSelection && !m_sendingUiNavigationMouseButton)
     clearInvalidUiSelection();
   if (auto navigation = event.ptr<UiNavigationEvent>())
@@ -298,6 +315,216 @@ bool PaneManager::sendInputEvent(InputEvent const& event) {
 
   return false;
 }
+
+#ifdef STAR_PLATFORM_MOBILE
+static bool touchInventorySlot(WidgetPtr const& widget) {
+  if (!is<ItemSlotWidget>(widget))
+    return false;
+  // Ícones de receitas dentro de listas devem rolar, sem pegar itens.
+  for (Widget* parent = widget->parent(); parent; parent = parent->parent())
+    if (is<ListWidget>(parent))
+      return false;
+  return true;
+}
+
+WidgetPtr PaneManager::pickTouchWidget(Vec2F position, float minimumSize, PanePtr& pane) {
+  Vec2F guiPos = position / m_context->interfaceScale();
+  float minimum = minimumSize / m_context->interfaceScale();
+  WidgetPtr best;
+  float score = std::numeric_limits<float>::max();
+  bool modal = false;
+  for (auto const& layer : m_displayedPanes) {
+    if (layer.first == PaneLayer::Tooltip)
+      continue;
+    for (auto const& entry : layer.second) {
+      auto const& candidatePane = entry.first;
+      if (!candidatePane->active() || candidatePane->isDismissed())
+        continue;
+      auto visit = [&](auto&& self, WidgetPtr const& widget, RectI clip) -> void {
+        if (!widget->active())
+          return;
+        RectI visible = widget->screenBoundRect().limited(clip);
+        bool selectable = is<ButtonWidget>(widget) || is<ItemSlotWidget>(widget)
+            || is<TextBoxWidget>(widget) || is<ScrollArea>(widget)
+            || is<ListWidget>(widget) || is<SliderBarWidget>(widget);
+        if (selectable && !visible.isEmpty() && widget->interactive() && !widget->mouseTransparent()) {
+          Vec2F center(visible.center());
+          Vec2F half = Vec2F(visible.size()).piecewiseMax(Vec2F::filled(minimum)) / 2;
+          if (RectF::withCenter(center, half * 2).contains(guiPos)) {
+            float distance = (center - guiPos).magnitudeSquared();
+            // Área visual tem precedência sobre a expansão de outro botão.
+            float value = distance + (visible.contains(Vec2I(guiPos)) ? 0 : 1000000);
+            if (is<ScrollArea>(widget) || is<ListWidget>(widget))
+              value += 100000;
+            if (value < score) { score = value; best = widget; pane = candidatePane; }
+          }
+        }
+        if (is<ItemSlotWidget>(widget) || is<ButtonWidget>(widget))
+          return;
+        if (is<ScrollArea>(widget))
+          clip = clip.limited(widget->screenBoundRect());
+        for (size_t i = 0; i < widget->numChildren(); ++i)
+          self(self, widget->getChildNum(i), clip);
+      };
+      visit(visit, candidatePane, RectI::withSize({}, windowSize()));
+      if (candidatePane->screenBoundRect().contains(Vec2I(guiPos)) || best)
+        return best;
+      if (layer.first == PaneLayer::ModalWindow) { modal = true; break; }
+    }
+    if (modal)
+      break;
+  }
+  return best;
+}
+
+void PaneManager::touchClick(MouseButton button, Vec2F position, bool shifting) {
+  bool oldShift = m_context->shiftHeld();
+  sendInputEvent(MouseMoveEvent{{}, position, true, InputSource::Touch});
+  if (shifting)
+    m_context->setShiftHeld(true);
+  sendInputEvent(MouseButtonDownEvent{button, position, InputSource::Touch});
+  sendInputEvent(MouseButtonUpEvent{button, position, InputSource::Touch});
+  m_context->setShiftHeld(oldShift);
+}
+
+void PaneManager::cancelTouchPointer() {
+  if (m_touchSliderHeld) {
+    sendInputEvent(MouseButtonUpEvent{MouseButton::Left, m_touchLast, InputSource::Touch});
+  }
+  m_touchSliderHeld = false;
+  m_touchContact.clear();
+  m_touchGesture.cancel();
+  m_touchItemDrag = false;
+  m_touchWidget.reset();
+  m_touchScroll.reset();
+  m_touchPane.reset();
+  m_touchInertia[0] = m_touchInertia[1] = {};
+  m_touchScrollFraction = {};
+}
+
+bool PaneManager::handleTouchPointer(TouchPointerEvent const& event) {
+  if (m_touchPane && m_touchPanesVersion != m_touchWindowVersion)
+    cancelTouchPointer();
+  double now = Time::monotonicMilliseconds() / 1000.0;
+  if (event.phase == TouchPhase::Cancel) {
+    cancelTouchPointer();
+    return true;
+  }
+  if (event.phase == TouchPhase::Down) {
+    if (m_touchContact.active) {
+      if (m_touchContact.owns(event.finger))
+        return true;
+      // O segundo contato só pode completar a transferência pendente.
+      if (touchInventorySlot(m_touchWidget) && m_touchGesture.tap()
+          && (event.position - m_touchLast).magnitude() < event.minimumTargetPixels * 1.5f) {
+        touchClick(MouseButton::Left, m_touchStart, true);
+        m_touchGesture.cancel();
+      }
+      return true;
+    }
+    cancelTouchPointer();
+    m_touchContact.claim(event.finger);
+    m_touchThreshold = std::max(2.0f, event.minimumTargetPixels / 4.8f);
+    m_touchWidget = pickTouchWidget(event.position, event.minimumTargetPixels, m_touchPane);
+    bool centerTarget = is<ButtonWidget>(m_touchWidget) || is<ItemSlotWidget>(m_touchWidget);
+    m_touchStart = centerTarget ? Vec2F(m_touchWidget->screenBoundRect().center()) * m_context->interfaceScale() : event.position;
+    m_touchLast = event.position;
+    m_touchLastTime = now;
+    m_touchGesture.down(event.position[0], event.position[1], now);
+    m_touchPanesVersion = m_touchWindowVersion;
+    if (m_touchWidget) {
+      for (Widget* widget = m_touchWidget.get(); widget; widget = widget->parent()) {
+        if (is<ScrollArea>(widget)) {
+          m_touchScroll = widget == m_touchWidget.get() ? m_touchWidget : m_touchPane->childPtr(widget);
+          break;
+        }
+      }
+    }
+    sendInputEvent(MouseMoveEvent{{}, m_touchStart, true, InputSource::Touch});
+    return true;
+  }
+  if (!m_touchContact.owns(event.finger))
+    return true;
+  if (event.phase == TouchPhase::Move) {
+    bool wasDragging = m_touchGesture.state == TouchInput::Gesture::State::Drag;
+    bool dragging = m_touchGesture.move(event.position[0], event.position[1], m_touchThreshold);
+    if (dragging && touchInventorySlot(m_touchWidget)) {
+      if (!wasDragging) { touchClick(MouseButton::Left, m_touchStart); m_touchItemDrag = true; }
+      sendInputEvent(MouseMoveEvent{{}, event.position, true, InputSource::Touch});
+    } else if (dragging && is<SliderBarWidget>(m_touchWidget)) {
+      if (!wasDragging) {
+        sendInputEvent(MouseButtonDownEvent{MouseButton::Left,m_touchStart,InputSource::Touch});
+        m_touchSliderHeld = true;
+      }
+      sendInputEvent(MouseMoveEvent{{},event.position,true,InputSource::Touch});
+    } else if (dragging && m_touchScroll) {
+      auto scroll = as<ScrollArea>(m_touchScroll);
+      Vec2F delta = (event.position - m_touchLast) / m_context->interfaceScale();
+      float seconds = std::max(0.001f, (float)(now - m_touchLastTime));
+      m_touchInertia[0].velocity = std::clamp(-delta[0] / seconds, -1200.0f, 1200.0f);
+      m_touchInertia[1].velocity = std::clamp(-delta[1] / seconds, -1200.0f, 1200.0f);
+      m_touchScrollFraction -= delta;
+      Vec2I amount = Vec2I::round(m_touchScrollFraction);
+      m_touchScrollFraction -= Vec2F(amount);
+      scroll->scrollAreaBy(amount);
+    }
+    m_touchLast = event.position;
+    m_touchLastTime = now;
+    return true;
+  }
+  if (event.phase == TouchPhase::Up) {
+    if (is<SliderBarWidget>(m_touchWidget) && m_touchGesture.state == TouchInput::Gesture::State::Drag) {
+      sendInputEvent(MouseButtonUpEvent{MouseButton::Left,event.position,InputSource::Touch});
+      m_touchSliderHeld = false;
+    } else if (m_touchItemDrag) {
+      PanePtr pane;
+      auto destination = pickTouchWidget(event.position, 0, pane);
+      // Cruzar a borda da janela não descarta o item no mundo. Se não há
+      // slot de destino, o item permanece no cursor do inventário.
+      if (touchInventorySlot(destination))
+        touchClick(MouseButton::Left, Vec2F(destination->screenBoundRect().center()) * m_context->interfaceScale());
+    } else if (m_touchGesture.tap()) {
+      if (m_touchWidget)
+        touchClick(MouseButton::Left, m_touchStart);
+      else if (!topPane({PaneLayer::ModalWindow})) {
+        if (auto top = topPane({PaneLayer::Window}); top && !top->inWindow(Vec2I(event.position / m_context->interfaceScale())))
+          dismissPane(top);
+      }
+    }
+    m_touchContact.clear();
+    m_touchGesture.cancel();
+    m_touchItemDrag = false;
+    m_touchWidget.reset();
+    if (now - m_touchLastTime > 0.08)
+      m_touchInertia[0] = m_touchInertia[1] = {};
+    // Só a rolagem continua depois de levantar o dedo.
+    if (!m_touchScroll)
+      m_touchPane.reset();
+    return true;
+  }
+  return true;
+}
+
+void PaneManager::updateTouchPointer(float dt) {
+  if (m_touchPane && (!m_touchPane->isDisplayed() || m_touchPanesVersion != m_touchWindowVersion)) {
+    cancelTouchPointer();
+    return;
+  }
+  if (m_touchContact.active && is<ItemSlotWidget>(m_touchWidget)
+      && m_touchGesture.longPress(Time::monotonicMilliseconds() / 1000.0))
+    touchClick(MouseButton::Right, m_touchStart);
+  if (!m_touchContact.active && m_touchScroll) {
+    auto scroll = as<ScrollArea>(m_touchScroll);
+    m_touchScrollFraction += Vec2F(m_touchInertia[0].step(dt), m_touchInertia[1].step(dt));
+    Vec2I amount = Vec2I::round(m_touchScrollFraction);
+    m_touchScrollFraction -= Vec2F(amount);
+    scroll->scrollAreaBy(amount);
+    if (m_touchInertia[0].velocity == 0 && m_touchInertia[1].velocity == 0) {
+      m_touchScroll.reset(); m_touchPane.reset();
+    }
+  }
+}
+#endif
 
 void PaneManager::setForceReplay(bool forceReplay) {
   m_forceReplay = forceReplay;
@@ -406,6 +633,9 @@ void PaneManager::render() {
 }
 
 void PaneManager::update(float dt) {
+#ifdef STAR_PLATFORM_MOBILE
+  updateTouchPointer(dt);
+#endif
   auto newTooltipParentPane = getPaneAt(m_tooltipLastMousePos);
 
   bool updateTooltip = m_tooltipShowTimer.tick(dt) || (m_activeTooltip && (
@@ -657,9 +887,9 @@ Vec2I PaneManager::uiNavigationSelectedCenter() const {
 InputEvent PaneManager::uiNavigationMouseEvent(InputEvent const& event) const {
   Vec2F mousePosition = Vec2F(uiNavigationSelectedCenter()) * m_context->interfaceScale();
   if (auto down = event.ptr<MouseButtonDownEvent>())
-    return MouseButtonDownEvent{down->mouseButton, mousePosition};
+    return MouseButtonDownEvent{down->mouseButton, mousePosition, down->source};
   if (auto up = event.ptr<MouseButtonUpEvent>())
-    return MouseButtonUpEvent{up->mouseButton, mousePosition};
+    return MouseButtonUpEvent{up->mouseButton, mousePosition, up->source};
   return event;
 }
 
@@ -791,6 +1021,10 @@ bool PaneManager::dismiss(PanePtr const& pane) {
     if (auto panePair = layerPair.second.maybeTake(pane)) {
       dismissed = true;
       ++m_displayedPanesVersion;
+#ifdef STAR_PLATFORM_MOBILE
+      if (layerPair.first != PaneLayer::Tooltip)
+        ++m_touchWindowVersion;
+#endif
       panePair->first->dismissed();
       if (panePair->second)
         panePair->second(pane);

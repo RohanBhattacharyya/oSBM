@@ -95,6 +95,8 @@ private:
 class LogMap {
 public:
   static String getValue(String const& key);
+  // Copia limitada para overlays que reutilizam armazenamento.
+  static void copyValue(String const& key, char* output, size_t capacity);
   static void setValue(String const& key, String const& value);
 
   // Shorthand, converts given type to string using std::ostream.

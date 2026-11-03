@@ -351,6 +351,12 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
   Application::applicationInit(appController);
   appController->setCursorVisible(true);
   auto configuration = m_root->configuration();
+#ifdef STAR_PLATFORM_MOBILE
+  if (auto service = appController->launchConfigService()) {
+    if (auto scale = service->loadLauncherConfig().optQueryFloat("display.interfaceScale"))
+      configuration->set("interfaceScale", std::clamp(*scale, 0.0f, 3.0f));
+  }
+#endif
   bool vsync = configuration->get("vsync").toBool();
   Vec2U windowedSize = jsonToVec2U(configuration->get("windowedResolution"));
   Vec2U fullscreenSize = jsonToVec2U(configuration->get("fullscreenResolution"));
@@ -512,6 +518,16 @@ void ClientApplication::windowChanged(WindowMode windowMode, Vec2U screenSize) {
   }
 #endif
 }
+
+#ifdef STAR_PLATFORM_MOBILE
+unsigned ClientApplication::touchInputMode() const {
+  if (m_state != MainAppState::SinglePlayer && m_state != MainAppState::MultiPlayer)
+    return 2;
+  if (!m_mainInterface || (m_cinematicOverlay && m_cinematicOverlay->suppressInput()))
+    return 2;
+  return m_mainInterface->windowsOpen() || m_mainInterface->inputFocus() ? 1 : 0;
+}
+#endif
 
 void ClientApplication::processInput(InputEvent const& event) {
 #ifdef STAR_PLATFORM_MOBILE

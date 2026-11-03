@@ -115,7 +115,73 @@ PanePtr ActionBar::createTooltip(Vec2I const& screenPosition) {
   return ItemTooltipBuilder::buildItemTooltip(item, m_player);
 }
 
+bool ActionBar::positionInHotbar(Vec2I const& position) const {
+  for (auto const& entry : m_customBarWidgets) {
+    if (entry.left->screenBoundRect().padded(4).contains(position)
+        || entry.right->screenBoundRect().padded(4).contains(position))
+      return true;
+  }
+  for (auto const& widget : m_essentialBarWidgets) {
+    if (widget->screenBoundRect().padded(4).contains(position))
+      return true;
+  }
+  return false;
+}
+
+bool ActionBar::trackHotbarSwipe(InputEvent const& event) {
+  // Distance (in interface pixels) the finger must travel to step one slot.
+  static float const SwipeStep = 26.0f;
+
+  if (auto down = event.ptr<MouseButtonDownEvent>()) {
+      if (down->mouseButton == MouseButton::Left) {
+      auto position = GuiContext::singleton().mousePosition(event);
+        m_swipeTracking = down->source == InputSource::Touch && position && positionInHotbar(*position);
+      m_swipeConsumed = false;
+      m_hotbarSwipe = {};
+      if (m_swipeTracking)
+        m_swipeLastX = (*position)[0];
+    }
+    return false;
+  }
+
+    if (auto move = event.ptr<MouseMoveEvent>(); move && m_swipeTracking) {
+      if (move->source != InputSource::Touch) {
+        m_swipeTracking = m_swipeConsumed = false;
+        m_hotbarSwipe = {};
+        return false;
+      }
+    if (auto position = GuiContext::singleton().mousePosition(event)) {
+      int steps = m_hotbarSwipe.move((float)((*position)[0] - m_swipeLastX), SwipeStep);
+      m_swipeLastX = (*position)[0];
+      m_swipeConsumed |= steps != 0;
+      while (steps != 0) {
+        bool next = steps > 0;
+        steps += next ? -1 : 1;
+        sendEvent(MouseWheelEvent{next ? MouseWheel::Down : MouseWheel::Up, event.get<MouseMoveEvent>().mousePosition});
+      }
+    }
+    return false;
+  }
+
+  if (auto up = event.ptr<MouseButtonUpEvent>()) {
+    if (up->mouseButton == MouseButton::Left && m_swipeTracking) {
+        bool consumed = up->source == InputSource::Touch && m_swipeConsumed;
+      m_swipeTracking = false;
+      m_swipeConsumed = false;
+      m_hotbarSwipe = {};
+      // A swipe must not also count as a click on whichever slot the finger
+      // happens to lift over.
+      return consumed;
+    }
+  }
+
+  return false;
+}
+
 bool ActionBar::sendEvent(InputEvent const& event) {
+  if (trackHotbarSwipe(event))
+    return true;
+
   if (Pane::sendEvent(event))
     return true;
 

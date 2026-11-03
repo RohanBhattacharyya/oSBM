@@ -1,6 +1,7 @@
 #pragma once
 
 #include "StarInputEvent.hpp"
+#include "StarTouchInput.hpp"
 #include "StarJson.hpp"
 #include "StarString.hpp"
 #include "StarVector.hpp"
@@ -39,6 +40,7 @@ enum class MobileTouchActionKind {
   MouseWheelDown,
   GyroToggle,
   GamepadAimModeToggle,
+  TouchHandSwap,
   ActionWheel,
   InventoryWheel,
   UiNavigation,
@@ -79,6 +81,9 @@ struct MobileTouchConfig {
   float outlineThickness = 1.5f;
   float deadzone = 0.15f;
   float gyroSensitivity = 1.0f;
+  TouchInput::AttackMode aimAttackMode = TouchInput::AttackMode::AimOnly;
+  float aimDeadzone = 0.15f;
+  float aimCurve = 1.4f;
   bool gyroInvertX = false;
   bool gyroInvertY = false;
 };
@@ -155,6 +160,7 @@ struct MobileTouchElement {
   bool preciseAim = false;
   // Only meaningful for kind == PerformanceCounter.
   PerformanceCounterMode perfCounterMode = PerformanceCounterMode::Fps;
+  float opacity = 1.0f;
 };
 
 struct MobileGamepadBinding {
@@ -173,6 +179,8 @@ MobileTouchAction macroAction(List<Key> keys, bool sequential = true);
 MobileTouchAction mouseAction(MouseButton button);
 MobileTouchAction wheelAction(bool up);
 MobileTouchAction gyroToggleAction();
+MobileTouchAction touchHandSwapAction();
+void loadTouchAimOptions(MobileTouchConfig& config, Json const& json);
 MobileTouchAction gamepadAimModeToggleAction();
 MobileTouchAction actionWheelAction();
 MobileTouchAction inventoryWheelAction();
@@ -213,6 +221,7 @@ public:
   ~MobileTouchInputAdapter();
 
   void setConfig(MobileTouchConfig config);
+  void setContext(unsigned mode);
   void setGyroAvailable(bool available);
   void setElements(std::vector<MobileTouchElement> elements);
   void beginFrame();
