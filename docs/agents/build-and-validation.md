@@ -59,14 +59,18 @@ OFF for Android and Switch presets. Two GoogleTest binaries
   (`StarTestUniverse.cpp`); requires real game assets reachable from `dist/`,
   which a clean checkout does not have.
 
+Além desses dois binários, `gamepad_input_tests` e `touch_input_tests` exercitam
+lógica pura de input, sem SDL ou assets, e têm o rótulo `NoAssets`. Podem ser
+compilados diretamente com C++17 e `-I source/core`; veja `doc/touch-controls.md`.
+
 The test presets (`linux-release`, `windows-release`, `macos-release`,
 `macos-arm-release`) filter to the `NoAssets` label, i.e. they run
-`core_tests` only:
+`core_tests` e os binários puros de input:
 
 ```sh
 cd source
 cmake --build --preset linux-release --target core_tests --parallel
-ctest --preset linux-release            # runs core_tests (NoAssets filter)
+ctest --preset linux-release            # executa as suítes NoAssets
 ```
 
 List or narrow: `ctest --test-dir ../build/linux-release -N`, or run the gtest
@@ -74,7 +78,8 @@ binary directly: `dist/core_tests --gtest_filter='Json*'`. Because test
 binaries also live in the shared `dist/`, rebuild the test target from the
 preset you mean to test before running ctest.
 
-Tests never cover: launcher behavior, touch/gamepad input, packaging, JNI/
+Os testes puros cobrem curvas/estados/gestos, não a integração SDL ou UI real.
+Tests never cover: launcher behavior, input integration, packaging, JNI/
 Objective-C++/libnx glue, or mobile runtime issues. Those need levels 5–6
 (package + device) from `AGENTS.md`.
 

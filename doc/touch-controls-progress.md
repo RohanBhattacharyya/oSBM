@@ -5,16 +5,27 @@ As caixas de verificação de aparelho/build só serão encerradas com resultado
 real ou limitação específica registrada em `touch-controls.md`.
 
 - [x] Ler contrato, documentação e conferir estado recebido.
-- [ ] 1. Extrair lógica pura, integrar produção e testar no host.
-- [ ] 2. Opções de mira/ataque e gestos de alta densidade.
-- [ ] 3. Bloco único, mão ativa e mineração simultânea ao movimento.
-- [ ] 4. Opacidade, presets, perfis, restauração e avisos do editor.
-- [ ] 5. Gestos de UI, alvos ampliados, janelas, teclado e área segura.
-- [ ] 6. Cancelamento/multitouch e regressões automatizadas.
-- [ ] 7. Auditar custo, reaproveitar buffers e cachear rótulos.
-- [ ] 8. Documentação de uso, limites e testes no Redmi.
-- [ ] Compilar testes de toque e gamepad com `-Werror`; colar saída.
-- [ ] Verificar cada C++ alterado em variantes aplicáveis; colar resultados.
-- [ ] Verificar whitespace, ausência de feedback tátil novo e compatibilidade.
-- [ ] Verificar pré-requisitos e possibilidade de APK; registrar resultado.
+- [x] 1. Extrair lógica pura, integrar produção e testar no host (7.675 checks).
+- [x] 2. Opções de mira/ataque e gestos de alta densidade.
+- [x] 3. Bloco único, mão ativa e mineração simultânea ao movimento.
+- [x] 4. Opacidade, presets, perfis, restauração e avisos do editor.
+- [x] 5. Gestos de UI, alvos ampliados, janelas, teclado e área segura (aparelho pendente, a documentar).
+- [x] 6. Cancelamento/multitouch e regressões automatizadas.
+- [x] 7. Auditar custo, reaproveitar buffers e cachear rótulos (20.000 ciclos puros: zero alocações).
+- [x] 8. Documentação de uso, limites e 18 testes manuais no Redmi.
+- [x] Compilar testes de toque e gamepad com `-Werror`; saídas no relatório.
+- [x] Verificar cada C++ alterado nas variantes aplicáveis; 44 checks, zero erros/avisos novos.
+- [x] Verificar whitespace, ausência de feedback tátil novo e compatibilidade.
+- [x] Verificar pré-requisitos e possibilidade de APK; falha de configure documentada.
 - [ ] Publicar commits pequenos na branch e atualizar PR.
+
+Verificação final concluída: duas matrizes de 22 checks com NDK r26d arm64/API 28
+real, Windows launcher e Windows clássico. Uma usa headers da engine; outra,
+os tags solicitados de fmt 10.2.1 e xxHash 0.8.2. Nenhum erro ou aviso novo.
+Os testes puros passaram em 7.675 checks de toque e 31.695 de gamepad.
+Evidências, arquivos e comandos em `touch-controls-validation.md`.
+
+Tentativa de APK: CMake + Ninja + vcpkg + NDK instalados no workspace.
+O configure do preset arm64 falhou porque o triplet de ferramentas do host
+`x64-windows` exige Visual Studio e não há instância completa instalada.
+Nenhum APK foi produzido; a limitação será registrada no documento final.
