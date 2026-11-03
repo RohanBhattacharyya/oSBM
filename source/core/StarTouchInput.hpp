@@ -64,13 +64,34 @@ inline float tapThreshold(float pixelsPerDp) {
 inline float minimumTarget(float pixelsPerDp) {
   return 48.0f * std::clamp(pixelsPerDp, 1.0f, 4.0f);
 }
+inline float aimTravel(float radius, float sensitivity, float seconds) {
+  return radius * 13.2f * std::clamp(sensitivity, 0.25f, 4.0f) * std::clamp(seconds, 0.0f, 0.05f);
+}
+
+// Alterar layout não altera ações, rótulos ou identificadores existentes.
+inline void preset(Point& position, float& size, int kind) {
+  if (kind == 1) size = std::clamp(size * 0.8f, 0.45f, 2.4f);
+  if (kind == 2) size = std::clamp(size * 1.25f, 0.45f, 2.4f);
+  if (kind == 3) position[0] = 1.0f - position[0];
+}
+template <typename Elements, typename Assign>
+void mergeLayout(Elements& elements, Elements const& incoming, Assign assign) {
+  for (auto const& value : incoming) {
+    auto it = std::find_if(elements.begin(), elements.end(), [&](auto const& old) { return old.id == value.id; });
+    if (it == elements.end()) elements.push_back(value);
+    else assign(*it, value);
+  }
+}
+inline bool overlaps(float x, float y, float rx, float ry, float left, float top, float right, float bottom) {
+  return x + rx > left && x - rx < right && y + ry > top && y - ry < bottom;
+}
 
 enum class AttackMode { AimOnly, Release, Continuous };
 struct AimAttack {
   bool held = false, armed = false;
   // Retorna a borda desejada; o adaptador mantém contagem de donos do botão.
   bool update(AttackMode mode, bool outside) {
-    armed |= outside;
+    armed = outside;
     held = mode == AttackMode::Continuous && outside;
     return held;
   }
