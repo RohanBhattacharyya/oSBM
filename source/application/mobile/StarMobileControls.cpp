@@ -217,6 +217,8 @@ std::vector<MobileTouchElement> defaultTouchElements() {
     {"pause", launcherTextStatic("touchElement.pause", "ESC"), MobileTouchElementKind::Button, true, {0.10f, 0.15f}, 0.96f, keyAction(Key::Escape), {}, {}, {}, {}},
     {"chat", launcherTextStatic("touchElement.chat", "T"), MobileTouchElementKind::Button, true, {0.83f, 0.90f}, 0.72f, keyAction(Key::Return), {}, {}, {}, {}},
     {"tech", launcherTextStatic("touchElement.tech", "F"), MobileTouchElementKind::Button, true, {0.92f, 0.58f}, 0.86f, keyAction(Key::F), {}, {}, {}, {}},
+    {"inventoryWheel", launcherTextStatic("touchElement.inventoryWheel", "Inv"), MobileTouchElementKind::Button, true, {0.94f, 0.42f}, 0.82f, inventoryWheelAction(), {}, {}, {}, {}, MobileTouchPressMode::Hold},
+    {"actionWheel", launcherTextStatic("touchElement.actionWheel", "Menu"), MobileTouchElementKind::Button, true, {0.94f, 0.26f}, 0.82f, actionWheelAction(), {}, {}, {}, {}, MobileTouchPressMode::Hold},
     {"shift", launcherTextStatic("touchElement.shift", "Shift"), MobileTouchElementKind::Button, false, {0.66f, 0.88f}, 0.82f, keyAction(Key::LShift), {}, {}, {}, {}},
     {"ctrl", launcherTextStatic("touchElement.ctrl", "Ctrl"), MobileTouchElementKind::Button, false, {0.58f, 0.88f}, 0.82f, keyAction(Key::LCtrl), {}, {}, {}, {}},
     {"gyroToggle", launcherTextStatic("touchElement.gyro", "Gyro"), MobileTouchElementKind::Button, false, {0.74f, 0.88f}, 0.82f, gyroToggleAction(), {}, {}, {}, {}, MobileTouchPressMode::SinglePress},
@@ -710,6 +712,7 @@ public:
       }
     }
 
+    closeTouchWheel(false);
     m_fingers.clear();
     m_heldElements.clear();
     m_toggledElements.clear();
@@ -825,6 +828,19 @@ public:
     // (The inversion blend keys off source RGB, ignoring alpha coverage, so it
     // suits solid shapes; text is handled separately with an outline below.)
     float op = std::clamp(m_config.opacity, 0.0f, 1.0f);
+    {
+      // Idle fade: after a few seconds with no finger on the screen the
+      // controls dim so they stop competing with the game, and snap back to
+      // full strength the moment you touch again.
+      int64_t nowMs = Time::monotonicMilliseconds();
+      if (!m_fingers.empty() || m_lastActivityMs == 0)
+        m_lastActivityMs = nowMs;
+      float idleMs = (float)(nowMs - m_lastActivityMs);
+      float fade = 1.0f;
+      if (idleMs > 3500.0f)
+        fade = 1.0f - 0.55f * std::min(1.0f, (idleMs - 3500.0f) / 800.0f);
+      op *= fade;
+    }
     auto contrast = [op](float c) { return 0.5f + (c - 0.5f) * op; };
     auto contrastColor = [&contrast](float r, float g, float b) {
       return IM_COL32((int)std::lround(contrast(r) * 255.0f),
@@ -1140,7 +1156,14 @@ private:
         state.role = FingerRole::ActionButton;
         state.action = bestElement->action;
         state.pressMode = bestElement->pressMode;
-        pressActionButton(*bestElement);
+        if (isWheelAction(bestElement->action)) {
+          // Hold to open the radial wheel, drag toward an option, release to
+          // confirm (release near the middle cancels).
+          m_heldElements.add(bestElement->id);
+          openTouchWheel(finger, pos, bestElement->action.kind);
+        } else {
+          pressActionButton(*bestElement);
+        }
       } else {
         state.role = FingerRole::DPad;
         updateDPadFinger(state, pos);
@@ -1190,6 +1213,12 @@ private:
 
     if (claimedControl) {
       // already assigned above
+    } else if (isEdgeTouch(pos)) {
+      // Palm rejection: a finger that lands on the very edge of the screen
+      // (where the hand rests when holding the phone, or where Android's
+      // gesture bar lives) is not allowed to aim, click or mine.
+      state.role = FingerRole::None;
+      state.movedTooFarForTap = true;
     } else if (!m_config.directTouchGestures) {
       state.role = FingerRole::None;
       state.movedTooFarForTap = true;
@@ -1270,6 +1299,8 @@ private:
         m_moveVec = delta / radius;
     } else if (ptr->role == FingerRole::AimJoystick) {
       updateAimJoystickFinger(*ptr, pos);
+    } else if (ptr->role == FingerRole::ActionButton && m_touchWheelActive && m_touchWheelFinger == finger) {
+      updateTouchWheel(pos);
     } else if (ptr->role == FingerRole::Aim) {
       if (m_config.directTouchGestureMode == DirectTouchGestureMode::Touchpad) {
         Vec2F delta = pos - ptr->touchpadAnchor;
@@ -1351,6 +1382,8 @@ private:
         m_primaryPausedForSecondary = false;
         break;
       case FingerRole::ActionButton:
+        if (m_touchWheelActive && m_touchWheelFinger == finger)
+          closeTouchWheel(!canceled);
         releaseActionButton(*ptr);
         break;
       case FingerRole::DPad:
@@ -1702,6 +1735,56 @@ private:
     }
   }
 
+  static bool isWheelAction(MobileTouchAction const& action) {
+    return action.kind == MobileTouchActionKind::ActionWheel || action.kind == MobileTouchActionKind::InventoryWheel;
+  }
+
+  // --- Touch radial wheels -----------------------------------------------------
+  // The game's wheel UI (MainInterface::handleActionWheelEvent) takes a
+  // direction with +Y up, like a gamepad stick. Here the "stick" is the finger's
+  // drag from where it landed, so the wheel is picked by sliding the thumb.
+  void openTouchWheel(uint64_t finger, Vec2F const& pos, MobileTouchActionKind kind) {
+    if (m_touchWheelActive)
+      return;
+    m_touchWheelActive = true;
+    m_touchWheelFinger = finger;
+    m_touchWheelAnchor = pos;
+    m_touchWheelDirection = {};
+    m_touchWheelType = kind == MobileTouchActionKind::InventoryWheel ? ActionWheelType::Inventory : ActionWheelType::Actions;
+    emitEvent(ActionWheelEvent{true, false, false, m_touchWheelDirection, m_touchWheelType});
+  }
+
+  void updateTouchWheel(Vec2F const& pos) {
+    float reach = std::max(1.0f, controlRadius() * 1.25f);
+    Vec2F delta = pos - m_touchWheelAnchor;
+    Vec2F direction = {delta[0] / reach, -delta[1] / reach};
+    float mag = direction.magnitude();
+    if (mag > 1.0f)
+      direction = direction / mag;
+    m_touchWheelDirection = direction;
+    emitEvent(ActionWheelEvent{false, false, false, m_touchWheelDirection, m_touchWheelType});
+  }
+
+  void closeTouchWheel(bool confirm) {
+    if (!m_touchWheelActive)
+      return;
+    // Releasing without dragging out of the center cancels instead of
+    // picking the first entry by accident.
+    bool picked = confirm && m_touchWheelDirection.magnitudeSquared() >= 0.25f;
+    emitEvent(ActionWheelEvent{false, picked, !picked, m_touchWheelDirection, m_touchWheelType});
+    m_touchWheelActive = false;
+    m_touchWheelFinger = 0;
+    m_touchWheelDirection = {};
+  }
+
+  bool isEdgeTouch(Vec2F const& pos) const {
+    float w = (float)(*m_windowSize)[0];
+    float h = (float)(*m_windowSize)[1];
+    float marginX = w * 0.020f;
+    float marginY = h * 0.035f;
+    return pos[0] < marginX || pos[0] > w - marginX || pos[1] > h - marginY;
+  }
+
   void releaseActionButton(FingerState const& state) {
     m_heldElements.remove(state.elementId);
     if (state.pressMode == MobileTouchPressMode::Hold)
@@ -1959,7 +2042,7 @@ private:
   // blended shape pass has completed. Text can't use the inversion blend, so its
   // draw commands must land under ImGui's default blend state.
   enum class ButtonIcon {
-    None, Jump, Hand, Pickaxe, Cube, Pause, Chat, Bolt, Shift, Bag, Gyro, ArrowUp, ArrowDown
+    None, Jump, Hand, Pickaxe, Cube, Pause, Chat, Bolt, Shift, Bag, Gyro, ArrowUp, ArrowDown, Wheel
   };
 
   // Picks a vector icon from what the button does. Known default ids first,
@@ -1975,11 +2058,14 @@ private:
     if (element.id == "tech") return ButtonIcon::Bolt;
     if (element.id == "shift") return ButtonIcon::Shift;
     if (element.id == "gyroToggle") return ButtonIcon::Gyro;
+    if (element.id == "inventoryWheel") return ButtonIcon::Bag;
+    if (element.id == "actionWheel") return ButtonIcon::Wheel;
 
     MobileTouchAction const& a = element.action;
     switch (a.kind) {
       case MobileTouchActionKind::GyroToggle: return ButtonIcon::Gyro;
       case MobileTouchActionKind::InventoryWheel: return ButtonIcon::Bag;
+      case MobileTouchActionKind::ActionWheel: return ButtonIcon::Wheel;
       case MobileTouchActionKind::MouseWheelUp: return ButtonIcon::ArrowUp;
       case MobileTouchActionKind::MouseWheelDown: return ButtonIcon::ArrowDown;
       case MobileTouchActionKind::MouseButton:
@@ -2090,6 +2176,14 @@ private:
         draw->AddCircleFilled(c, k * 0.22f, col, 16);
         strokeArc(draw, c, k * 0.85f, -2.4f, -0.75f, col, t);
         strokeArc(draw, c, k * 0.85f, 0.75f, 2.4f, col, t);
+        break;
+      case ButtonIcon::Wheel:
+        // Radial menu: a ring split into sectors.
+        draw->AddCircle(c, k * 0.85f, col, 32, t);
+        draw->AddCircleFilled(c, k * 0.18f, col, 12);
+        draw->AddLine(P(0.0f, -0.85f), P(0.0f, -0.25f), col, t);
+        draw->AddLine(P(0.74f, 0.42f), P(0.22f, 0.12f), col, t);
+        draw->AddLine(P(-0.74f, 0.42f), P(-0.22f, 0.12f), col, t);
         break;
       case ButtonIcon::None:
       default:
@@ -2234,6 +2328,12 @@ private:
 
   bool m_primaryHeld = false;
   bool m_primaryMouseHeld = false;
+  int64_t m_lastActivityMs = 0;
+  bool m_touchWheelActive = false;
+  uint64_t m_touchWheelFinger = 0;
+  Vec2F m_touchWheelAnchor;
+  Vec2F m_touchWheelDirection;
+  ActionWheelType m_touchWheelType = ActionWheelType::Actions;
   Vec2F m_primaryTouchPos;
   bool m_primaryPausedForSecondary = false;
 

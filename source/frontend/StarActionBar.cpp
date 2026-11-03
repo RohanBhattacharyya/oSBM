@@ -115,7 +115,69 @@ PanePtr ActionBar::createTooltip(Vec2I const& screenPosition) {
   return ItemTooltipBuilder::buildItemTooltip(item, m_player);
 }
 
+bool ActionBar::positionInHotbar(Vec2I const& position) const {
+  for (auto const& entry : m_customBarWidgets) {
+    if (entry.left->screenBoundRect().padded(4).contains(position)
+        || entry.right->screenBoundRect().padded(4).contains(position))
+      return true;
+  }
+  for (auto const& widget : m_essentialBarWidgets) {
+    if (widget->screenBoundRect().padded(4).contains(position))
+      return true;
+  }
+  return false;
+}
+
+bool ActionBar::trackHotbarSwipe(InputEvent const& event) {
+  // Distance (in interface pixels) the finger must travel to step one slot.
+  static float const SwipeStep = 26.0f;
+
+  if (auto down = event.ptr<MouseButtonDownEvent>()) {
+    if (down->mouseButton == MouseButton::Left) {
+      auto position = GuiContext::singleton().mousePosition(event);
+      m_swipeTracking = position && positionInHotbar(*position);
+      m_swipeConsumed = false;
+      m_swipeAccum = 0.0f;
+      if (m_swipeTracking)
+        m_swipeLastX = (*position)[0];
+    }
+    return false;
+  }
+
+  if (event.is<MouseMoveEvent>() && m_swipeTracking) {
+    if (auto position = GuiContext::singleton().mousePosition(event)) {
+      m_swipeAccum += (float)((*position)[0] - m_swipeLastX);
+      m_swipeLastX = (*position)[0];
+      while (std::fabs(m_swipeAccum) >= SwipeStep) {
+        // Dragging left moves to the next slot, dragging right to the previous.
+        bool next = m_swipeAccum < 0.0f;
+        m_swipeAccum += next ? SwipeStep : -SwipeStep;
+        m_swipeConsumed = true;
+        sendEvent(MouseWheelEvent{next ? MouseWheel::Down : MouseWheel::Up, Vec2F(event.get<MouseMoveEvent>().mousePosition)});
+      }
+    }
+    return false;
+  }
+
+  if (auto up = event.ptr<MouseButtonUpEvent>()) {
+    if (up->mouseButton == MouseButton::Left && m_swipeTracking) {
+      bool consumed = m_swipeConsumed;
+      m_swipeTracking = false;
+      m_swipeConsumed = false;
+      m_swipeAccum = 0.0f;
+      // A swipe must not also count as a click on whichever slot the finger
+      // happens to lift over.
+      return consumed;
+    }
+  }
+
+  return false;
+}
+
 bool ActionBar::sendEvent(InputEvent const& event) {
+  if (trackHotbarSwipe(event))
+    return true;
+
   if (Pane::sendEvent(event))
     return true;
 
