@@ -133,9 +133,9 @@ bool ActionBar::trackHotbarSwipe(InputEvent const& event) {
   static float const SwipeStep = 26.0f;
 
   if (auto down = event.ptr<MouseButtonDownEvent>()) {
-    if (down->mouseButton == MouseButton::Left) {
+      if (down->mouseButton == MouseButton::Left) {
       auto position = GuiContext::singleton().mousePosition(event);
-      m_swipeTracking = position && positionInHotbar(*position);
+        m_swipeTracking = down->source == InputSource::Touch && position && positionInHotbar(*position);
       m_swipeConsumed = false;
       m_hotbarSwipe = {};
       if (m_swipeTracking)
@@ -144,7 +144,12 @@ bool ActionBar::trackHotbarSwipe(InputEvent const& event) {
     return false;
   }
 
-  if (event.is<MouseMoveEvent>() && m_swipeTracking) {
+    if (auto move = event.ptr<MouseMoveEvent>(); move && m_swipeTracking) {
+      if (move->source != InputSource::Touch) {
+        m_swipeTracking = m_swipeConsumed = false;
+        m_hotbarSwipe = {};
+        return false;
+      }
     if (auto position = GuiContext::singleton().mousePosition(event)) {
       int steps = m_hotbarSwipe.move((float)((*position)[0] - m_swipeLastX), SwipeStep);
       m_swipeLastX = (*position)[0];
@@ -160,7 +165,7 @@ bool ActionBar::trackHotbarSwipe(InputEvent const& event) {
 
   if (auto up = event.ptr<MouseButtonUpEvent>()) {
     if (up->mouseButton == MouseButton::Left && m_swipeTracking) {
-      bool consumed = m_swipeConsumed;
+        bool consumed = up->source == InputSource::Touch && m_swipeConsumed;
       m_swipeTracking = false;
       m_swipeConsumed = false;
       m_hotbarSwipe = {};

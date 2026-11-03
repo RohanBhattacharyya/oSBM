@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef STAR_PLATFORM_MOBILE
+#include "StarTouchInput.hpp"
+#endif
+
 #include "StarPane.hpp"
 #include "StarOrderedMap.hpp"
 #include "StarBiMap.hpp"
@@ -118,6 +122,27 @@ private:
   void clearUiNavigationTextInputFocus();
   void clearInvalidUiSelection();
   void drawUiSelection() const;
+
+#ifdef STAR_PLATFORM_MOBILE
+  bool handleTouchPointer(TouchPointerEvent const& event);
+  void updateTouchPointer(float dt);
+  void cancelTouchPointer();
+  void touchClick(MouseButton button, Vec2F position, bool shifting = false);
+  WidgetPtr pickTouchWidget(Vec2F position, float minimumSize, PanePtr& pane);
+  TouchInput::Contact m_touchContact;
+  TouchInput::Gesture m_touchGesture;
+  TouchInput::Inertia m_touchInertia[2];
+  WidgetPtr m_touchWidget;
+  WidgetPtr m_touchScroll;
+  PanePtr m_touchPane;
+  Vec2F m_touchStart, m_touchLast, m_touchScrollFraction;
+  float m_touchThreshold = 10;
+  double m_touchLastTime = 0;
+  uint64_t m_touchPanesVersion = 0;
+  uint64_t m_touchWindowVersion = 0;
+  bool m_touchItemDrag = false;
+  bool m_touchSliderHeld = false;
+#endif
 
   GuiContext* m_context;
   float m_prevInterfaceScale;

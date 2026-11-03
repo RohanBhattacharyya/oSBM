@@ -24,6 +24,9 @@ public:
   bool postProcessGroupEnabled(String const& group);
   Json postProcessGroups();
   virtual unsigned framesSkipped() const override;
+#ifdef STAR_PLATFORM_MOBILE
+  unsigned touchInputMode() const override;
+#endif
 
 protected:
   virtual void startup(StringList const& cmdLineArgs) override;

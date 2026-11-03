@@ -310,7 +310,7 @@ void MainInterface::togglePlainCraftingWindow() {
 }
 
 bool MainInterface::windowsOpen() const {
-  return (bool)m_paneManager.topPane({PaneLayer::Window});
+  return (bool)m_paneManager.topPane({PaneLayer::Window, PaneLayer::ModalWindow});
 }
 
 MerchantPanePtr MainInterface::activeMerchantPane() const {
@@ -334,6 +334,15 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
       return false;
   }
 
+#ifdef STAR_PLATFORM_MOBILE
+  if (auto touch = event.ptr<TouchPointerEvent>()) {
+    m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = touch->position);
+    m_cursorVisible = true;
+    m_gamepadAimOffset.reset();
+    m_mobileDirectionalAimActive = false;
+    return m_paneManager.sendInputEvent(event);
+  }
+#endif
   if (auto actionWheel = event.ptr<ActionWheelEvent>())
     return handleActionWheelEvent(*actionWheel);
 
@@ -343,9 +352,9 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
   InputEvent effectiveEvent = event;
   if (m_mobileDirectionalAimActive) {
     if (auto mouseDown = event.ptr<MouseButtonDownEvent>())
-      effectiveEvent = MouseButtonDownEvent{mouseDown->mouseButton, m_cursorScreenPos};
+      effectiveEvent = MouseButtonDownEvent{mouseDown->mouseButton, m_cursorScreenPos, mouseDown->source};
     else if (auto mouseUp = event.ptr<MouseButtonUpEvent>())
-      effectiveEvent = MouseButtonUpEvent{mouseUp->mouseButton, m_cursorScreenPos};
+      effectiveEvent = MouseButtonUpEvent{mouseUp->mouseButton, m_cursorScreenPos, mouseUp->source};
     else if (auto mouseWheel = event.ptr<MouseWheelEvent>())
       effectiveEvent = MouseWheelEvent{mouseWheel->mouseWheel, m_cursorScreenPos};
   }
@@ -2122,7 +2131,7 @@ bool MainInterface::handleActionWheelEvent(ActionWheelEvent const& event) {
   if (!m_actionWheelActive)
     return event.open || event.confirm || event.cancel;
 
-  updateActionWheelSelection(event.direction);
+  updateActionWheelSelection(event.directionYUp ? Vec2F(event.direction[0], -event.direction[1]) : event.direction);
 
   if (event.confirm) {
     activateActionWheelSelection();

@@ -110,6 +110,12 @@ void TitleScreen::render() {
 }
 
 bool TitleScreen::handleInputEvent(InputEvent const& event) {
+#ifdef STAR_PLATFORM_MOBILE
+  if (auto touch = event.ptr<TouchPointerEvent>()) {
+    m_cursorScreenPos = Vec2I::round(touch->position);
+    m_cursorVisible = true;
+  }
+#endif
   if (auto mouseMove = event.ptr<MouseMoveEvent>()) {
     m_cursorScreenPos = Vec2I(mouseMove->mousePosition);
     m_cursorVisible = mouseMove->cursorVisible;
