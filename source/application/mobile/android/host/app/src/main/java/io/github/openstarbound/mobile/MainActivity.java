@@ -1755,6 +1755,8 @@ public final class MainActivity extends SDLActivity {
                     }
                     File logs = new File(root, "logs");
                     addDirectoryToZip(zip, logs, logs, "logs");
+                    File memoryReports = new File(activity.getFilesDir(), "hwasan");
+                    addDirectoryToZip(zip, memoryReports, memoryReports, "hwasan");
                     addFileToZip(zip, new File(root, "mobile_launcher.json"), "mobile_launcher.json");
                     addFileToZip(zip, new File(root, "sbinit.mobile.config"), "sbinit.mobile.config");
                 }
