@@ -20,6 +20,9 @@ SET_TESTS_PROPERTIES(gamepad_input_tests PROPERTIES LABELS "NoAssets")
 ADD_EXECUTABLE (touch_input_tests touch_input_test.cpp)
 ADD_TEST (NAME touch_input_tests COMMAND touch_input_tests)
 SET_TESTS_PROPERTIES(touch_input_tests PROPERTIES LABELS "NoAssets")
+ADD_EXECUTABLE (target_lock_tests target_lock_test.cpp)
+ADD_TEST (NAME target_lock_tests COMMAND target_lock_tests)
+SET_TESTS_PROPERTIES(target_lock_tests PROPERTIES LABELS "NoAssets")
 
 SET (star_core_tests_SOURCES
       gtest/gtest-all.cc
