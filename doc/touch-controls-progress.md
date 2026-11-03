@@ -9,7 +9,7 @@ real ou limitação específica registrada em `touch-controls.md`.
 - [x] 2. Opções de mira/ataque e gestos de alta densidade.
 - [x] 3. Bloco único, mão ativa e mineração simultânea ao movimento.
 - [x] 4. Opacidade, presets, perfis, restauração e avisos do editor.
-- [x] 5. Gestos de UI, alvos ampliados, janelas, teclado e área segura (aparelho pendente, a documentar).
+- [x] 5. Gestos de UI, alvos ampliados, janelas, teclado e área segura (aparelho pendente; limite documentado).
 - [x] 6. Cancelamento/multitouch e regressões automatizadas.
 - [x] 7. Auditar custo, reaproveitar buffers e cachear rótulos (20.000 ciclos puros: zero alocações).
 - [x] 8. Documentação de uso, limites e 18 testes manuais no Redmi.
@@ -17,7 +17,7 @@ real ou limitação específica registrada em `touch-controls.md`.
 - [x] Verificar cada C++ alterado nas variantes aplicáveis; 44 checks, zero erros/avisos novos.
 - [x] Verificar whitespace, ausência de feedback tátil novo e compatibilidade.
 - [x] Verificar pré-requisitos e possibilidade de APK; falha de configure documentada.
-- [ ] Publicar commits pequenos na branch e atualizar PR.
+- [x] Publicar commits pequenos na branch e atualizar PR.
 
 Verificação final concluída: duas matrizes de 22 checks com NDK r26d arm64/API 28
 real, Windows launcher e Windows clássico. Uma usa headers da engine; outra,
@@ -28,4 +28,11 @@ Evidências, arquivos e comandos em `touch-controls-validation.md`.
 Tentativa de APK: CMake + Ninja + vcpkg + NDK instalados no workspace.
 O configure do preset arm64 falhou porque o triplet de ferramentas do host
 `x64-windows` exige Visual Studio e não há instância completa instalada.
-Nenhum APK foi produzido; a limitação será registrada no documento final.
+Nenhum APK foi produzido; a limitação está registrada no documento final.
+
+Publicação confirmada no [PR #3](https://github.com/Cleitin790/oSBM/pull/3),
+aberto para revisão e sem merge. As árvores de cada commit publicado foram
+comparadas por SHA com as árvores locais. O relatório final registra a falha
+de configure e os limites de aparelho, teclado, HUD real e plataformas não testadas.
+As caixas acima indicam implementação/verificação disponível ou limite documentado;
+não significam que os testes manuais em aparelho tenham sido executados.
