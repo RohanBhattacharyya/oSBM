@@ -39,14 +39,28 @@ WorldChunks WorldStorage::getWorldChunksUpdate(WorldChunks const& oldChunks, Wor
 }
 
 void WorldStorage::applyWorldChunksUpdateToFile(String const& file, WorldChunks const& update) {
+  // Check the entire packet before opening (and possibly creating) the save.
+  // BTreeDatabase::~BTreeDatabase commits on close, even during unwinding.
+  for (auto const& p : update) {
+    if (p.first.size() != 5)
+      throw WorldStorageException::format("Invalid ship update key size {} (expected 5); save left untouched", p.first.size());
+  }
+  if (update.empty())
+    return;
+
   BTreeDatabase db;
   openDatabase(db, File::open(file, IOMode::ReadWrite));
 
-  for (auto const& p : update) {
-    if (p.second)
-      db.insert(p.first, *p.second);
-    else
-      db.remove(p.first);
+  try {
+    for (auto const& p : update) {
+      if (p.second)
+        db.insert(p.first, *p.second);
+      else
+        db.remove(p.first);
+    }
+  } catch (...) {
+    db.rollback();
+    throw;
   }
 }
 

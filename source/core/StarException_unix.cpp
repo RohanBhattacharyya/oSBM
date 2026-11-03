@@ -6,6 +6,10 @@
 #include <execinfo.h>
 #endif
 #include <cstdlib>
+#if STAR_SYSTEM_ANDROID
+#include <dlfcn.h>
+#include <unwind.h>
+#endif
 #ifdef STAR_USE_CPPTRACE
 #include "cpptrace/cpptrace.hpp"
 #include "cpptrace/formatting.hpp"
@@ -29,9 +33,22 @@ static size_t const StackLimit = 256;
 
 typedef pair<Array<void*, StackLimit>, size_t> StackCapture;
 
+#if STAR_SYSTEM_ANDROID
+static _Unwind_Reason_Code captureAndroidFrame(_Unwind_Context* context, void* data) {
+  auto& stack = *static_cast<StackCapture*>(data);
+  auto address = _Unwind_GetIP(context);
+  if (address)
+    stack.first[stack.second++] = reinterpret_cast<void*>(address);
+  return stack.second == StackLimit ? _URC_END_OF_STACK : _URC_NO_REASON;
+}
+#endif
+
 inline StackCapture captureStack() {
   StackCapture stackCapture;
-#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_SWITCH
+#if STAR_SYSTEM_ANDROID
+  stackCapture.second = 0;
+  _Unwind_Backtrace(captureAndroidFrame, &stackCapture);
+#elif STAR_SYSTEM_SWITCH
   stackCapture.second = 0;
 #else
   stackCapture.second = backtrace(stackCapture.first.ptr(), StackLimit);
@@ -41,7 +58,24 @@ inline StackCapture captureStack() {
 
 OutputProxy outputStack(StackCapture stack) {
   return OutputProxy([stack = std::move(stack)](std::ostream & os) {
-#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_SWITCH
+#if STAR_SYSTEM_ANDROID
+      for (size_t i = 0; i < stack.second; ++i) {
+        Dl_info info = {};
+        auto address = reinterpret_cast<uintptr_t>(stack.first[i]);
+        if (dladdr(stack.first[i], &info) && info.dli_fbase) {
+          os << "#" << i << " pc 0x" << std::hex
+             << address - reinterpret_cast<uintptr_t>(info.dli_fbase)
+             << std::dec << " " << (info.dli_fname ? info.dli_fname : "?");
+          if (info.dli_sname)
+            os << " (" << info.dli_sname << ")";
+        } else {
+          os << "#" << i << " " << stack.first[i];
+        }
+        os << '\n';
+      }
+      if (!stack.second)
+        os << "[stack trace unavailable]";
+#elif STAR_SYSTEM_SWITCH
       (void)stack;
       os << "[stack trace unavailable]";
 #else
