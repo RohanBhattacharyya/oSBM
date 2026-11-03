@@ -353,7 +353,10 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
       auto player = m_client->mainPlayer();
       auto item = down->mouseButton == MouseButton::Right ? player->altHandItem() : player->primaryHandItem();
       static String const weaponTag = "weapon";
-      if (!item || !item->hasItemTag(weaponTag)) m_lockTarget = NullEntityId;
+      if (!item || !item->hasItemTag(weaponTag)) {
+        m_lockTarget = NullEntityId;
+        m_mobileDirectionalAimActive = false;
+      }
     }
   }
   if (auto lock = event.ptr<TargetLockEvent>()) {
@@ -378,13 +381,21 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
     return handleDirectionalAimEvent(*directionalAim);
 
   InputEvent effectiveEvent = event;
-  if (m_mobileDirectionalAimActive) {
+  Vec2F actionPosition = m_cursorScreenPos;
+  bool directionalAction = m_mobileDirectionalAimActive;
+#ifdef STAR_PLATFORM_MOBILE
+  if (m_lockTarget != NullEntityId) {
+    actionPosition = m_worldPainter->camera().worldToScreen(m_lockPosition);
+    directionalAction = true;
+  }
+#endif
+  if (directionalAction) {
     if (auto mouseDown = event.ptr<MouseButtonDownEvent>())
-      effectiveEvent = MouseButtonDownEvent{mouseDown->mouseButton, m_cursorScreenPos, mouseDown->source};
+      effectiveEvent = MouseButtonDownEvent{mouseDown->mouseButton, actionPosition, mouseDown->source};
     else if (auto mouseUp = event.ptr<MouseButtonUpEvent>())
-      effectiveEvent = MouseButtonUpEvent{mouseUp->mouseButton, m_cursorScreenPos, mouseUp->source};
+      effectiveEvent = MouseButtonUpEvent{mouseUp->mouseButton, actionPosition, mouseUp->source};
     else if (auto mouseWheel = event.ptr<MouseWheelEvent>())
-      effectiveEvent = MouseWheelEvent{mouseWheel->mouseWheel, m_cursorScreenPos};
+      effectiveEvent = MouseWheelEvent{mouseWheel->mouseWheel, actionPosition, mouseWheel->source};
   }
 
   if (m_paneManager.sendInputEvent(effectiveEvent)) {
