@@ -1,5 +1,10 @@
 #include "StarMainInterface.hpp"
 #include "StarGamepadInput.hpp"
+#ifdef STAR_PLATFORM_MOBILE
+#include "StarTargetLock.hpp"
+#include "StarNpc.hpp"
+#include "StarDamageBarEntity.hpp"
+#endif
 #include "StarJsonExtra.hpp"
 #include "StarLogging.hpp"
 #include "StarLexicalCast.hpp"
@@ -149,6 +154,12 @@ MainInterface::MainInterface(UniverseClientPtr client, WorldPainterPtr painter, 
   m_plainCraftingWindow = make_shared<CraftingPane>(m_client->worldClient(), m_client->mainPlayer(), JsonObject{{"filter", JsonArray{"plain"}}}, m_client->mainPlayer()->entityId());
   m_paneManager.registerPane(MainInterfacePanes::CraftingPlain, PaneLayer::Window, m_plainCraftingWindow);
 
+#ifdef STAR_PLATFORM_MOBILE
+  Json lockConfig = Root::singleton().configuration()->getPath("mobile.lockOn", JsonObject());
+  m_lockOnEnabled = lockConfig.getBool("enabled", false);
+  m_lockPreferBoss = lockConfig.getBool("preferBoss", true);
+  m_lockRange = std::clamp(lockConfig.getFloat("range", 40), 8.0f, 80.0f);
+#endif
   m_paneManager.registerPane(MainInterfacePanes::EscapeDialog, PaneLayer::ModalWindow, createEscapeDialog());
 
   auto songbookInterface = make_shared<SongbookInterface>(m_client->mainPlayer());
@@ -335,6 +346,23 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
   }
 
 #ifdef STAR_PLATFORM_MOBILE
+  if (m_lockTarget != NullEntityId) {
+    if (auto move = event.ptr<MouseMoveEvent>(); move && move->source == InputSource::Mouse)
+      m_lockTarget = NullEntityId;
+    if (auto down = event.ptr<MouseButtonDownEvent>()) {
+      auto player = m_client->mainPlayer();
+      auto item = down->mouseButton == MouseButton::Right ? player->altHandItem() : player->primaryHandItem();
+      static String const weaponTag = "weapon";
+      if (!item || !item->hasItemTag(weaponTag)) m_lockTarget = NullEntityId;
+    }
+  }
+  if (auto lock = event.ptr<TargetLockEvent>()) {
+    if (lock->command == TargetLockCommand::Cancel || (lock->command == TargetLockCommand::Toggle && m_lockTarget != NullEntityId))
+      m_lockTarget = NullEntityId;
+    else if (m_lockOnEnabled && !windowsOpen() && !inputFocus())
+      acquireTargetLock(lock->command == TargetLockCommand::Next);
+    return true;
+  }
   if (auto touch = event.ptr<TouchPointerEvent>()) {
     m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = touch->position);
     m_cursorVisible = true;
@@ -633,6 +661,9 @@ void MainInterface::preUpdate(float) {
 
 void MainInterface::update(float dt) {
   m_paneManager.update(dt);
+#ifdef STAR_PLATFORM_MOBILE
+  updateTargetLock();
+#endif
   m_cursor.update(dt);
   m_cursorDraggingCached = (bool)m_client->mainPlayer()->inventory()->swapSlotItem();
 
@@ -1106,6 +1137,11 @@ void MainInterface::render() {
 }
 
 Vec2F MainInterface::cursorWorldPosition() const {
+#ifdef STAR_PLATFORM_MOBILE
+  if (m_lockTarget != NullEntityId) {
+    return m_lockPosition;
+  }
+#endif
   if (m_gamepadAimOffset) {
     auto const& camera = m_worldPainter->camera();
     Vec2F target = camera.worldToScreen(m_client->mainPlayer()->position() + *m_gamepadAimOffset);
@@ -1944,6 +1980,13 @@ void MainInterface::renderDebug() {
 }
 
 void MainInterface::updateCursor() {
+#ifdef STAR_PLATFORM_MOBILE
+  if (m_lockTarget != NullEntityId) {
+    Vec2F target = m_worldPainter->camera().worldToScreen(cursorWorldPosition());
+    m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = target);
+    m_cursorVisible = true;
+  } else
+#endif
   if (m_gamepadAimOffset) {
     Vec2F target = m_worldPainter->camera().worldToScreen(cursorWorldPosition());
     target[0] = std::clamp(target[0], 0.0f, (float)windowWidth());
@@ -1993,6 +2036,13 @@ void MainInterface::renderCursor() {
   if (!m_cursorVisible)
     return m_guiContext->applicationController()->setCursorVisible(false);
 
+#ifdef STAR_PLATFORM_MOBILE
+  if (m_lockTarget != NullEntityId) {
+    Vec2F center(m_cursorScreenIPos);
+    for (auto d : {Vec2F(1,0), Vec2F(-1,0), Vec2F(0,1), Vec2F(0,-1)})
+      m_guiContext->drawLine(center + d * 10, center + d * 17, Vec4B(255,180,50,255), 2);
+  }
+#endif
   Vec2I cursorPos = m_cursorScreenIPos;
   Vec2I cursorSize = m_cursor.size();
   Vec2I cursorOffset = m_cursor.offset();
@@ -2146,6 +2196,95 @@ bool MainInterface::handleActionWheelEvent(ActionWheelEvent const& event) {
 
   return true;
 }
+
+#ifdef STAR_PLATFORM_MOBILE
+bool MainInterface::lockWeaponEquipped() const {
+  auto player = m_client->mainPlayer();
+  // Exige a marca padrão de arma: ferramentas/blocos e itens desconhecidos ficam livres.
+  static String const weaponTag = "weapon";
+  auto primary = player->primaryHandItem();
+  auto secondary = player->altHandItem();
+  return (primary && primary->hasItemTag(weaponTag)) || (secondary && secondary->hasItemTag(weaponTag));
+}
+
+bool MainInterface::lockTargetValid(EntityId id, Vec2F& position) const {
+  auto world = m_client->worldClient();
+  auto player = m_client->mainPlayer();
+  auto entity = world->entity(id);
+  if (id == m_lockTarget && m_lockEntity && entity != m_lockEntity) return false;
+  auto bar = as<DamageBarEntity>(entity);
+  if (!entity || !bar) return false;
+  auto monster = as<Monster>(entity);
+  auto npc = as<Npc>(entity);
+  bool boss = bar->damageBar() == DamageBarType::Special;
+  bool aggressive = (monster && monster->aggressive()) || (npc && npc->aggressive()) || boss;
+  bool hostile = (monster || npc) && aggressive && entity->getTeam().type == TeamType::Enemy
+      && player->getTeam().canDamage(entity->getTeam(), false);
+  position = entity->position() + entity->metaBoundBox().center();
+  Vec2F delta = world->geometry().diff(position, player->position());
+  Vec2F screen = m_worldPainter->camera().worldToScreen(position);
+  bool visible = screen[0] >= 0 && screen[1] >= 0 && screen[0] <= windowWidth() && screen[1] <= windowHeight();
+  if (!bar->health() || !hostile || !visible || delta.magnitude() > m_lockRange || !lockWeaponEquipped()) return false;
+  return TargetLock::retain(true, bar->health() > 0, hostile, visible, delta.magnitude() <= m_lockRange,
+      lockWeaponEquipped(), world->lineTileCollision(player->position(), player->position() + delta));
+}
+
+void MainInterface::updateTargetLock() {
+  if (m_lockTarget == NullEntityId) { m_lockPrimary.reset(); m_lockSecondary.reset(); m_lockEntity.reset(); return; }
+  auto player = m_client->mainPlayer();
+  Vec2F position;
+  if (!m_lockOnEnabled || player->primaryHandItem() != m_lockPrimary || player->altHandItem() != m_lockSecondary
+      || windowsOpen() || inputFocus() || (m_cinematicOverlay && !m_cinematicOverlay->completed())
+      || !lockTargetValid(m_lockTarget, position))
+    m_lockTarget = NullEntityId;
+  else
+    m_lockPosition = position; // O render só lê a posição validada no update.
+}
+
+void MainInterface::acquireTargetLock(bool next) {
+  if (!lockWeaponEquipped()) { m_lockTarget = NullEntityId; return; }
+  auto world = m_client->worldClient();
+  auto player = m_client->mainPlayer();
+  Vec2F origin = player->position();
+  Vec2F direction = world->geometry().diff(cursorWorldPosition(), origin);
+  if (direction.magnitudeSquared() < 0.001f) direction = {1,0};
+  direction /= direction.magnitude();
+  EntityId previous = m_lockTarget;
+  TargetLock::Chooser chooser;
+  if (next && previous != NullEntityId) {
+    direction = m_lockSearchDirection;
+    Vec2F position;
+    if (lockTargetValid(previous, position)) {
+      Vec2F delta = world->geometry().diff(position, origin);
+      float distance = delta.magnitude();
+      auto bar = as<DamageBarEntity>(world->entity(previous));
+      chooser.previous = {TargetLock::score(distance, (delta * direction) / std::max(0.001f,distance),
+          bar->damageBar() == DamageBarType::Special, m_lockPreferBoss), previous, true};
+    }
+  } else {
+    m_lockSearchDirection = direction;
+  }
+  world->forEachEntity(RectF::withCenter(origin, Vec2F::filled(m_lockRange * 2)), [&](EntityPtr const& entity) {
+    if (next && entity->entityId() == previous) return;
+    Vec2F position;
+    if (!lockTargetValid(entity->entityId(), position)) return;
+    Vec2F delta = world->geometry().diff(position, origin);
+    float distance = delta.magnitude();
+    auto bar = as<DamageBarEntity>(entity);
+    float score = TargetLock::score(distance, (delta * direction) / std::max(0.001f, distance),
+        bar->damageBar() == DamageBarType::Special, m_lockPreferBoss);
+    chooser.consider(score, entity->entityId());
+  });
+  auto result = chooser.result();
+  EntityId chosen = result.valid ? (EntityId)result.id : NullEntityId;
+  // Não há busca automática de substituto quando o alvo morre ou desaparece.
+  if (chosen != NullEntityId || !next) m_lockTarget = chosen;
+  m_lockPrimary = player->primaryHandItem(); m_lockSecondary = player->altHandItem();
+  m_lockEntity = world->entity(m_lockTarget);
+  if (m_lockEntity) m_lockPosition = m_lockEntity->position() + m_lockEntity->metaBoundBox().center();
+  if (m_lockTarget != NullEntityId) { m_mobileDirectionalAimActive = true; m_cursorVisible = true; }
+}
+#endif
 
 bool MainInterface::handleDirectionalAimEvent(DirectionalAimEvent const& event) {
   // D-pad focus owns open windows. A held/recentered aim stick must not

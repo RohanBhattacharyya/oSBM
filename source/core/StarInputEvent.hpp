@@ -256,6 +256,9 @@ struct TextInputEvent {
 };
 
 #ifdef STAR_PLATFORM_MOBILE
+enum class TargetLockCommand { Toggle, Next, Cancel };
+struct TargetLockEvent { TargetLockCommand command; };
+
 enum class TouchPhase { Down, Move, Up, Cancel };
 struct TouchPointerEvent {
   uint64_t finger;
@@ -340,6 +343,7 @@ typedef Variant<
     TextInputEvent,
 #ifdef STAR_PLATFORM_MOBILE
     TouchPointerEvent,
+    TargetLockEvent,
 #endif
     MouseMoveEvent,
     MouseButtonDownEvent,

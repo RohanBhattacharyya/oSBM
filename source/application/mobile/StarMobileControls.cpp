@@ -78,6 +78,8 @@ String actionName(MobileTouchAction const& action) {
       return launcherTextStatic("touchAction.scrollUp", "Scroll Up");
     case MobileTouchActionKind::MouseWheelDown:
       return launcherTextStatic("touchAction.scrollDown", "Scroll Down");
+    case MobileTouchActionKind::TargetLockToggle: return launcherTextStatic("touchAction.targetLock", "Lock / unlock target");
+    case MobileTouchActionKind::TargetLockNext: return launcherTextStatic("touchAction.targetNext", "Next target");
     case MobileTouchActionKind::TouchHandSwap:
       return launcherTextStatic("touchAction.swapAimHand", "Swap aim hand");
     case MobileTouchActionKind::GyroToggle:
@@ -126,7 +128,16 @@ MobileTouchAction wheelAction(bool up) {
   return action;
 }
 
+MobileTouchAction targetLockAction(bool next) {
+  MobileTouchAction action;
+  action.kind = next ? MobileTouchActionKind::TargetLockNext : MobileTouchActionKind::TargetLockToggle;
+  return action;
+}
+
 void loadTouchAimOptions(MobileTouchConfig& config, Json const& json) {
+  config.lockOnEnabled = json.queryBool("touch.lockOnEnabled", false);
+  config.lockOnPreferBoss = json.queryBool("touch.lockOnPreferBoss", true);
+  config.lockOnRange = std::clamp(json.queryFloat("touch.lockOnRange", 40), 8.0f, 80.0f);
   config.aimAttackMode = (TouchInput::AttackMode)std::clamp(json.queryInt("touch.aimAttackMode", 0), (int64_t)0, (int64_t)2);
   config.aimDeadzone = std::clamp(json.queryFloat("touch.aimDeadzone", 0.15f), 0.0f, 0.60f);
   config.aimCurve = std::clamp(json.queryFloat("touch.aimCurve", 1.4f), 0.5f, 3.0f);
@@ -235,6 +246,8 @@ std::vector<MobileTouchElement> defaultTouchElements() {
     {"inventoryWheel", launcherTextStatic("touchElement.inventoryWheel", "Inv"), MobileTouchElementKind::Button, true, {0.94f, 0.42f}, 0.82f, inventoryWheelAction(), {}, {}, {}, {}, MobileTouchPressMode::Hold},
     {"actionWheel", launcherTextStatic("touchElement.actionWheel", "Menu"), MobileTouchElementKind::Button, true, {0.94f, 0.26f}, 0.82f, actionWheelAction(), {}, {}, {}, {}, MobileTouchPressMode::Hold},
     {"shift", launcherTextStatic("touchElement.shift", "Shift"), MobileTouchElementKind::Button, false, {0.66f, 0.88f}, 0.82f, keyAction(Key::LShift), {}, {}, {}, {}},
+    {"targetLock", launcherTextStatic("touchElement.targetLock", "Lock"), MobileTouchElementKind::Button, true, {0.54f, 0.45f}, 0.72f, targetLockAction(), {}, {}, {}, {}, MobileTouchPressMode::SinglePress},
+    {"targetNext", launcherTextStatic("touchElement.targetNext", "Next"), MobileTouchElementKind::Button, true, {0.62f, 0.45f}, 0.72f, targetLockAction(true), {}, {}, {}, {}, MobileTouchPressMode::SinglePress},
     {"singleBlock", launcherTextStatic("touchElement.singleBlock", "1 block"), MobileTouchElementKind::Button, true, {0.76f, 0.30f}, 0.72f, keyAction(Key::LShift), {}, {}, {}, {}, MobileTouchPressMode::Toggle},
     {"swapAimHand", launcherTextStatic("touchElement.swapAimHand", "L/R"), MobileTouchElementKind::Button, true, {0.80f, 0.46f}, 0.72f, touchHandSwapAction(), {}, {}, {}, {}, MobileTouchPressMode::SinglePress},
     {"ctrl", launcherTextStatic("touchElement.ctrl", "Ctrl"), MobileTouchElementKind::Button, false, {0.58f, 0.88f}, 0.82f, keyAction(Key::LCtrl), {}, {}, {}, {}},
@@ -347,6 +360,8 @@ Json jsonFromTouchAction(MobileTouchAction const& action) {
     return JsonObject{{"type", "wheel"}, {"direction", "up"}};
   if (action.kind == MobileTouchActionKind::MouseWheelDown)
     return JsonObject{{"type", "wheel"}, {"direction", "down"}};
+  if (action.kind == MobileTouchActionKind::TargetLockToggle) return JsonObject{{"type", "targetLock"}};
+  if (action.kind == MobileTouchActionKind::TargetLockNext) return JsonObject{{"type", "targetNext"}};
   if (action.kind == MobileTouchActionKind::TouchHandSwap)
     return JsonObject{{"type", "touchHandSwap"}};
   if (action.kind == MobileTouchActionKind::GyroToggle)
@@ -374,6 +389,8 @@ MobileTouchAction touchActionFromJson(Json const& json, MobileTouchAction def) {
     return mouseAction(MouseButtonNames.valueLeft(json.getString("button", MouseButtonNames.getRight(def.mouseButton)), def.mouseButton));
   if (type.equals("wheel", String::CaseInsensitive))
     return wheelAction(!json.getString("direction", "up").equals("down", String::CaseInsensitive));
+  if (type.equals("targetLock", String::CaseInsensitive)) return targetLockAction();
+  if (type.equals("targetNext", String::CaseInsensitive)) return targetLockAction(true);
   if (type.equals("touchHandSwap", String::CaseInsensitive))
     return touchHandSwapAction();
   if (type.equals("gyroToggle", String::CaseInsensitive) || type.equals("gyro", String::CaseInsensitive))
@@ -741,6 +758,7 @@ public:
 
   void cancelAll() {
     emitEvent(TouchPointerEvent{0, TouchPhase::Cancel, {}});
+    emitEvent(TargetLockEvent{TargetLockCommand::Cancel});
     clearPulsedActions();
     m_macroEvents.clear();
 
@@ -896,7 +914,7 @@ public:
     for (size_t index=0; index<m_elements.size(); ++index) {
       auto const& element=m_elements[index];
       auto& cache=m_overlayCache[index];
-      if (!element.enabled || element.opacity <= 0)
+      if (!element.enabled || (!m_config.lockOnEnabled && (element.action.kind == MobileTouchActionKind::TargetLockToggle || element.action.kind == MobileTouchActionKind::TargetLockNext)) || element.opacity <= 0)
         continue;
       op = globalOpacity * std::clamp(element.opacity, 0.0f, 1.0f);
       ImU32 base=contrastColor(1,1,1), fill=contrastColor(.31f,.63f,1);
@@ -1178,6 +1196,8 @@ private:
     for (auto const& element : m_elements) {
       if (!element.enabled)
         continue;
+      if (!m_config.lockOnEnabled && (element.action.kind == MobileTouchActionKind::TargetLockToggle || element.action.kind == MobileTouchActionKind::TargetLockNext))
+        continue;
       if (element.kind != MobileTouchElementKind::Button && element.kind != MobileTouchElementKind::DPad)
         continue;
 
@@ -1206,6 +1226,8 @@ private:
         state.role = FingerRole::ActionButton;
         state.action = bestElement->action;
         state.pressMode = bestElement->pressMode;
+        if (bestElement->action.kind == MobileTouchActionKind::TargetLockToggle || bestElement->action.kind == MobileTouchActionKind::TargetLockNext)
+          state.pressMode = MobileTouchPressMode::SinglePress;
         if (isWheelAction(bestElement->action)) {
           // Hold to open the radial wheel, drag toward an option, release to
           // confirm (release near the middle cancels).
@@ -1765,6 +1787,10 @@ private:
 
   void pressActionButton(MobileTouchElement const& element) {
     m_heldElements.add(element.id);
+    if (element.action.kind == MobileTouchActionKind::TargetLockToggle || element.action.kind == MobileTouchActionKind::TargetLockNext) {
+      emitEvent(TargetLockEvent{element.action.kind == MobileTouchActionKind::TargetLockNext ? TargetLockCommand::Next : TargetLockCommand::Toggle});
+      return;
+    }
     if (element.action.kind == MobileTouchActionKind::TouchHandSwap) {
       setMouseOwner("aimJoystick:attack", m_aimSecondary ? MouseButton::Right : MouseButton::Left, false);
       m_aimAttackHeld = false;
@@ -1937,7 +1963,9 @@ private:
   }
 
   void setAction(MobileTouchAction const& action, String const& owner, bool desired) {
-    if (action.kind == MobileTouchActionKind::Key) {
+    if (action.kind == MobileTouchActionKind::TargetLockToggle || action.kind == MobileTouchActionKind::TargetLockNext) {
+      if (desired) emitEvent(TargetLockEvent{action.kind == MobileTouchActionKind::TargetLockNext ? TargetLockCommand::Next : TargetLockCommand::Toggle});
+    } else if (action.kind == MobileTouchActionKind::Key) {
       setKeyOwner(owner, action.key, desired);
     } else if (action.kind == MobileTouchActionKind::KeyMacro) {
       if (action.macroSequential) {
@@ -2541,6 +2569,8 @@ public:
   }
 
   void cancelAll() {
+    if (m_config.enabled)
+      emitEvent(TargetLockEvent{TargetLockCommand::Cancel});
     clearPulsedActions();
     closeActionWheel(false);
     m_macroEvents.clear();
@@ -2646,6 +2676,12 @@ private:
     m_heldButtons.add(owner);
     ActiveButton active{binding->action, binding->pressMode};
     m_activeButtons[owner] = active;
+
+    if (binding->action.kind == MobileTouchActionKind::TargetLockToggle || binding->action.kind == MobileTouchActionKind::TargetLockNext) {
+      m_activeButtons[owner].pressMode = MobileTouchPressMode::SinglePress;
+      startPulsedAction(binding->action, owner);
+      return;
+    }
 
     if (binding->action.kind == MobileTouchActionKind::GamepadAimModeToggle) {
       startPulsedAction(binding->action, owner);
@@ -2791,7 +2827,7 @@ private:
       m_cursorPosition += aim * speed * dt * (precisionHeld ? 0.20f : 1.0f);
       m_cursorPosition[0] = std::clamp(m_cursorPosition[0], 0.0f, canvas[0]);
       m_cursorPosition[1] = std::clamp(m_cursorPosition[1], 0.0f, canvas[1]);
-      emitEvent(MouseMoveEvent{{0.0f, 0.0f}, m_cursorPosition, m_config.joystickAimCursorEnabled});
+      emitEvent(MouseMoveEvent{{0.0f, 0.0f}, m_cursorPosition, m_config.joystickAimCursorEnabled, InputSource::Gamepad});
     } else {
       if (precisionHeld) {
         Vec2F target = m_hasDirectionalAim ? m_lastDirectionalAim.direction : Vec2F{};
@@ -2857,7 +2893,9 @@ private:
   }
 
   void setAction(MobileTouchAction const& action, String const& owner, bool desired) {
-    if (action.kind == MobileTouchActionKind::Key) {
+    if (action.kind == MobileTouchActionKind::TargetLockToggle || action.kind == MobileTouchActionKind::TargetLockNext) {
+      if (desired) emitEvent(TargetLockEvent{action.kind == MobileTouchActionKind::TargetLockNext ? TargetLockCommand::Next : TargetLockCommand::Toggle});
+    } else if (action.kind == MobileTouchActionKind::Key) {
       setKeyOwner(owner, action.key, desired);
     } else if (action.kind == MobileTouchActionKind::KeyMacro) {
       if (action.macroSequential) {

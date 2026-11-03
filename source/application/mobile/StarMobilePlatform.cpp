@@ -1483,6 +1483,8 @@ private:
       {launcherText("touchActionChoice.actionBar5", "Action Bar 5"), keyAction(Key::Five)},
       {launcherText("touchActionChoice.scrollUp", "Scroll Up"), wheelAction(true)},
       {launcherText("touchActionChoice.scrollDown", "Scroll Down"), wheelAction(false)},
+      {launcherText("touchActionChoice.targetLock", "Lock / unlock target"), targetLockAction()},
+      {launcherText("touchActionChoice.targetNext", "Next target"), targetLockAction(true)},
       {launcherText("touchActionChoice.swapAimHand", "Swap aim hand"), touchHandSwapAction()},
       {launcherText("touchActionChoice.gyroToggle", "Gyro Toggle"), gyroToggleAction()},
       {launcherText("touchActionChoice.noAction", "No Action"), noneAction()}
@@ -3233,6 +3235,12 @@ private:
           "What single-finger and two-finger taps/holds do. Defaults match the classic behavior (aim/attack, secondary aim/use). Pick No Action to disable a gesture.").utf8Ptr());
       ImGui::Unindent();
     }
+    ImGui::Checkbox(launcherText("touchManager.lockOn", "Enable optional target lock").utf8Ptr(), &state.touchConfig.lockOnEnabled);
+    if (state.touchConfig.lockOnEnabled) {
+      ImGui::Checkbox(launcherText("touchManager.lockBoss", "Prefer bosses when acquiring a target").utf8Ptr(), &state.touchConfig.lockOnPreferBoss);
+      ImGui::SliderFloat(launcherText("touchManager.lockRange", "Target lock range (tiles)").utf8Ptr(), &state.touchConfig.lockOnRange, 8, 80);
+      ImGui::TextWrapped("%s", launcherText("touchManager.lockHint", "Lock keeps the chosen enemy until you unlock, change weapon, open a menu or lose sight/range. Next explicitly switches target. Boss priority uses special health bars; mod bosses without this marker can still be locked manually. Weapons need the weapon item tag. Gamepad: remap Lock / unlock target and Next target.").utf8Ptr());
+    }
     String attackLabels[] = {
       launcherText("touchManager.aimOnly", "Aim only"),
       launcherText("touchManager.releaseAttack", "Release to attack"),
@@ -4189,6 +4197,9 @@ private:
         {"size", state.touchConfig.size},
         {"outlineThickness", state.touchConfig.outlineThickness},
         {"deadzone", state.touchConfig.deadzone},
+        {"lockOnEnabled", state.touchConfig.lockOnEnabled},
+        {"lockOnPreferBoss", state.touchConfig.lockOnPreferBoss},
+        {"lockOnRange", state.touchConfig.lockOnRange},
         {"aimAttackMode", (int)state.touchConfig.aimAttackMode},
         {"aimDeadzone", state.touchConfig.aimDeadzone},
         {"aimCurve", state.touchConfig.aimCurve},
@@ -4308,7 +4319,10 @@ private:
             {"size", state.touchConfig.size},
             {"outlineThickness", state.touchConfig.outlineThickness},
             {"deadzone", state.touchConfig.deadzone},
-            {"aimAttackMode", (int)state.touchConfig.aimAttackMode},
+            {"lockOnEnabled", state.touchConfig.lockOnEnabled},
+        {"lockOnPreferBoss", state.touchConfig.lockOnPreferBoss},
+        {"lockOnRange", state.touchConfig.lockOnRange},
+        {"aimAttackMode", (int)state.touchConfig.aimAttackMode},
             {"aimDeadzone", state.touchConfig.aimDeadzone},
             {"aimCurve", state.touchConfig.aimCurve},
             {"gyroSensitivity", state.touchConfig.gyroSensitivity},
