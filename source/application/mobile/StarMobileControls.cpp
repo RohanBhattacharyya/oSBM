@@ -2388,7 +2388,7 @@ private:
   List<MacroKeyEvent> m_macroEvents;
   int64_t m_macroInstanceCounter = 0;
 
-  unsigned m_context = 0;
+  unsigned m_context = 2;
   bool m_aimSecondary = false;
   bool m_aimAttackHeld = false;
   int64_t m_lastAimFrameMs = 0;
