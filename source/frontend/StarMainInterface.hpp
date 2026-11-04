@@ -200,6 +200,19 @@ private:
   bool overlayClick(Vec2F const& mousePos, MouseButton mouseButton);
   bool handleActionWheelEvent(ActionWheelEvent const& event);
   bool handleDirectionalAimEvent(DirectionalAimEvent const& event);
+#ifdef STAR_PLATFORM_MOBILE
+  bool lockWeaponEquipped() const;
+  bool lockTargetValid(EntityId id, Vec2F& position) const;
+  void updateTargetLock();
+  void acquireTargetLock(bool next);
+  bool m_lockOnEnabled = false, m_lockPreferBoss = true;
+  float m_lockRange = 40;
+  EntityId m_lockTarget = NullEntityId;
+  ItemPtr m_lockPrimary, m_lockSecondary;
+  EntityPtr m_lockEntity;
+  Vec2F m_lockSearchDirection;
+  Vec2F m_lockPosition;
+#endif
   List<ActionWheelItem> actionWheelItems() const;
   List<ActionWheelItem> inventoryWheelItems() const;
   List<ActionWheelItem> activeActionWheelItems() const;

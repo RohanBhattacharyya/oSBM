@@ -353,6 +353,11 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
   auto configuration = m_root->configuration();
 #ifdef STAR_PLATFORM_MOBILE
   if (auto service = appController->launchConfigService()) {
+    Json launcher = service->loadLauncherConfig();
+    configuration->setPath("mobile.lockOn", JsonObject{
+      {"enabled", launcher.queryBool("touch.lockOnEnabled", false)},
+      {"preferBoss", launcher.queryBool("touch.lockOnPreferBoss", true)},
+      {"range", std::clamp(launcher.queryFloat("touch.lockOnRange", 40), 8.0f, 80.0f)}});
     if (auto scale = service->loadLauncherConfig().optQueryFloat("display.interfaceScale"))
       configuration->set("interfaceScale", std::clamp(*scale, 0.0f, 3.0f));
   }
