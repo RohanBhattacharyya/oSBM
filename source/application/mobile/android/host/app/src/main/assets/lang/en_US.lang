@@ -287,3 +287,6 @@ common.create=Create
 common.done=Done
 common.apply=Apply
 common.importing=Importing
+
+touchLayout.comfortable=Comfortable (recommended)
+touchLayout.comfortableHint=Comfortable moves aim and main actions closer to your right thumb and keeps shortcuts below the top HUD. Apply, preview, then Save; your saved layout is not moved automatically.

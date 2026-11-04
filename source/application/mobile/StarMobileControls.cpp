@@ -890,6 +890,22 @@ public:
 
     // Shape pass: switch to the inversion blend for the button geometry, then
     // restore ImGui's default blend state afterwards.
+    // A quiet alpha-blended backing separates the controls from detailed
+    // scenery. Draw it before the inversion pass; zero opacity stays invisible.
+    // Floating sticks use the same origin as their ring, not the resting spot.
+    for (auto const& element : m_elements) {
+      if (!element.enabled || element.opacity <= 0 || element.kind == MobileTouchElementKind::PerformanceCounter)
+        continue;
+      Vec2F center = elementCenter(element);
+      if (element.kind == MobileTouchElementKind::Joystick && m_joystickActive && m_joystickElementId == element.id)
+        center = m_joystickOrigin;
+      if (element.kind == MobileTouchElementKind::AimJoystick && m_aimJoystickActive && m_aimJoystickElementId == element.id)
+        center = m_aimJoystickOrigin;
+      float r = radius * std::clamp(element.size, .45f, 2.4f) / radiusScale;
+      if (element.kind == MobileTouchElementKind::Button) r *= .55f;
+      float opacity = op * std::clamp(element.opacity, 0.0f, 1.0f);
+      draw->AddCircleFilled(ip(center), r, IM_COL32(12, 18, 26, (int)(140 * opacity)), 32);
+    }
     draw->AddCallback(applyContrastBlendCallback, nullptr);
 
     float globalOpacity = op;
@@ -1076,7 +1092,7 @@ private:
       (float)(*m_windowSize)[1] / drawScale[1]
     };
     float shortSide = std::min(drawSize[0], drawSize[1]);
-    return 56.0f * radiusScale * m_config.size * std::max(1.0f, shortSide / 720.0f);
+    return radiusScale * TouchInput::controlRadius(shortSide, m_config.size);
   }
 
   float tapMovementThreshold() const {

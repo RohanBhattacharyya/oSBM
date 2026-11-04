@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <string_view>
 
 namespace Star::TouchInput {
 
@@ -68,11 +69,48 @@ inline float aimTravel(float radius, float sensitivity, float seconds) {
   return radius * 13.2f * std::clamp(sensitivity, 0.25f, 4.0f) * std::clamp(seconds, 0.0f, 0.05f);
 }
 
+// Radius in SDL/ImGui logical units; shared with the layout editor.
+inline float controlRadius(float shortSide, float scale) {
+  return 56.0f * scale * std::max(1.0f, shortSide / 720.0f);
+}
+
 // Alterar layout não altera ações, rótulos ou identificadores existentes.
 inline void preset(Point& position, float& size, int kind) {
   if (kind == 1) size = std::clamp(size * 0.8f, 0.45f, 2.4f);
   if (kind == 2) size = std::clamp(size * 1.25f, 0.45f, 2.4f);
   if (kind == 3) position[0] = 1.0f - position[0];
+}
+// Explicit opt-in layout: only geometry is supplied; callers keep actions,
+// enabled flags, labels and opacity. Unknown/custom IDs are left untouched.
+inline bool comfortablePreset(std::string_view id, Point& position, float& size) {
+  struct Placement { std::string_view id; Point position; float size; };
+  static constexpr Placement placements[] = {
+    {"joystick", {.14f, .80f}, 1.15f},
+    {"aimJoystick", {.78f, .80f}, 1.15f},
+    {"leftHand", {.87f, .56f}, 1.05f},
+    {"rightHand", {.95f, .56f}, 1.05f},
+    {"jump", {.94f, .82f}, 1.40f},
+    {"interact", {.88f, .70f}, 1.15f},
+    {"tech", {.95f, .40f}, 1.00f},
+    {"pause", {.06f, .32f}, .90f},
+    {"chat", {.06f, .48f}, .82f},
+    {"inventoryWheel", {.14f, .53f}, .95f},
+    {"actionWheel", {.06f, .64f}, .95f},
+    {"singleBlock", {.24f, .53f}, .80f},
+    {"swapAimHand", {.24f, .70f}, .80f},
+    {"dpad", {.14f, .80f}, 1.15f},
+    {"shift", {.42f, .82f}, .82f},
+    {"ctrl", {.50f, .82f}, .82f},
+    {"gyroToggle", {.58f, .82f}, .82f}
+  };
+  for (auto const& placement : placements) {
+    if (id == placement.id) {
+      position = placement.position;
+      size = placement.size;
+      return true;
+    }
+  }
+  return false;
 }
 template <typename Elements, typename Assign>
 void mergeLayout(Elements& elements, Elements const& incoming, Assign assign) {
