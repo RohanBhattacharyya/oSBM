@@ -17,6 +17,12 @@ struct SignalHandlerImpl {
   }
 
   void setHandleFatal(bool b) {
+#ifdef STAR_ANDROID_HWASAN
+    // Preserve the sanitizer's handlers, including during destruction. Turning
+    // a memory report into our generic SIGSEGV abort loses the useful evidence.
+    (void)b;
+    return;
+#endif
     handlingFatal = b;
     if (handlingFatal) {
       signal(SIGSEGV, handleFatal);

@@ -398,10 +398,10 @@ auto OrderedMapWrapper<Map, Key, Value, Allocator, MapArgs...>::take(key_type co
   auto i = m_map.find(k);
   if (i != m_map.end()) {
     auto orderIt = i->second;
+    mapped_type v = orderIt->second;
     m_map.erase(i);
 
-    mapped_type v = orderIt->second;
-    m_order.erase(i->second);
+    m_order.erase(orderIt);
     return v;
   } else {
     throw MapException(strf("Key '{}' not found in OrderedMap::take()", outputAny(k)));

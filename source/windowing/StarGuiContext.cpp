@@ -1,4 +1,5 @@
 #include "StarGuiContext.hpp"
+#include "StarInterfaceScale.hpp"
 #include "StarRoot.hpp"
 #include "StarConfiguration.hpp"
 #include "StarMixer.hpp"
@@ -91,22 +92,19 @@ Vec2U GuiContext::windowInterfaceSize() const {
 }
 
 float GuiContext::interfaceScale() const {
-#ifdef STAR_SYSTEM_IOS
+#if defined(STAR_SYSTEM_ANDROID)
+  return androidInterfaceScale(m_interfaceScale, m_automaticInterfaceScale, getDisplayScale(), windowSize()[1]);
+#elif defined(STAR_SYSTEM_IOS)
   return m_interfaceScale;
 #else
   float DisplayScale {std::max(1.0f, std::round(getDisplayScale()))};
-#ifdef STAR_SYSTEM_ANDROID
-  // Character creation is about 480 interface pixels tall; leave room for
-  // its border and buttons on short landscape displays.
-  return std::min(m_interfaceScale * DisplayScale, std::max(1.0f, windowSize()[1] / 500.0f));
-#else
   return m_interfaceScale * DisplayScale;
-#endif
 #endif
 }
 
-void GuiContext::setInterfaceScale(float interfaceScale) {
+void GuiContext::setInterfaceScale(float interfaceScale, bool automatic) {
   m_interfaceScale = interfaceScale;
+  m_automaticInterfaceScale = automatic;
 }
 
 Maybe<Vec2I> GuiContext::mousePosition(InputEvent const& event, float pixelRatio) const {

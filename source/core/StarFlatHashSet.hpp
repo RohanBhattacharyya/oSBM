@@ -302,6 +302,8 @@ FlatHashSet<Key, Hash, Equals, Allocator>::FlatHashSet(initializer_list<value_ty
 
 template <typename Key, typename Hash, typename Equals, typename Allocator>
 FlatHashSet<Key, Hash, Equals, Allocator>& FlatHashSet<Key, Hash, Equals, Allocator>::operator=(FlatHashSet const& other) {
+  if (this == &other)
+    return *this;
   m_table.clear();
   m_table.reserve(other.size());
   for (auto const& p : other)

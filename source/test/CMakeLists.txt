@@ -20,6 +20,10 @@ SET_TESTS_PROPERTIES(gamepad_input_tests PROPERTIES LABELS "NoAssets")
 ADD_EXECUTABLE (touch_input_tests touch_input_test.cpp)
 ADD_TEST (NAME touch_input_tests COMMAND touch_input_tests)
 SET_TESTS_PROPERTIES(touch_input_tests PROPERTIES LABELS "NoAssets")
+ADD_EXECUTABLE (interface_scale_tests interface_scale_test.cpp)
+TARGET_INCLUDE_DIRECTORIES(interface_scale_tests PRIVATE ${PROJECT_SOURCE_DIR}/windowing)
+ADD_TEST (NAME interface_scale_tests COMMAND interface_scale_tests)
+SET_TESTS_PROPERTIES(interface_scale_tests PROPERTIES LABELS "NoAssets")
 
 SET (star_core_tests_SOURCES
       gtest/gtest-all.cc
@@ -90,6 +94,7 @@ SET (star_game_tests_SOURCES
       tile_array_test.cpp
       world_geometry_test.cpp
       universe_connection_test.cpp
+      world_chunks_test.cpp
     )
 ADD_EXECUTABLE (game_tests
   $<TARGET_OBJECTS:star_extern> $<TARGET_OBJECTS:star_core> $<TARGET_OBJECTS:star_base> $<TARGET_OBJECTS:star_game>

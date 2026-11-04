@@ -535,6 +535,8 @@ uint64_t PaneManager::displayedPanesVersion() const {
 }
 
 bool PaneManager::allDisplayedReplayable() const {
+  if (m_prevInterfaceScale != m_context->interfaceScale())
+    return false;
   for (auto const& layerPair : m_displayedPanes) {
     for (auto const& panePair : layerPair.second) {
       if (panePair.first->active() && !m_paneRenderCache.contains(panePair.first.get()))
@@ -545,6 +547,10 @@ bool PaneManager::allDisplayedReplayable() const {
 }
 
 void PaneManager::render() {
+  // Recordings contain pixel coordinates. Resizing the UI must redraw them
+  // before the new hit-test/layout coordinates are used, even under load.
+  if (m_prevInterfaceScale != m_context->interfaceScale())
+    m_paneRenderCache.clear();
   if (m_backgroundWidget) {
     auto size = m_backgroundWidget->size();
     m_backgroundWidget->setPosition(Vec2I((windowSize()[0] - size[0]) / 2, (windowSize()[1] - size[1]) / 2));

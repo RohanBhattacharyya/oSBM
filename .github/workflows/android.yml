@@ -21,6 +21,11 @@ on:
           - x86_64
           - universal
         default: arm64
+      system_allocator:
+        description: Teste de estabilidade com alocador do sistema, sem HWASan
+        required: false
+        type: boolean
+        default: false
   # Lightweight syntax check whenever the workflow itself changes.
   push:
     paths:
@@ -176,6 +181,7 @@ jobs:
           for PRESET in ${CMAKE_PRESETS}; do
             echo "::group::${PRESET}"
             cmake --preset "${PRESET}" -DVCPKG_INSTALL_OPTIONS=--clean-after-build \
+              -DSTAR_ANDROID_SYSTEM_ALLOCATOR=${{ inputs.system_allocator && 'ON' || 'OFF' }} \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
             cmake --build --preset "${PRESET}" --target android_apk --parallel
             cp -v "${APK_DIR}"/oSBM-*.apk "${GITHUB_WORKSPACE}/apk-staging/"
@@ -201,6 +207,6 @@ jobs:
       - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: oSBM-${{ env.OSBM_VERSION }}-android-${{ inputs.arch }}-${{ inputs.build_type }}
+          name: oSBM-${{ env.OSBM_VERSION }}-android-${{ inputs.arch }}-${{ inputs.build_type }}${{ inputs.system_allocator && '-system-allocator' || '' }}
           path: apk-staging/oSBM-*.apk
           if-no-files-found: error

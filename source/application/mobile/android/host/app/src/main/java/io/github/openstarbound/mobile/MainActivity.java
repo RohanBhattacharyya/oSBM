@@ -1749,8 +1749,14 @@ public final class MainActivity extends SDLActivity {
                     writeZipText(zip, "device.txt", diagnosticsDeviceSummary());
                     writeZipText(zip, "memory.txt", diagnosticsMemorySummary());
                     writeZipText(zip, "storage.txt", diagnosticsStorageSummary(root));
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        CrashDiagnostics.write((ActivityManager) activity.getSystemService(Context.ACTIVITY_SERVICE),
+                            activity.getPackageName(), zip);
+                    }
                     File logs = new File(root, "logs");
                     addDirectoryToZip(zip, logs, logs, "logs");
+                    File memoryReports = new File(activity.getFilesDir(), "hwasan");
+                    addDirectoryToZip(zip, memoryReports, memoryReports, "hwasan");
                     addFileToZip(zip, new File(root, "mobile_launcher.json"), "mobile_launcher.json");
                     addFileToZip(zip, new File(root, "sbinit.mobile.config"), "sbinit.mobile.config");
                 }

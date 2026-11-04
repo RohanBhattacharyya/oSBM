@@ -164,6 +164,29 @@ option(STAR_LUA_APICHECK "Use lua api checks" OFF)
 option(STAR_USE_JEMALLOC "Use jemalloc allocators" OFF)
 option(STAR_USE_MIMALLOC "Use mimalloc allocators" OFF)
 option(STAR_USE_RPMALLOC "Use rpmalloc allocators" OFF)
+option(STAR_ANDROID_HWASAN "Diagnostic memory checking on Android ARM64 (Android 14+ device required)" OFF)
+option(STAR_ANDROID_SYSTEM_ALLOCATOR "Android allocator isolation test using libc allocation without sanitizer overhead" OFF)
+if(STAR_ANDROID_SYSTEM_ALLOCATOR)
+  if(NOT STAR_SYSTEM STREQUAL "android")
+    message(FATAL_ERROR "STAR_ANDROID_SYSTEM_ALLOCATOR requires Android")
+  endif()
+  set(STAR_USE_RPMALLOC OFF)
+  set(STAR_USE_JEMALLOC OFF)
+  set(STAR_USE_MIMALLOC OFF)
+endif()
+if(STAR_ANDROID_HWASAN)
+  if(NOT STAR_SYSTEM STREQUAL "android" OR NOT CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    message(FATAL_ERROR "STAR_ANDROID_HWASAN requires Android arm64-v8a")
+  endif()
+  if(NOT CMAKE_ANDROID_STL_TYPE STREQUAL "c++_shared")
+    message(FATAL_ERROR "STAR_ANDROID_HWASAN requires CMAKE_ANDROID_STL_TYPE=c++_shared")
+  endif()
+  # Sanitizer allocation tags must cover every engine allocation. Custom
+  # allocators hide their suballocations from the sanitizer.
+  set(STAR_USE_RPMALLOC OFF)
+  set(STAR_USE_JEMALLOC OFF)
+  set(STAR_USE_MIMALLOC OFF)
+endif()
 # Diagnostic only: samples live allocations by caller so a leak can be
 # attributed. Adds a hash probe to every free, so never ship it.
 option(STAR_ALLOC_PROFILE "Sampled live-allocation profiler (leak hunting)" OFF)
@@ -297,7 +320,7 @@ elseif(STAR_SYSTEM_FAMILY STREQUAL "mobile")
   # post-June binaries with rpmalloc die before main. libmalloc is also the
   # least-bad of the three system allocators, so the win was smallest there.
   # Android x86_64 aborts during gameplay with rpmalloc, so use bionic there.
-  if(NOT STAR_SYSTEM STREQUAL "ios" AND NOT (STAR_SYSTEM STREQUAL "android" AND CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64"))
+  if(NOT STAR_ANDROID_HWASAN AND NOT STAR_ANDROID_SYSTEM_ALLOCATOR AND NOT STAR_SYSTEM STREQUAL "ios" AND NOT (STAR_SYSTEM STREQUAL "android" AND CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64"))
     set(STAR_USE_RPMALLOC ON)
   endif()
 elseif(STAR_SYSTEM_FAMILY STREQUAL "unix")
@@ -552,6 +575,12 @@ if(STAR_SYSTEM_ANDROID AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
   add_link_options(-Wl,--gc-sections)
 endif()
 
+if(STAR_ANDROID_HWASAN)
+  add_compile_definitions(STAR_ANDROID_HWASAN)
+  add_compile_options(-fsanitize=hwaddress -fno-omit-frame-pointer -gline-tables-only -O1 -fno-fast-math)
+  add_link_options(-fsanitize=hwaddress -Wl,--build-id=sha1)
+endif()
+
 # Set other global build settings based on environment...
 
 if(STAR_SYSTEM_MACOS)
@@ -697,9 +726,11 @@ if(STAR_BUILD_GUI)
   if(STAR_SYSTEM_ANDROID)
     find_library(ANDROID_EGL_LIBRARY EGL REQUIRED)
     find_library(ANDROID_GLESV3_LIBRARY GLESv3 REQUIRED)
+    find_library(ANDROID_DL_LIBRARY dl REQUIRED)
     set(STAR_EXT_GUI_LIBS ${STAR_EXT_GUI_LIBS}
         ${ANDROID_EGL_LIBRARY}
         ${ANDROID_GLESV3_LIBRARY}
+        ${ANDROID_DL_LIBRARY}
     )
   elseif(STAR_SYSTEM_IOS)
     find_library(IOS_OPENGLES_FRAMEWORK OpenGLES REQUIRED)

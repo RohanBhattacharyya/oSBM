@@ -4,6 +4,27 @@
 
 using namespace Star;
 
+TEST(OrderedMap, TakeMaintainsRemainingOrder) {
+  struct CollidingHash {
+    size_t operator()(int) const { return 0; }
+  };
+  OrderedHashMap<int, int, CollidingHash> hashMap{{1, 10}, {2, 20}, {3, 30}};
+  EXPECT_EQ(hashMap.take(2), 20);
+  EXPECT_EQ(hashMap.keys(), List<int>({1, 3}));
+  EXPECT_EQ(hashMap.get(1), 10);
+  EXPECT_EQ(hashMap.take(1), 10);
+  EXPECT_EQ(hashMap.take(3), 30);
+  EXPECT_TRUE(hashMap.empty());
+  EXPECT_THROW(hashMap.take(9), MapException);
+
+  OrderedMap<int, int> map{{1, 10}, {2, 20}, {3, 30}};
+  EXPECT_EQ(map.take(2), 20);
+  EXPECT_EQ(map.keys(), List<int>({1, 3}));
+  EXPECT_EQ(map.take(1), 10);
+  EXPECT_EQ(map.take(3), 30);
+  EXPECT_TRUE(map.empty());
+}
+
 TEST(OrderedMap, Insert) {
   OrderedMap<int, int> map;
   map.insert({3, 3});

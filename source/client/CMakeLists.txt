@@ -112,6 +112,21 @@ ENDIF()
 
 IF (STAR_SYSTEM_ANDROID)
   SET (STAR_ANDROID_JNI_LIB_DIR "${PROJECT_SOURCE_DIR}/application/mobile/android/host/app/src/main/jniLibs/${CMAKE_ANDROID_ARCH_ABI}")
+  if(STAR_ANDROID_HWASAN)
+    SET(STAR_ANDROID_JNI_LIB_DIR "${PROJECT_SOURCE_DIR}/application/mobile/android/host/app/src/hwasan/jniLibs/${CMAKE_ANDROID_ARCH_ABI}")
+    # Built-in CMake Android support leaves CMAKE_SYSROOT empty; the NDK's
+    # own toolchain supplies it. Support both entry points explicitly.
+    FIND_FILE(STAR_ANDROID_SHARED_STL libc++_shared.so
+      PATHS "${CMAKE_ANDROID_NDK_TOOLCHAIN_UNIFIED}/sysroot/usr/lib/aarch64-linux-android"
+            "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android"
+      NO_DEFAULT_PATH REQUIRED)
+    ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_ANDROID_JNI_LIB_DIR}"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${STAR_ANDROID_SHARED_STL}" "${STAR_ANDROID_JNI_LIB_DIR}/libc++_shared.so"
+      VERBATIM
+    )
+  endif()
   SET_TARGET_PROPERTIES (starbound PROPERTIES OUTPUT_NAME main)
   if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR CMAKE_BUILD_TYPE STREQUAL "RelWithAsserts" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
     if(CMAKE_STRIP)

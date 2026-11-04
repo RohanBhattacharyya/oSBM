@@ -316,6 +316,8 @@ FlatHashMap<Key, Mapped, Hash, Equals, Allocator>::FlatHashMap(initializer_list<
 
 template <typename Key, typename Mapped, typename Hash, typename Equals, typename Allocator>
 auto FlatHashMap<Key, Mapped, Hash, Equals, Allocator>::operator=(FlatHashMap const& other) -> FlatHashMap& {
+  if (this == &other)
+    return *this;
   m_table.clear();
   m_table.reserve(other.size());
   for (auto const& p : other)

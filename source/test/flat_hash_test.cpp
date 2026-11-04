@@ -8,6 +8,25 @@
 
 using namespace Star;
 
+TEST(FlatHashMap, CopyToSelfPreservesEntries) {
+  FlatHashMap<int, int> map{{1, 10}, {2, 20}};
+  auto const& alias = map;
+  map = alias;
+  EXPECT_EQ(map.size(), 2u);
+  EXPECT_EQ(map.at(1), 10);
+  EXPECT_EQ(map.at(2), 20);
+}
+
+TEST(FlatHashSet, CopyToSelfPreservesEntries) {
+  FlatHashSet<int> set{3, 5, 7};
+  auto const& alias = set;
+  set = alias;
+  EXPECT_EQ(set.size(), 3u);
+  EXPECT_EQ(set.count(3), 1u);
+  EXPECT_EQ(set.count(5), 1u);
+  EXPECT_EQ(set.count(7), 1u);
+}
+
 TEST(FlatHashSet, Preset) {
   FlatHashSet<int> testSet = {42, 63};
   ASSERT_EQ(testSet.find(41), testSet.end());

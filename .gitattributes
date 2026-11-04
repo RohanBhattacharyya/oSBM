@@ -1,2 +1,3 @@
 source/extern/** linguist-vendored=true
 lib/** linguist-vendored=true
+source/application/mobile/android/host/app/src/hwasan/resources/lib/arm64-v8a/wrap.sh text eol=lf
