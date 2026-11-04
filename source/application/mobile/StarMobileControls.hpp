@@ -41,6 +41,8 @@ enum class MobileTouchActionKind {
   GyroToggle,
   GamepadAimModeToggle,
   TouchHandSwap,
+  TargetLockToggle,
+  TargetLockNext,
   ActionWheel,
   InventoryWheel,
   UiNavigation,
@@ -84,6 +86,9 @@ struct MobileTouchConfig {
   TouchInput::AttackMode aimAttackMode = TouchInput::AttackMode::AimOnly;
   float aimDeadzone = 0.15f;
   float aimCurve = 1.4f;
+  bool lockOnEnabled = false;
+  bool lockOnPreferBoss = true;
+  float lockOnRange = 40;
   bool gyroInvertX = false;
   bool gyroInvertY = false;
 };
@@ -180,6 +185,7 @@ MobileTouchAction mouseAction(MouseButton button);
 MobileTouchAction wheelAction(bool up);
 MobileTouchAction gyroToggleAction();
 MobileTouchAction touchHandSwapAction();
+MobileTouchAction targetLockAction(bool next = false);
 void loadTouchAimOptions(MobileTouchConfig& config, Json const& json);
 MobileTouchAction gamepadAimModeToggleAction();
 MobileTouchAction actionWheelAction();

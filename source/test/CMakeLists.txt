@@ -24,6 +24,9 @@ ADD_EXECUTABLE (interface_scale_tests interface_scale_test.cpp)
 TARGET_INCLUDE_DIRECTORIES(interface_scale_tests PRIVATE ${PROJECT_SOURCE_DIR}/windowing)
 ADD_TEST (NAME interface_scale_tests COMMAND interface_scale_tests)
 SET_TESTS_PROPERTIES(interface_scale_tests PROPERTIES LABELS "NoAssets")
+ADD_EXECUTABLE (target_lock_tests target_lock_test.cpp)
+ADD_TEST (NAME target_lock_tests COMMAND target_lock_tests)
+SET_TESTS_PROPERTIES(target_lock_tests PROPERTIES LABELS "NoAssets")
 
 SET (star_core_tests_SOURCES
       gtest/gtest-all.cc

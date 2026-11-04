@@ -53,6 +53,8 @@ There are many features that oSBM has that you should know about.
 
 Neste fork, veja o [guia de controles de toque](doc/touch-controls.md) para mira,
 ataque opcional, bloco único, layouts, gestos de inventário e testes no Android.
+Há também [trava de alvo opcional](doc/optional-target-lock.md), com prioridade
+de bosses na aquisição e comandos remapeáveis de travar/destravar e próximo alvo.
 
 The Controls manager is a menu in the oSBM launcher that can be accessed by clicking the Controls button in the main menu. Opening it up, you will be presented with many options.
 
