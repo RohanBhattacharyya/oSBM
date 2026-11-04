@@ -1692,6 +1692,7 @@ void MainInterface::updateTargetPreview() {
   // consumes this cache, including on Switch's overlapped HUD replay frames.
   m_targetPreviewTiles.clear();
   m_targetPreviewStatus = {};
+  m_targetPreviewSubtle = false;
   auto player = m_client->mainPlayer();
   if (!player->inWorld() || m_disableHud || m_actionWheelActive
       || m_paneManager.topPane({PaneLayer::Window, PaneLayer::ModalWindow}))
@@ -1709,6 +1710,13 @@ void MainInterface::updateTargetPreview() {
   Vec2I target = Vec2I::floor(player->aimPosition());
   bool inRange = player->inToolRange(Vec2F(target) + Vec2F::filled(0.5f));
   Vec4B good(65, 225, 110, 220), bad(245, 75, 70, 230);
+#ifdef STAR_PLATFORM_MOBILE
+  m_targetPreviewSubtle = (bool)mining;
+  if (m_targetPreviewSubtle) {
+    good = Vec4B(215, 225, 230, 90);
+    bad = Vec4B(245, 100, 95, 120);
+  }
+#endif
   bool anyValid = false, anyInvalid = false;
   List<Vec2I> tiles;
   if (auto preview = as<PreviewTileTool>(item)) {
@@ -1744,10 +1752,12 @@ void MainInterface::renderTargetPreview() {
   for (auto const& tile : m_targetPreviewTiles) {
     Vec2F position = camera.worldToScreen(Vec2F(tile.first));
     RectF rect = RectF::withSize(position, Vec2F::filled(pixels));
-    Vec4B fill = tile.second;
-    fill[3] = 35;
-    m_guiContext->drawQuad(rect, fill);
-    m_guiContext->drawPolyLines(PolyF(rect), tile.second, 1.5f);
+    if (!m_targetPreviewSubtle) {
+      Vec4B fill = tile.second;
+      fill[3] = 35;
+      m_guiContext->drawQuad(rect, fill);
+    }
+    m_guiContext->drawPolyLines(PolyF(rect), tile.second, m_targetPreviewSubtle ? 1.0f : 1.5f);
   }
   if (!m_targetPreviewStatus.empty() && !m_targetPreviewTiles.empty()) {
     Vec2F position = camera.worldToScreen(Vec2F(m_targetPreviewTiles.first().first)) + Vec2F(0, pixels + 4);

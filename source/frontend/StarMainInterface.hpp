@@ -317,6 +317,7 @@ private:
   List<pair<Vec2I, Vec4B>> m_targetPreviewTiles;
   String m_targetPreviewStatus;
   bool m_targetPreviewAlt = false;
+  bool m_targetPreviewSubtle = false;
 
   String m_lastCommand;
 

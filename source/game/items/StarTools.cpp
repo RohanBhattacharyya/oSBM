@@ -371,12 +371,19 @@ List<PreviewTile> BeamMiningTool::previewTiles(bool shifting) const {
       if (!ready())
         lightColor *= Color::rgbaf(0.75f, 0.75f, 0.75f, 1.0f);
       Vec3B light = lightColor.toRgb();
+      // The mobile HUD supplies a subtle outline. Do not replace the terrain
+      // light map with the character's favourite colour just for aiming.
+#ifdef STAR_PLATFORM_MOBILE
+      bool const updateLight = false;
+#else
+      bool const updateLight = true;
+#endif
       int radius = !shifting ? m_blockRadius : m_altBlockRadius;
       for (auto pos : tileAreaBrush(radius, ownerp->aimPosition(), true)) {
         if (worldp->tileIsOccupied(pos, TileLayer::Foreground, true)) {
-          result.append({pos, true, light, true});
+          result.append({pos, true, light, updateLight});
         } else if (worldp->tileIsOccupied(pos, TileLayer::Background, true)) {
-          result.append({pos, false, light, true});
+          result.append({pos, false, light, updateLight});
         }
       }
     }
