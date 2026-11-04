@@ -5,6 +5,9 @@ no PR #3. Não há troca automática de esquema por arma, mineração ou constru
 Os perfis desta página são layouts visuais escolhidos no launcher. O gamepad
 continua usando seu esquema universal e seus remapeamentos salvos.
 
+Veja também o [layout confortável e sua validação](touch-layout-ergonomics.md),
+com aplicação explícita, desfazer e preservação das configurações antigas.
+
 ## Layout e mineração
 
 O layout inicial tem 18 elementos cadastrados e 13 habilitados: dois joysticks
@@ -42,7 +45,7 @@ Em **Controls/Overlay**:
 | Aim response curve | 1,4; ajuste entre 0,5 e 3,0; valores maiores refinam o início do curso |
 | Aim sensitivity / Precise aim | Opções existentes por joystick; cursor preciso passa a usar tempo decorrido, com limite de 50 ms por passo |
 | Element opacity | 1,0 para configs antigas; multiplica a opacidade geral e o fade ocioso |
-| Layout preset | Padrão, Compacto (80%), Grande (125%), Canhoto (espelha X) |
+| Layout preset | Padrão, Compacto (80%), Grande (125%), Canhoto (espelha X), Confortável (geometria próxima aos polegares) |
 | Restore built-in controls | Confirmação antes de restaurar ações/rótulos/layout dos IDs padrão; mantém elementos personalizados |
 | Save / Load named layout | Escolha manual; confirma substituição de nome existente e permite desfazer a última troca durante a sessão do launcher |
 | Game interface scale | **Keep current**, sem override inicial; Automatic=0, Small=1,35, Medium=1,8, Large=2,4, no próximo lançamento |

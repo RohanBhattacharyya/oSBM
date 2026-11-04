@@ -280,7 +280,7 @@ struct LauncherState {
   std::vector<MobileTouchElement> touchElements;
   JsonArray touchLayoutProfiles;
   char touchProfileName[64] = {};
-  int touchPreset = 0;
+  int touchPreset = 4; // Recommended geometry; never applied until requested.
   Maybe<float> interfaceScaleOverride;
   MobileGamepadConfig gamepadConfig;
   std::vector<MobileGamepadBinding> gamepadBindings;
@@ -2693,7 +2693,8 @@ private:
     if (!element.enabled)
       return;
 
-    float baseRadius = std::min(canvasSize.x, canvasSize.y) * 0.075f * state.touchConfig.size;
+    ImVec2 display = ImGui::GetIO().DisplaySize;
+    float baseRadius = TouchInput::controlRadius(std::min(display.x, display.y), state.touchConfig.size);
     float radius = baseRadius * std::clamp(element.size, 0.45f, 2.4f);
     ImVec2 center(canvasMin.x + element.position[0] * canvasSize.x, canvasMin.y + element.position[1] * canvasSize.y);
 
@@ -2841,6 +2842,16 @@ private:
     // same always-visible inversion blend as the in-game overlay; labels are
     // drawn afterwards under the default blend with a contrast outline.
     std::vector<PreviewLabel> labels;
+    for (auto const& element : state.touchElements) {
+      if (!element.enabled || element.opacity <= 0 || element.kind == MobileTouchElementKind::PerformanceCounter)
+        continue;
+      float radius = TouchInput::controlRadius(std::min(displaySize.x, displaySize.y), state.touchConfig.size)
+          * std::clamp(element.size, .45f, 2.4f);
+      if (element.kind == MobileTouchElementKind::Button) radius *= .55f;
+      ImVec2 center(canvasMin.x + element.position[0] * canvasSize.x, canvasMin.y + element.position[1] * canvasSize.y);
+      float opacity = std::clamp(state.touchConfig.opacity * element.opacity, 0.0f, 1.0f);
+      draw->AddCircleFilled(center, radius, IM_COL32(12, 18, 26, (int)(140 * opacity)), 32);
+    }
     draw->AddCallback(applyTouchPreviewContrastBlend, nullptr);
     for (int i = 0; i < (int)state.touchElements.size(); ++i)
       renderTouchElementPreview(state, draw, canvasMin, canvasSize, i, labels);
@@ -3069,7 +3080,9 @@ private:
   bool touchHudOverlap(MobileTouchElement const& element, MobileTouchConfig const& config, ImVec2 size) const {
     if (!element.enabled || element.kind == MobileTouchElementKind::PerformanceCounter)
       return false;
-    float radius = std::min(size.x, size.y) * 0.075f * config.size * std::clamp(element.size, 0.45f, 2.4f);
+    ImVec2 display = ImGui::GetIO().DisplaySize;
+    float radius = TouchInput::controlRadius(std::min(display.x, display.y), config.size)
+        * std::clamp(element.size, 0.45f, 2.4f);
     if (element.kind == MobileTouchElementKind::Button) radius *= 0.85f;
     float rx = radius / std::max(1.0f, size.x), ry = radius / std::max(1.0f, size.y);
     float x = element.position[0], y = element.position[1];
@@ -3081,17 +3094,23 @@ private:
   void renderTouchLayouts(LauncherState& state) {
     String presetLabels[] = {
       launcherText("touchLayout.default", "Default"), launcherText("touchLayout.compact", "Compact"),
-      launcherText("touchLayout.large", "Large"), launcherText("touchLayout.left", "Left-handed")};
+      launcherText("touchLayout.large", "Large"), launcherText("touchLayout.left", "Left-handed"),
+      launcherText("touchLayout.comfortable", "Comfortable (recommended)")};
     if (ImGui::BeginCombo(launcherText("touchLayout.preset", "Layout preset").utf8Ptr(), presetLabels[state.touchPreset].utf8Ptr())) {
-      for (int i=0; i<4; ++i)
+      for (int i=0; i<5; ++i)
         if (ImGui::Selectable(presetLabels[i].utf8Ptr(), i == state.touchPreset)) state.touchPreset = i;
       ImGui::EndCombo();
     }
+    ImGui::TextWrapped("%s", launcherText("touchLayout.comfortableHint", "Comfortable moves aim and main actions closer to your right thumb and keeps shortcuts below the top HUD. Apply, preview, then Save; your saved layout is not moved automatically.").utf8Ptr());
     if (ImGui::Button(launcherText("touchLayout.apply", "Apply positions and sizes").utf8Ptr())) {
+      m_previousTouchLayout = JsonObject{{"elements", jsonFromTouchElements(state.touchElements)}};
       auto defaults = defaultTouchElements();
       for (auto& element : defaults) {
         TouchInput::Point point{element.position[0], element.position[1]};
-        TouchInput::preset(point, element.size, state.touchPreset);
+        if (state.touchPreset == 4)
+          TouchInput::comfortablePreset(element.id.utf8(), point, element.size);
+        else
+          TouchInput::preset(point, element.size, state.touchPreset);
         element.position = {point[0], point[1]};
       }
       TouchInput::mergeLayout(state.touchElements, defaults, [](auto& old, auto const& value) {

@@ -107,6 +107,40 @@ int main() {
   preset(point,size,2);check(size==1,"large preset");
   check(overlaps(.3f,.1f,.05f,.05f,.24f,0,.78f,.14f),"hotbar overlap detected");
   check(!overlaps(.9f,.8f,.03f,.03f,.24f,0,.78f,.14f),"free layout position accepted");
+  // Exercise the production layout policy at landscape sizes, including the
+  // safe canvas of the user's screenshot, also with optional Lock/Next. Circles must stay in
+  // bounds, below the top HUD, and visually separate from each other.
+  check(controlRadius(540, 1)==56 && controlRadius(720, 1)==56 && controlRadius(1080, 2)==168,
+      "editor and runtime use the same minimum radius and global size scaling");
+  char const* ids[] = {"joystick", "aimJoystick", "leftHand", "rightHand", "jump", "interact",
+      "pause", "chat", "tech", "inventoryWheel", "actionWheel", "singleBlock", "swapAimHand", "targetLock", "targetNext"};
+  for (Point canvas : {Point{960,540}, Point{1230,562}, Point{1280,720}, Point{1920,1080}, Point{2340,1080}}) {
+    std::array<Point, 15> centers{};
+    std::array<float, 15> radii{};
+    for (unsigned i=0; i<15; ++i) {
+      Point p{}; float scale=0;
+      check(comfortablePreset(ids[i], p, scale), "comfortable layout covers every enabled built-in control");
+      centers[i] = {p[0]*canvas[0], p[1]*canvas[1]};
+      radii[i] = controlRadius(canvas[1], 1) * scale * (i < 2 ? 1.0f : .55f);
+      check(centers[i][0]-radii[i]>=0 && centers[i][0]+radii[i]<=canvas[0]
+          && centers[i][1]-radii[i]>=.16f*canvas[1] && centers[i][1]+radii[i]<=canvas[1],
+          "comfortable controls fit safe canvas and clear top HUD at default global size");
+      for (unsigned j=0; j<i; ++j)
+        check(std::hypot(centers[i][0]-centers[j][0], centers[i][1]-centers[j][1]) > radii[i]+radii[j],
+            "comfortable visible control circles do not overlap");
+    }
+  }
+  Point unchanged{.3f,.4f}; float unchangedSize=1.7f;
+  check(!comfortablePreset("custom",unchanged,unchangedSize) && unchanged==Point{.3f,.4f} && unchangedSize==1.7f,
+      "comfortable layout leaves custom geometry untouched");
+  std::vector<Element> remapped{{"jump",{.2f,.3f},.7f,99,false},{"custom",{.4f,.3f},1.5f,77,true}};
+  auto incoming=remapped;
+  for (auto& element : incoming) comfortablePreset(element.id,element.position,element.size);
+  mergeLayout(remapped,incoming,[](auto& old,auto const& value){old.position=value.position;old.size=value.size;});
+  check(remapped[0].action==99 && !remapped[0].enabled && remapped[0].size==1.4f,
+      "comfortable layout keeps disabled state and remapped jump action");
+  check(remapped[1].position==Point{.4f,.3f} && remapped[1].action==77,
+      "comfortable layout keeps custom control position and action");
   unsigned before=allocations;
   float checksum=0;
   for(int frame=0;frame<20000;++frame) {
