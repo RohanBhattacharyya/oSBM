@@ -4604,8 +4604,12 @@ private:
   }
 
   void shutdownApplication() {
-    std::lock_guard<std::mutex> lock(m_audioMutex);
-    m_audioEnabled = false;
+    {
+      std::lock_guard<std::mutex> lock(m_audioMutex);
+      m_audioEnabled = false;
+    }
+    // SDL's callback holds its stream lock before taking m_audioMutex.
+    // Release our lock before querying/pausing the stream to avoid inversion.
     if (m_sdlAudioOutputStream)
       SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(m_sdlAudioOutputStream));
 
