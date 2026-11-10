@@ -1,10 +1,37 @@
 # Switch toolchain patches
 
-The Switch build depends on three fixes to upstream devkitPro libraries that
+The Switch build depends on fixes to upstream devkitPro libraries and Abseil that
 are NOT yet upstreamed. A fresh clone of this repo + a stock devkitPro install
 will exhibit the bugs below until these patches are applied — run
 `scripts/switch/apply-toolchain-patches.sh` (or follow the manual steps) after
 installing/updating the toolchain.
+
+## abseil-switch.patch
+
+Abseil 20260107.1 needs explicit libnx support. Without it, some archives build
+successfully but omit `LowLevelAlloc`, thread-identity and semaphore definitions;
+the game then fails at the final link. The patch enables the anonymous mapping
+backend supplied by `StarSwitchCompat.c`, disables its unsupported async-signal
+allocator and ELF/sigaction probes, uses libnx thread handles, and retains the
+existing UTC fallback for newlib's `tm` without offset/name fields.
+
+`toolchains/switch/include/sys/mman.h` declares only the anonymous mapping API
+used by that backend. It is scoped to the Abseil build, not installed as a
+general replacement for POSIX file mappings.
+
+Build the pinned, checksum-verified source into an isolated prefix:
+
+```sh
+bash scripts/switch/build-abseil.sh "$PWD/build/switch-abseil"
+cd source
+cmake --preset switch-release \
+  -DCMAKE_PREFIX_PATH="$PWD/../build/switch-abseil/install"
+```
+
+Append any other non-SDK static-library prefixes to the CMake prefix list as
+needed. This script does not modify the installed SDK or use vcpkg. Switch CI
+builds this prerequisite before configuring the game; the remaining portlibs
+and the devkitPro patches below still need to be provisioned on its runner.
 
 ## libdrm_nouveau-bufctx-ref-dedup.patch
 

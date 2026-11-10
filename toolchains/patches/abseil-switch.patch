@@ -1,0 +1,103 @@
+--- a/absl/base/config.h
++++ b/absl/base/config.h
+@@ -380,7 +380,7 @@
+     defined(__myriad2__) || defined(__HAIKU__) || defined(__OpenBSD__) || \
+     defined(__NetBSD__) || defined(__QNX__) || defined(__VXWORKS__) ||    \
+     defined(__hexagon__) || defined(__XTENSA__) ||                        \
+-    defined(_WASI_EMULATED_MMAN)
++    defined(_WASI_EMULATED_MMAN) || defined(__SWITCH__)
+ #define ABSL_HAVE_MMAP 1
+ #endif
+
+--- a/absl/base/internal/low_level_alloc.h
++++ b/absl/base/internal/low_level_alloc.h
+@@ -47,7 +47,7 @@
+ #ifdef ABSL_LOW_LEVEL_ALLOC_ASYNC_SIGNAL_SAFE_MISSING
+ #error ABSL_LOW_LEVEL_ALLOC_ASYNC_SIGNAL_SAFE_MISSING cannot be directly set
+ #elif defined(_WIN32) || defined(__asmjs__) || defined(__wasm__) || \
+-    defined(__hexagon__)
++    defined(__hexagon__) || defined(__SWITCH__)
+ #define ABSL_LOW_LEVEL_ALLOC_ASYNC_SIGNAL_SAFE_MISSING 1
+ #endif
+
+--- a/absl/debugging/failure_signal_handler.cc
++++ b/absl/debugging/failure_signal_handler.cc
+@@ -55,7 +55,7 @@
+ #include "absl/debugging/internal/examine_stack.h"
+ #include "absl/debugging/stacktrace.h"
+
+-#if !defined(_WIN32) && !defined(__wasi__)
++#if !defined(_WIN32) && !defined(__wasi__) && !defined(__SWITCH__)
+ #define ABSL_HAVE_SIGACTION
+ // Apple WatchOS and TVOS don't allow sigaltstack
+ // Apple macOS has sigaltstack, but using it makes backtrace() unusable.
+--- a/absl/base/internal/sysinfo.cc
++++ b/absl/base/internal/sysinfo.cc
+@@ -21,6 +21,9 @@
+ #else
+ #include <fcntl.h>
+ #include <pthread.h>
++#ifdef __SWITCH__
++#include <switch.h>
++#endif
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -466,6 +469,10 @@
+   return static_cast<pid_t>(zx_thread_self());
+ }
+
++#elif defined(__SWITCH__)
++
++pid_t GetTID() { return static_cast<pid_t>(threadGetCurHandle()); }
++
+ #else
+
+ // Fallback implementation of `GetTID` using `pthread_self`.
+--- a/absl/debugging/internal/elf_mem_image.h
++++ b/absl/debugging/internal/elf_mem_image.h
+@@ -35,7 +35,7 @@
+ #if defined(__ELF__) && !defined(__OpenBSD__) && !defined(__QNX__) &&    \
+     !defined(__asmjs__) && !defined(__wasm__) && !defined(__HAIKU__) &&  \
+     !defined(__sun) && !defined(__VXWORKS__) && !defined(__hexagon__) && \
+-    !defined(__XTENSA__)
++    !defined(__XTENSA__) && !defined(__SWITCH__)
+ #define ABSL_HAVE_ELF_MEM_IMAGE 1
+ #endif
+
+--- a/absl/time/internal/cctz/src/time_zone_libc.cc
++++ b/absl/time/internal/cctz/src/time_zone_libc.cc
+@@ -40,7 +40,12 @@
+
+ namespace {
+
+-#if defined(_WIN32) || defined(_WIN64)
++// libnx/newlib exposes UTC broken-down time without tm_gmtoff/tm_zone.
++#if defined(__SWITCH__)
++using tm_gmtoff_t = long;
++inline tm_gmtoff_t tm_gmtoff(const std::tm&) { return 0; }
++inline const char* tm_zone(const std::tm&) { return "UTC"; }
++#elif defined(_WIN32) || defined(_WIN64)
+ // Uses the globals: '_timezone', '_dstbias' and '_tzname'.
+ auto tm_gmtoff(const std::tm& tm) -> decltype(_timezone + _dstbias) {
+   const bool is_dst = tm.tm_isdst > 0;
+--- a/absl/base/internal/poison.cc
++++ b/absl/base/internal/poison.cc
+@@ -27,7 +27,7 @@
+ #include <sanitizer/asan_interface.h>
+ #elif defined(ABSL_HAVE_MEMORY_SANITIZER)
+ #include <sanitizer/msan_interface.h>
+-#elif defined(ABSL_HAVE_MMAP)
++#elif defined(ABSL_HAVE_MMAP) && !defined(__SWITCH__)
+ #include <sys/mman.h>
+ #endif
+
+@@ -64,7 +64,7 @@
+ #elif defined(ABSL_HAVE_MEMORY_SANITIZER)
+   data = malloc(block_size);
+   __msan_poison(data, block_size);
+-#elif defined(ABSL_HAVE_MMAP)
++#elif defined(ABSL_HAVE_MMAP) && !defined(__SWITCH__)
+   data = DirectMmap(nullptr, block_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS,
+                     -1, 0);
+   if (data == MAP_FAILED) return GetBadPointerInternal();
