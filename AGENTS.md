@@ -36,7 +36,7 @@ third-party code is vendored in `source/extern/` or comes from vcpkg
 | The `starbound` target per platform, iOS `ipa` target, Switch link wraps | `source/client/CMakeLists.txt` |
 | Android app identity, signing, APK naming | `source/application/mobile/android/host/app/build.gradle` |
 | Switch toolchain prerequisites and their rationale | `toolchains/patches/README.md` |
-| CI behavior | `.github/workflows/pr-checks.yml`, `full-platform.yml`, and the Android/iOS/PC/Switch package workflows |
+| CI behavior | `.github/workflows/pr-checks.yml`, `full-platform.yml`, and the Android/iOS/PC package workflows; Switch builds locally |
 
 ## Repository map
 

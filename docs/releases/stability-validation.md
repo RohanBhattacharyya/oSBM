@@ -273,25 +273,26 @@ secrets or game archive. Asset-dependent tests compile but are not run on CI.
 
 Pushes to `main`, version tags, and manual dispatch start full package CI:
 Android universal (all three ABIs), iOS unsigned IPA, five desktop launcher
-targets (Linux x64/ARM64, Windows x64, macOS x64/ARM64), and Switch NRO.
+targets (Linux x64/ARM64, Windows x64, macOS x64/ARM64).
 Desktop jobs run the asset-free suites. Packages are checked for required
 assets/executables and accidental inclusion of the game archive. Full CI
 also checks the known Android iconv import regression. It does not publish a
 release.
 
-These workflows have been linted locally, not executed on GitHub. Switch
-requires a trusted self-hosted runner labeled `osbm-switch`, with the SDK and
-static dependencies provisioned per `docs/agents/build-and-validation.md`.
-No runner was registered by this pass; full-platform CI will wait until one
-exists. Android needs the existing signing secret. Android app/signing,
+The first GitHub run at `fa30ca16` built Android and all desktop targets;
+Windows failed its storage override test and iOS failed fresh IPA staging.
+See [CI follow-up](ci-validation.md) for the fixes and verification limits.
+Switch CI was removed at the maintainer's request; local Switch builds and
+runtime testing remain part of release preparation. Android needs the existing
+signing secret. Android app/signing,
 SDK/NDK/Gradle/Java settings and supported ABIs remain at their existing
-values. The iOS runner image changed as described above; its current Xcode
-environment still needs validation on CI.
+values. The iOS runner compiled the app successfully; the packaging correction
+still needs an Xcode CI rerun.
 
 Recommended release sequence:
 
-1. Review these commits and run the full package workflow. Provision the
-   Switch runner first; resolve any clean-runner or Apple/Windows failures.
+1. Review these commits and run the full package workflow. Resolve remaining
+   clean-runner or Apple/Windows failures, and build the Switch package locally.
 2. Test the resulting packaged artifacts, rather than relying solely on
    local incremental builds. Confirm Windows storage/fullscreen, iOS bundled
    assets/startup, Android armv7 startup, Samsung keyboard focus/rebinding,
@@ -323,13 +324,11 @@ acceptance case, not something the Linux directory-selection test establishes.
 
 The following paths comprise this stability pass relative to `b282bc6e`:
 
-- `.github/actionlint.yaml`
 - `.github/workflows/android-manual.yml`
 - `.github/workflows/full-platform.yml`
 - `.github/workflows/ios-manual.yml`
 - `.github/workflows/pc-manual.yml`
 - `.github/workflows/pr-checks.yml`
-- `.github/workflows/switch-manual.yml`
 - `.gitignore`
 - `AGENTS.md`
 - `docs/agents/build-and-validation.md`

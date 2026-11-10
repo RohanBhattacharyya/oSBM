@@ -29,5 +29,3 @@ jobs:
     uses: ./.github/workflows/pc-manual.yml
     with:
       target: all
-  switch:
-    uses: ./.github/workflows/switch-manual.yml

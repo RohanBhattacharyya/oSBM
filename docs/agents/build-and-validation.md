@@ -214,7 +214,9 @@ It calls the same package workflows available for individual manual runs:
 - `ios-manual.yml` — Release/Debug unsigned IPA artifact on macOS runners.
 - `pc-manual.yml` — the five desktop *launcher* presets (all or one OS;
   selecting Linux builds both x64 and native ARM64), with `NoAssets` tests.
-- `switch-manual.yml` — release NRO, without an embedded game archive.
+
+Switch packaging is local, using the patched SDK and `switch-release` preset
+documented above. It is not part of GitHub Actions.
 
 The full Android job requires the existing `ANDROID_DEBUG_KEYSTORE_B64` secret.
 No release is published automatically. Package checks reject `packed.pak`,
@@ -223,25 +225,6 @@ ABIs. Artifacts carry the commit SHA in their name or an accompanying file.
 Android also inspects undefined native symbols with the NDK's `llvm-readelf`:
 the known API-28 `iconv` imports are rejected because the app supports API 26.
 This guards #49 without claiming to validate every Android API at runtime.
-
-### Switch runner provisioning
-
-Switch builds require a trusted self-hosted Linux x64 runner labeled
-`osbm-switch`. Stock hosted runners lack this project's patched SDK and extra
-static dependencies. Install the dependencies from the Switch section above,
-apply `scripts/switch/apply-toolchain-patches.sh`, and set `DEVKITPRO` in the
-runner service environment. If extra static packages are outside the SDK,
-set `OSBM_SWITCH_PREFIX_PATH` to their semicolon-separated CMake prefixes.
-The job builds the pinned patched Abseil itself into `RUNNER_TEMP` and selects
-that package explicitly, avoiding stale cached `absl_DIR` values.
-The workflow sets `DEVKITA64` and adds SDK tools to PATH. Use a runner dedicated
-to trusted builds; public PRs must never run on it. No keys, firmware, game
-assets or emulator configuration are needed for packaging.
-
-The job deliberately waits for that runner rather than silently skipping the
-Switch build. Until one is registered and provisioned, full-platform CI cannot
-complete. A successful NRO build still requires separate hardware/emulator
-testing. The repository workflows do not provision or register a runner.
 
 When a CI run fails with symptoms identical to the bug you just fixed,
 verify the fix was actually pushed (`git status`, `git log origin/main..`)
