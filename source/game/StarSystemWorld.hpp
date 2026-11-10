@@ -117,8 +117,8 @@ private:
   // platform. All cached values are time-independent; only the final orbital
   // angle in planetPosition depends on the clock and stays live.
   //
-  // Correctness: a chunk holds an entire system, so once parameters() for a
-  // system succeeds its geometry is complete and immutable.
+  // Correctness: only a loaded system response (hasChildren(system).isValid())
+  // establishes complete planet/moon geometry; star-list chunks do not.
   // m_celestialDataReady tracks that state per system and the caches use full
   // coordinates. This matters when the navigation UI previews a visited star:
   // orbit-number-only keys would collide with the ship's current system, while

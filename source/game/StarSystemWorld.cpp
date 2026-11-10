@@ -150,12 +150,13 @@ SystemWorld::OrbitCacheKey SystemWorld::orbitCacheKey(CelestialCoordinate const&
 }
 
 bool SystemWorld::celestialDataReady(CelestialCoordinate const& coord) const {
-  // Chunks hold whole systems, so one successful parameters() lookup means
-  // every value derived from that system's data is final. Track readiness per
-  // system: the navigation UI can inspect a visited system other than the one
-  // the ship currently occupies.
+  // The slave database receives star parameters in a chunk response, then
+  // planets/moons in a separate system response. hasChildren(system) is only
+  // set once the latter arrives (including a loaded system with no planets).
+  // Caching on parameters(system) would freeze placeholder orbit geometry
+  // while the star is visible but its planetary data is still in flight.
   auto location = coord.location();
-  if (!m_celestialDataReady.contains(location) && (bool)m_celestialDatabase->parameters(coord.system()))
+  if (!m_celestialDataReady.contains(location) && m_celestialDatabase->hasChildren(coord.system()).isValid())
     m_celestialDataReady.add(location);
   return m_celestialDataReady.contains(location);
 }

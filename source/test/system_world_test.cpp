@@ -27,6 +27,13 @@ public:
       return {};
     return CelestialMasterDatabase::childOrbits(coord);
   }
+
+  Maybe<bool> hasChildren(CelestialCoordinate const& coord) override {
+    ++lookups;
+    if (hiddenSystem && coord.location() == *hiddenSystem)
+      return {};
+    return CelestialMasterDatabase::hasChildren(coord);
+  }
 };
 
 class PreviewWorld : public SystemWorld {
@@ -87,4 +94,64 @@ TEST(SystemWorldPreview, VisitedSystemsDoNotShareOrbitGeometry) {
   database->hiddenSystem = {};
   EXPECT_FLOAT_EQ(fresh.planetOrbitDistance(*second), delayed.planetOrbitDistance(*second));
   EXPECT_FLOAT_EQ(fresh.planetSize(*second), delayed.planetSize(*second));
+}
+
+TEST(SystemWorldPreview, StarListDoesNotFreezeMissingPlanetGeometry) {
+  auto master = make_shared<CelestialMasterDatabase>();
+  auto first = master->findRandomWorld(100, 50, {}, 42);
+  auto second = master->findRandomWorld(100, 50, {}, 31415);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  auto slave = make_shared<CelestialSlaveDatabase>(master->baseInformation());
+  auto clock = make_shared<Clock>(false);
+  PreviewWorld client(clock, slave, first->location());
+  PreviewWorld server(clock, master, first->location());
+
+  for (auto const& system : {first->system(), second->system()}) {
+    // A star-map chunk deliberately omits planets/moons. The separate
+    // system response may arrive several navigation frames later.
+    slave->signalSystem(system);
+    auto requests = slave->pullRequests();
+    ASSERT_FALSE(requests.empty());
+    for (auto const& request : requests) {
+      if (request.isLeft())
+        slave->pushResponses({master->respondToRequest(request)});
+    }
+    ASSERT_TRUE(slave->parameters(system));
+    EXPECT_FALSE(slave->hasChildren(system));
+
+    auto planets = master->children(system);
+    ASSERT_FALSE(planets.empty());
+    for (auto const& planet : planets) {
+      auto bodies = master->children(planet);
+      bodies.append(planet);
+      for (auto const& body : bodies) {
+        client.planetSize(body);
+        client.clusterSize(body);
+        client.planetOrbitDistance(body);
+        client.planetPosition(body);
+      }
+    }
+
+    slave->pushResponses({master->respondToRequest(makeRight(system.location()))});
+    ASSERT_TRUE(slave->hasChildren(system));
+    for (auto const& planet : planets) {
+      auto bodies = master->children(planet);
+      bodies.append(planet);
+      for (auto const& body : bodies) {
+        SCOPED_TRACE(body.toJson().repr());
+        EXPECT_FLOAT_EQ(server.planetSize(body), client.planetSize(body));
+        EXPECT_FLOAT_EQ(server.clusterSize(body), client.clusterSize(body));
+        EXPECT_FLOAT_EQ(server.planetOrbitDistance(body), client.planetOrbitDistance(body));
+        EXPECT_EQ(server.planetPosition(body), client.planetPosition(body));
+        // Ships and objects orbit server positions. Their markers must use
+        // the same geometry, including as the universe clock advances.
+        CelestialOrbit orbit{body, 1, 0, {3, 4}};
+        for (double time : {0.0, 100.0, 10000.0}) {
+          clock->setTime(time);
+          EXPECT_EQ(server.orbitPosition(orbit), client.orbitPosition(orbit));
+        }
+      }
+    }
+  }
 }
