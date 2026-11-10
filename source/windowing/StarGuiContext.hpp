@@ -48,6 +48,8 @@ public:
 
   float interfaceScale() const;
   void setInterfaceScale(float interfaceScale);
+  // Temporary render-only scale, independent of display DPI and mobile caps.
+  void setInterfaceScaleOverride(Maybe<float> scale);
 
   Maybe<Vec2I> mousePosition(InputEvent const& event, float pixelRatio) const;
   Maybe<Vec2I> mousePosition(InputEvent const& event) const;
@@ -148,6 +150,7 @@ private:
   KeyBindings m_keyBindings;
 
   float m_interfaceScale;
+  Maybe<float> m_interfaceScaleOverride;
 
   bool m_shiftHeld;
 };

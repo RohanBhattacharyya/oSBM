@@ -48,6 +48,7 @@ SET (star_core_tests_SOURCES
       random_test.cpp
       rect_test.cpp
       texture_atlas_test.cpp
+      tooltip_layout_test.cpp
       serialization_test.cpp
       static_vector_test.cpp
       small_vector_test.cpp

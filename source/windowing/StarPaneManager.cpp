@@ -11,6 +11,7 @@
 #include "StarImageStretchWidget.hpp"
 #include "StarProgressWidget.hpp"
 #include "StarFuelWidget.hpp"
+#include "StarTooltipLayout.hpp"
 
 #include <limits>
 #include <typeinfo>
@@ -350,6 +351,21 @@ void PaneManager::render() {
   for (auto const& layerPair : reverseIterate(m_displayedPanes)) {
     for (auto const& panePair : reverseIterate(layerPair.second)) {
       if (panePair.first->active()) {
+        if (panePair.first == m_activeTooltip && !m_forceReplay) {
+          auto layout = tooltipLayout(m_context->windowSize(), m_context->interfaceScale(),
+              m_activeTooltip->size(), m_tooltipLastMousePos, m_tooltipMouseOffset);
+          m_context->setInterfaceScaleOverride(layout.scale);
+          auto restoreScale = finally([&] { m_context->setInterfaceScaleOverride({}); });
+          m_activeTooltip->setPosition(layout.position);
+          m_activeTooltip->setDrawingOffset({});
+          // Position/size may change every frame. Record fresh tooltips so
+          // Switch's forced replay can still reuse them during a sim tick.
+          bool recording = renderer->beginPrimitiveRecording();
+          m_activeTooltip->render(RectI({}, windowSize()));
+          if (recording)
+            m_paneRenderCache[m_activeTooltip.get()] = PaneRenderRecording{renderer->endPrimitiveRecording(), m_paneRenderFrame};
+          continue;
+        }
         if (m_prevInterfaceScale != m_context->interfaceScale())
           panePair.first->setPosition(
               calculateNewInterfacePosition(panePair.first, (float)m_context->interfaceScale() / m_prevInterfaceScale));
@@ -427,23 +443,6 @@ void PaneManager::update(float dt) {
         displayPane(PaneLayer::Tooltip, m_activeTooltip);
       }
     }
-  }
-
-  if (m_activeTooltip) {
-    Vec2I offsetDirection = Vec2I::filled(1);
-    Vec2I offsetAdjust = Vec2I();
-
-    if (m_tooltipLastMousePos[0] + m_tooltipMouseOffset[0] + m_activeTooltip->size()[0] > (int)m_context->windowWidth() / m_context->interfaceScale()) {
-      offsetDirection[0] = -1;
-      offsetAdjust[0] = -m_activeTooltip->size()[0];
-    }
-
-    if (m_tooltipLastMousePos[1] + m_tooltipMouseOffset[1] - m_activeTooltip->size()[1] < 0)
-      offsetDirection[1] = -1;
-    else
-      offsetAdjust[1] = -m_activeTooltip->size()[1];
-
-    m_activeTooltip->setPosition(m_tooltipLastMousePos + (offsetAdjust + m_tooltipMouseOffset.piecewiseMultiply(offsetDirection)));
   }
 
   for (auto const& layerPair : m_displayedPanes) {

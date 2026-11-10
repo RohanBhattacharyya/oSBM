@@ -91,6 +91,8 @@ Vec2U GuiContext::windowInterfaceSize() const {
 }
 
 float GuiContext::interfaceScale() const {
+  if (m_interfaceScaleOverride)
+    return *m_interfaceScaleOverride;
 #ifdef STAR_SYSTEM_IOS
   return m_interfaceScale;
 #else
@@ -107,6 +109,10 @@ float GuiContext::interfaceScale() const {
 
 void GuiContext::setInterfaceScale(float interfaceScale) {
   m_interfaceScale = interfaceScale;
+}
+
+void GuiContext::setInterfaceScaleOverride(Maybe<float> scale) {
+  m_interfaceScaleOverride = scale;
 }
 
 Maybe<Vec2I> GuiContext::mousePosition(InputEvent const& event, float pixelRatio) const {

@@ -36,6 +36,7 @@ SET (star_windowing_HEADERS
         StarStackWidget.hpp
         StarTabSet.hpp
         StarTextBoxWidget.hpp
+        StarTooltipLayout.hpp
         StarVerticalLayout.hpp
         StarWidget.hpp
         StarWidgetLuaBindings.hpp
