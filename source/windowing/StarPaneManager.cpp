@@ -8,6 +8,9 @@
 #include "StarImageWidget.hpp"
 #include "StarLabelWidget.hpp"
 #include "StarPortraitWidget.hpp"
+#include "StarImageStretchWidget.hpp"
+#include "StarProgressWidget.hpp"
+#include "StarFuelWidget.hpp"
 
 #include <limits>
 #include <typeinfo>
@@ -566,7 +569,11 @@ void PaneManager::collectUiNavigationCandidates(Widget* widget, List<UiNavigatio
 bool PaneManager::uiNavigationCandidateWidget(Widget* widget) const {
   if (!widget->interactive() || widget->mouseTransparent())
     return false;
-  if (is<LabelWidget>(widget) || is<ImageWidget>(widget) || is<PortraitWidget>(widget))
+  // Layout containers and decorative HUD widgets inherit interactive() from
+  // Widget, but have no action for controller activation. Still visit their
+  // children so buttons inside a layout remain reachable.
+  if (typeid(*widget) == typeid(Widget) || is<LabelWidget>(widget) || is<ImageWidget>(widget) || is<PortraitWidget>(widget)
+      || is<ImageStretchWidget>(widget) || is<ProgressWidget>(widget) || is<FuelWidget>(widget))
     return false;
   return true;
 }

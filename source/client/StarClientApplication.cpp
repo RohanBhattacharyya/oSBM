@@ -62,6 +62,9 @@ extern "C" __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
 namespace Star {
 
 void setMobileStartupStatus(String const& status);
+#ifdef STAR_PLATFORM_MOBILE
+void setMobileGameplayActive(bool active);
+#endif
 
 #if defined(STAR_PLATFORM_MOBILE) && !defined(STAR_SYSTEM_SWITCH)
 // Per-phase accumulators for the [perf-fps] line (nav-pane / issue #39
@@ -1086,6 +1089,9 @@ unsigned ClientApplication::framesSkipped() const {
 }
 
 void ClientApplication::changeState(MainAppState newState) {
+#ifdef STAR_PLATFORM_MOBILE
+  setMobileGameplayActive(newState == MainAppState::SinglePlayer || newState == MainAppState::MultiPlayer);
+#endif
   MainAppState oldState = m_state;
   m_state = newState;
   auto& app = appController();

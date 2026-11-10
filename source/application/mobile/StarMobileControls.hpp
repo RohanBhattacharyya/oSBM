@@ -212,6 +212,7 @@ public:
   ~MobileTouchInputAdapter();
 
   void setConfig(MobileTouchConfig config);
+  void setGameplayActive(bool active);
   void setGyroAvailable(bool available);
   void setElements(std::vector<MobileTouchElement> elements);
   void beginFrame();

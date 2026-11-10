@@ -92,7 +92,7 @@ The `*-launcher-release` presets set `STAR_PC_MOBILE_LAUNCHER=ON`: they get
   `source/client/ios/Info.plist.in` with Xcode substitutions;
   `MARKETING_VERSION` comes from `VERSION`. All set in
   `source/client/CMakeLists.txt`.
-- Post-build copies `assets/opensb/` and the Android host `lang/` dir into the
+- Post-build copies `assets/opensb/`, `assets/osbm/` and the Android host `lang/` dir into the
   bundle. The `ipa` target is the only supported packaging path; it recreates
   `Payload/` from the current bundle every run.
 - Objective-C++ lives in `.mm` files with distinct basenames from their `.cpp`
@@ -124,7 +124,7 @@ touching anything here.** Highlights:
   supplied manually for Lua; opus resolved without pkg-config (relocated
   toolchain).
 - Packaging: launcher assets + `assets/opensb/` staged into
-  `build/switch-release/romfs/bundled_assets/`; `nx_create_nro` emits
+  `build/switch-release/romfs/bundled_assets/` (including `assets/osbm/`); `nx_create_nro` emits
   `oSBM-<version>-switch.nro`. `packed.pak` embedding is opt-in and off by
   default; the launcher falls back to an SD-card path.
 - Engine textboxes use their own swkbd session

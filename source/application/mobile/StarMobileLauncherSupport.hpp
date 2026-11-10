@@ -11,6 +11,11 @@
 
 namespace Star {
 
+#ifdef STAR_PLATFORM_PC
+enum class WindowMode;
+WindowMode desktopWindowMode(SDL_Window* window);
+#endif
+
 extern char const* const LauncherLangDirectory;
 extern char const* const DefaultLauncherLocale;
 extern char const* const SystemLocaleMarker;

@@ -98,6 +98,9 @@ android {
         main {
             jniLibs.srcDirs = ['src/main/jniLibs']
             assets.srcDirs = ['src/main/assets', '../../../../../../assets']
+            // Local development may keep a legally owned packed.pak here.
+            // Only these distributable trees belong in an APK.
+            assets.include 'lang/**', 'opensb/**', 'osbm/**'
             if (useExternalSdlJar) {
                 // Prevent duplicate classes when SDL Java glue is provided via JAR.
                 java {

@@ -962,6 +962,8 @@ if(STAR_BUILD_GUI)
          DESTINATION "${STAR_SWITCH_BUNDLED}")
     file(COPY "${PROJECT_SOURCE_DIR}/../assets/opensb"
          DESTINATION "${STAR_SWITCH_BUNDLED}")
+    file(COPY "${PROJECT_SOURCE_DIR}/../assets/osbm"
+         DESTINATION "${STAR_SWITCH_BUNDLED}")
     # Also provide the launcher font at the preferred (top-level) path.
     file(COPY "${PROJECT_SOURCE_DIR}/../assets/opensb/hobo.ttf"
          DESTINATION "${STAR_SWITCH_BUNDLED}")

@@ -619,6 +619,11 @@ public:
     m_config = config;
   }
 
+  void setGameplayActive(bool active) {
+    if (m_gameplayActive != active) cancelAll();
+    m_gameplayActive = active;
+  }
+
   void setGyroAvailable(bool available) {
     m_gyroAvailable = available;
     if (!m_gyroAvailable) {
@@ -636,7 +641,7 @@ public:
 
   void beginFrame() {
     m_generatedEvents.clear();
-    if (!m_config.enabled)
+    if (!overlayEnabled())
       cancelAll();
   }
 
@@ -668,7 +673,7 @@ public:
   }
 
   bool processSdlEvent(SDL_Event const& event) {
-    if (!m_config.enabled)
+    if (!overlayEnabled())
       return false;
 
     if (event.type != SDL_EVENT_FINGER_DOWN
@@ -780,7 +785,7 @@ public:
   }
 
   void drawOverlay(float fps) {
-    if (!m_config.enabled)
+    if (!overlayEnabled())
       return;
 
     // At least one enabled PerformanceCounter element needs LogMap populated
@@ -887,7 +892,7 @@ public:
   }
 
   bool overlayEnabled() const {
-    return m_config.enabled;
+    return m_config.enabled && m_gameplayActive;
   }
 
 private:
@@ -1921,6 +1926,7 @@ private:
   [[maybe_unused]] float* m_displayScalePtr = nullptr;
   SafeAreaInsets* m_safeAreaPtr = nullptr;
   MobileTouchConfig m_config;
+  bool m_gameplayActive = true;
   std::vector<MobileTouchElement> m_elements = defaultTouchElements();
   bool m_gyroAvailable = true;
   List<InputEvent> m_generatedEvents;
@@ -2551,6 +2557,7 @@ void MobileTouchInputAdapter::setGyroInput(std::array<float, 3> const& data, boo
 bool MobileTouchInputAdapter::processSdlEvent(SDL_Event const& event) { return m_impl->processSdlEvent(event); }
 void MobileTouchInputAdapter::cancelAll() { m_impl->cancelAll(); }
 void MobileTouchInputAdapter::drawOverlay(float fps) { m_impl->drawOverlay(fps); }
+void MobileTouchInputAdapter::setGameplayActive(bool active) { m_impl->setGameplayActive(active); }
 bool MobileTouchInputAdapter::overlayEnabled() const { return m_impl->overlayEnabled(); }
 
 MobileGamepadInputAdapter::MobileGamepadInputAdapter(Vec2U* renderCanvasSize)

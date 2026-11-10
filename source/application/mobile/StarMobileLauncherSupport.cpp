@@ -432,8 +432,10 @@ void setDesktopStorageRoot(String const& storageRoot) {
     return;
   }
 
-  selectedRoot = File::fullPath(selectedRoot);
   File::makeDirectoryRecursive(selectedRoot);
+  // Unix realpath requires the directory to exist; new storage locations
+  // must be created before canonicalizing the selected path.
+  selectedRoot = File::fullPath(selectedRoot);
   File::makeDirectoryRecursive(File::dirName(selectionFile));
   File::overwriteFileWithRename(selectedRoot, selectionFile);
 }
@@ -475,6 +477,17 @@ String writableMobileStorageRoot(String const& fallbackStorageRoot) {
   androidLogInfo("Using mobile storage root %s", storageRoot.utf8Ptr());
   return storageRoot;
 }
+
+#ifdef STAR_PLATFORM_PC
+WindowMode desktopWindowMode(SDL_Window* window) {
+  auto flags = SDL_GetWindowFlags(window);
+  if (flags & SDL_WINDOW_FULLSCREEN)
+    return SDL_GetWindowFullscreenMode(window) ? WindowMode::Fullscreen : WindowMode::Borderless;
+  if (flags & SDL_WINDOW_MAXIMIZED)
+    return WindowMode::Maximized;
+  return WindowMode::Normal;
+}
+#endif
 
 void convertEventToRenderCoordinatesIfPossible(SDL_Window* window, SDL_Event* event) {
   if (!window || !event)

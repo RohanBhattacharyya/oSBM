@@ -1903,25 +1903,28 @@ public final class MainActivity extends SDLActivity {
             boolean needsRefresh = existingStamp == null || !existingStamp.equals(stamp);
             if (needsRefresh) {
                 deleteRecursively(new File(targetRoot, "opensb"));
+                deleteRecursively(new File(targetRoot, "osbm"));
                 deleteRecursively(new File(targetRoot, "lang"));
                 new File(targetRoot, "hobo.ttf").delete();
             }
 
             boolean opensbOk = copyAssetTreeIfMissing(activity, "opensb", new File(targetRoot, "opensb"));
+            boolean osbmOk = copyAssetTreeIfMissing(activity, "osbm", new File(targetRoot, "osbm"));
             boolean langOk = copyAssetTreeIfMissing(activity, "lang", new File(targetRoot, "lang"));
             boolean fontOk = copyAssetTreeIfMissing(activity, "opensb/hobo.ttf", new File(targetRoot, "hobo.ttf"));
-            if (needsRefresh && opensbOk) {
+            if (needsRefresh && opensbOk && osbmOk && langOk && fontOk) {
                 try (java.io.FileOutputStream out = new java.io.FileOutputStream(stampFile)) {
                     out.write(stamp.getBytes("UTF-8"));
                 }
             }
             Log.i(TAG, "syncBundledAssets: root=" + targetRoot.getAbsolutePath()
                 + " opensbOk=" + opensbOk
+                + " osbmOk=" + osbmOk
                 + " langOk=" + langOk
                 + " fontOk=" + fontOk
                 + " langExists=" + new File(targetRoot, "lang/zh_CN.lang").isFile()
                 + " fontExists=" + new File(targetRoot, "hobo.ttf").isFile());
-            if (!opensbOk) {
+            if (!opensbOk || !osbmOk || !langOk || !fontOk) {
                 return null;
             }
             return targetRoot.getAbsolutePath();

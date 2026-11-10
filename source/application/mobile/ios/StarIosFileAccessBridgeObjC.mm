@@ -1302,11 +1302,16 @@ extern "C" char* StarIosBridge_syncBundledAssets(char const* targetRootDirectory
       bool needsRefresh = !existingStamp || ![existingStamp isEqualToString:stamp];
 
       NSString* targetOpensb = [targetRoot stringByAppendingPathComponent:@"opensb"];
+      NSString* sourceOsbm = [[sourceOpensb stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"osbm"];
+      NSString* targetOsbm = [targetRoot stringByAppendingPathComponent:@"osbm"];
       if (needsRefresh) {
         [fm removeItemAtPath:targetOpensb error:nil];
+        [fm removeItemAtPath:targetOsbm error:nil];
         [fm removeItemAtPath:[targetRoot stringByAppendingPathComponent:@"lang"] error:nil];
       }
       if (!copyBundleTreeIfMissing(sourceOpensb, targetOpensb))
+        return nullptr;
+      if (!copyBundleTreeIfMissing(sourceOsbm, targetOsbm))
         return nullptr;
 
       NSString* resourcePath = NSBundle.mainBundle.resourcePath;

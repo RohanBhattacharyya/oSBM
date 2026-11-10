@@ -79,6 +79,7 @@ SET (star_game_tests_SOURCES
       server_test.cpp
       spawn_test.cpp
       stat_test.cpp
+      system_world_test.cpp
       tile_array_test.cpp
       world_geometry_test.cpp
       universe_connection_test.cpp
@@ -91,3 +92,27 @@ ADD_TEST (NAME game_tests WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY} CO
 
 SET_TESTS_PROPERTIES(core_tests PROPERTIES
                      LABELS "NoAssets")
+
+IF (STAR_PLATFORM_MOBILE AND STAR_PLATFORM_PC)
+  SET(launcher_test_gui_libs ${STAR_EXT_GUI_LIBS})
+  # Mapping/storage tests never initialize the optional desktop services.
+  # Do not make them depend on Steam/Discord runtime libraries on macOS.
+  LIST(REMOVE_ITEM launcher_test_gui_libs ${STEAM_API_LIBRARY} ${DISCORD_API_LIBRARY})
+  ADD_EXECUTABLE(mobile_controls_tests
+    $<TARGET_OBJECTS:star_extern> $<TARGET_OBJECTS:star_core>
+    gtest/gtest-all.cc core_tests_main.cpp mobile_controls_test.cpp
+    ../application/mobile/StarMobileControls.cpp)
+  TARGET_LINK_LIBRARIES(mobile_controls_tests ${STAR_EXT_LIBS} ${launcher_test_gui_libs})
+  ADD_TEST(NAME mobile_controls_tests WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+    COMMAND ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mobile_controls_tests)
+  SET_TESTS_PROPERTIES(mobile_controls_tests PROPERTIES LABELS "NoAssets" TIMEOUT 120)
+
+  ADD_EXECUTABLE(launcher_support_tests
+    $<TARGET_OBJECTS:star_extern> $<TARGET_OBJECTS:star_core>
+    gtest/gtest-all.cc core_tests_main.cpp launcher_support_test.cpp
+    ../application/mobile/StarMobileLauncherSupport.cpp)
+  TARGET_LINK_LIBRARIES(launcher_support_tests ${STAR_EXT_LIBS} ${launcher_test_gui_libs})
+  ADD_TEST(NAME launcher_support_tests WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+    COMMAND ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/launcher_support_tests)
+  SET_TESTS_PROPERTIES(launcher_support_tests PROPERTIES LABELS "NoAssets" TIMEOUT 120)
+ENDIF ()

@@ -179,6 +179,11 @@ namespace Star {
 extern float GlobalTimestep;
 extern float ServerGlobalTimestep;
 
+// Written by the client state machine, sampled by the host before input.
+// Keeping this at the app boundary avoids a game-layer dependency here.
+std::atomic_bool g_mobileGameplayActive{false};
+void setMobileGameplayActive(bool active) { g_mobileGameplayActive.store(active, std::memory_order_relaxed); }
+
 String getMobileStartupStatus();
 void setMobileStartupStatus(String const& status);
 
@@ -4151,6 +4156,7 @@ private:
   }
 
   bool startApplication(String& errorMessage) {
+    setMobileGameplayActive(false);
     try {
       relaunchBreadcrumb("start-application-enter");
       androidLogInfo("startApplication begin");
@@ -4782,10 +4788,10 @@ private:
     List<InputEvent> events;
 
     SDL_Event event;
-    bool overlayEnabled = m_touchAdapter && m_touchAdapter->overlayEnabled();
-    ImGuiIO* io = overlayEnabled ? &ImGui::GetIO() : nullptr;
-
     m_touchAdapter->beginFrame();
+    m_touchAdapter->setGameplayActive(g_mobileGameplayActive.load(std::memory_order_relaxed));
+    bool overlayEnabled = m_touchAdapter->overlayEnabled();
+    ImGuiIO* io = overlayEnabled ? &ImGui::GetIO() : nullptr;
     if (m_gamepadAdapter)
       m_gamepadAdapter->beginFrame();
 
@@ -5279,8 +5285,16 @@ private:
         m_renderer->setWindowSurfaceSize(m_windowSize);
       }
 
-      if (notifyApplication && m_application)
+      if (notifyApplication && m_application) {
+        // Desktop launcher windows can change modes just like the classic
+        // client. Reporting Normal here resets fullscreen/borderless settings
+        // when their resize event arrives. Mobile uses a logical canvas.
+#ifdef STAR_PLATFORM_PC
+        m_application->windowChanged(desktopWindowMode(m_window), renderCanvas);
+#else
         m_application->windowChanged(WindowMode::Normal, renderCanvas);
+#endif
+      }
 
       refreshImGuiScale();
     } else if (ImGui::GetCurrentContext()) {
