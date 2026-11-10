@@ -1,4 +1,5 @@
 #include "gtest/gtest.h"
+#include "StarAlgorithm.hpp"
 #include "StarFile.hpp"
 #include "StarApplication.hpp"
 #include "mobile/StarMobileLauncherSupport.hpp"
@@ -36,15 +37,19 @@ TEST(LauncherStorage, ExplicitRootAndWritableDirectories) {
   char const* previous = SDL_getenv("OSBM_STORAGE_DIRECTORY");
   String saved = previous ? previous : "";
   bool hadPrevious = previous != nullptr;
-  SDL_setenv_unsafe("OSBM_STORAGE_DIRECTORY", root.utf8Ptr(), 1);
+  auto restore = finally([&] {
+    if (hadPrevious)
+      SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "OSBM_STORAGE_DIRECTORY", saved.utf8Ptr(), true);
+    else
+      SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(), "OSBM_STORAGE_DIRECTORY");
+    File::removeDirectoryRecursive(root);
+  });
+  // On Windows SDL_setenv_unsafe updates Win32/SDL environment state, but
+  // not the CRT's getenv snapshot. Exercise that separation on every host.
+  ASSERT_TRUE(SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "OSBM_STORAGE_DIRECTORY", root.utf8Ptr(), true));
   EXPECT_EQ(root, defaultMobileStorageRoot());
   EXPECT_EQ(root, writableMobileStorageRoot(root));
   EXPECT_TRUE(File::isDirectory(File::relativeTo(root, "tmp")));
-  if (hadPrevious)
-    SDL_setenv_unsafe("OSBM_STORAGE_DIRECTORY", saved.utf8Ptr(), 1);
-  else
-    SDL_unsetenv_unsafe("OSBM_STORAGE_DIRECTORY");
-  File::removeDirectoryRecursive(root);
 }
 
 #ifdef STAR_SYSTEM_LINUX

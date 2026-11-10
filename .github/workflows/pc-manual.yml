@@ -156,6 +156,14 @@ jobs:
           cp -r assets/opensb pc-staging/assets/
           cp -r assets/osbm pc-staging/assets/
 
+      - name: Upload test results
+        if: ${{ always() && steps.gate.outputs.run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pc-test-results-${{ matrix.name }}
+          path: build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+
       - name: Check packaged assets
         if: steps.gate.outputs.run == 'true'
         shell: bash

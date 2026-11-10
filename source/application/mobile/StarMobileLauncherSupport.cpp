@@ -381,7 +381,9 @@ bool hasAndroidGyroSensor() {
 #endif
 
 String defaultMobileStorageRoot() {
-  if (char const* configuredRoot = std::getenv("OSBM_STORAGE_DIRECTORY")) {
+  // SDL's Windows environment setters update Win32/SDL state, not the CRT's
+  // getenv snapshot. Use the same environment API as the launcher/tests.
+  if (char const* configuredRoot = SDL_getenv("OSBM_STORAGE_DIRECTORY")) {
     String root = String(configuredRoot).trim();
     if (!root.empty())
       return root;
