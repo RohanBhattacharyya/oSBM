@@ -287,6 +287,7 @@ FilePtr File::ephemeralFile() {
     throw IOException::format("Could not remove mkstemp file when creating ephemeralFile: {}", strerror(errno));
 #endif
 #ifdef STAR_SYSTEM_SWITCH
+  switchFdReopened(res);
   switchMarkFd(res, path.ptr());
 #endif
   file->m_file = handleFromFd(res);
