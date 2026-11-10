@@ -171,32 +171,11 @@ IF (STAR_SYSTEM_IOS)
     VERBATIM
   )
 
-  # IPA packaging
-  # Only the 'ipa' target writes Payload contents. It always recreates Payload
-  # from the current app bundle so stale app bundles or binaries cannot survive
-  # from previous packaging runs.
-  SET(STAR_IOS_IPA_DIR      "${CMAKE_BINARY_DIR}/ipa")
-  SET(STAR_IOS_IPA_PAYLOAD_DIR "${STAR_IOS_IPA_DIR}/Payload")
-  SET(STAR_IOS_IPA_PAYLOAD  "${STAR_IOS_IPA_PAYLOAD_DIR}/OpenStarbound.app")
-  SET(STAR_IOS_IPA_FILE     "${STAR_IOS_IPA_DIR}/OpenStarbound-iOS-Release-unsigned.ipa")
-
   # 'ipa' target: rebuilds a fresh unsigned .ipa from the current app bundle.
   # Depends on 'starbound' so the binary is always up to date before packaging.
   # Usage: cmake --build <build-dir> --config Release --target ipa
-  ADD_CUSTOM_TARGET(ipa
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_IPA_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf         "${STAR_IOS_IPA_PAYLOAD_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E rm -f          "${STAR_IOS_IPA_FILE}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_IPA_PAYLOAD_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "$<TARGET_BUNDLE_DIR:starbound>"
-      "${STAR_IOS_IPA_PAYLOAD}"
-    COMMAND zip -qry "${STAR_IOS_IPA_FILE}" "Payload"
-    DEPENDS starbound
-    WORKING_DIRECTORY "${STAR_IOS_IPA_DIR}"
-    COMMENT "Packaging unsigned IPA: ipa/OpenStarbound-iOS-Release-unsigned.ipa"
-    VERBATIM
-  )
+  INCLUDE("${PROJECT_SOURCE_DIR}/../cmake/IosPackaging.cmake")
+  star_add_ios_ipa_target(starbound "$<TARGET_BUNDLE_DIR:starbound>")
 ENDIF ()
 
 IF (STAR_SYSTEM_MACOS)

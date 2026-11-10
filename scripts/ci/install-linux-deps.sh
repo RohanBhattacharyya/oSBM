@@ -3,6 +3,7 @@ set -euo pipefail
 sudo apt-get update
 sudo apt-get install -y \
   ninja-build \
+  zip \
   pkg-config \
   build-essential \
   autoconf \
