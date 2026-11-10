@@ -48,10 +48,6 @@ Vec2U framebufferTextureSize(Vec2U size, unsigned sizeDiv, float sizeMul = 1.0f)
   };
 }
 
-bool isFloatTextureFormat(PixelFormat pixelFormat) {
-  return pixelFormat == PixelFormat::RGB_F || pixelFormat == PixelFormat::RGBA_F;
-}
-
 bool supportsLinearFloatTextures() {
 #if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
   static bool initialized = false;
@@ -63,19 +59,13 @@ bool supportsLinearFloatTextures() {
       supported = std::strstr(extensions, "GL_OES_texture_float_linear") != nullptr;
 
     if (!supported)
-      Logger::warn("OpenGL ES device does not report GL_OES_texture_float_linear; using nearest-filtered float textures");
+      Logger::info("OpenGL ES device does not report GL_OES_texture_float_linear; using half-float storage for linear-filtered float textures");
   }
 
   return supported;
 #else
   return true;
 #endif
-}
-
-TextureFiltering effectiveTextureFiltering(PixelFormat pixelFormat, TextureFiltering filtering) {
-  if (filtering == TextureFiltering::Linear && isFloatTextureFormat(pixelFormat) && !supportsLinearFloatTextures())
-    return TextureFiltering::Nearest;
-  return filtering;
 }
 
 void setTextureFiltering(TextureFiltering filtering) {
@@ -689,9 +679,9 @@ void OpenGlRenderer::setEffectTexture(String const& textureName, ImageView const
     glBindTexture(GL_TEXTURE_2D, ptr->textureValue->textureId);
     ptr->textureValue->textureSize = image.size;
     ptr->textureValue->storedPixelFormat = image.format;
-    ptr->textureValue->textureFiltering = effectiveTextureFiltering(image.format, ptr->textureFiltering);
+    ptr->textureValue->textureFiltering = ptr->textureFiltering;
     setTextureFiltering(ptr->textureValue->textureFiltering);
-    uploadTextureImage(image.format, image.size, image.data, sameStorage);
+    uploadTextureImage(image.format, image.size, image.data, ptr->textureFiltering, sameStorage);
 
     size_t newBytes = (size_t)image.size[0] * image.size[1] * Star::bytesPerPixel(image.format);
     memoryAccountAdd(MemoryCategory::TextureAtlas, (int64_t)newBytes - (int64_t)ptr->textureValue->textureBytes);
@@ -1281,7 +1271,7 @@ GLuint OpenGlRenderer::GlTextureAtlasSet::createAtlasTexture(Vec2U const& size, 
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   }
 
-  uploadTextureImage(pixelFormat, size, nullptr);
+  uploadTextureImage(pixelFormat, size, nullptr, textureFiltering);
 
   // One atlas page is tens of megabytes (4096x4096 RGBA = 64MB) and on the
   // Switch the GL driver carves it out of the same heap as everything else,
@@ -1728,7 +1718,7 @@ bool OpenGlRenderer::logGlErrorSummary(String prefix) {
   return false;
 }
 
-void OpenGlRenderer::uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uint8_t const* data, bool sameStorage) {
+void OpenGlRenderer::uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uint8_t const* data, TextureFiltering filtering, bool sameStorage) {
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
   Maybe<GLenum> internalFormat;
@@ -1744,11 +1734,17 @@ void OpenGlRenderer::uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uin
     format = GL_BGRA;
   else {
     type = GL_FLOAT;
+    // GLES 3 guarantees linear filtering for 16-bit float storage, but
+    // 32-bit float filtering requires OES_texture_float_linear. The world
+    // shader's four-tap bicubic sampling relies on linear filtering; falling
+    // back to nearest produces a visible grid around lamps. Uploading FLOAT
+    // data into 16F storage preserves HDR light values and interpolation.
+    bool halfFloat = filtering == TextureFiltering::Linear && !supportsLinearFloatTextures();
     if (pixelFormat == PixelFormat::RGB_F) {
-      internalFormat = GL_RGB32F;
+      internalFormat = halfFloat ? GL_RGB16F : GL_RGB32F;
       format = GL_RGB;
     } else if (pixelFormat == PixelFormat::RGBA_F) {
-      internalFormat = GL_RGBA32F;
+      internalFormat = halfFloat ? GL_RGBA16F : GL_RGBA32F;
       format = GL_RGBA;
     } else
       throw RendererException("Unsupported texture format in OpenGlRenderer::uploadTextureImage");
@@ -1840,12 +1836,12 @@ auto OpenGlRenderer::createGlTexture(ImageView const& image, TextureAddressing a
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
   }
 
-  glLoneTexture->textureFiltering = effectiveTextureFiltering(image.format, filtering);
+  glLoneTexture->textureFiltering = filtering;
   setTextureFiltering(glLoneTexture->textureFiltering);
 
 
   if (!image.empty()) {
-    uploadTextureImage(image.format, image.size, image.data);
+    uploadTextureImage(image.format, image.size, image.data, filtering);
     glLoneTexture->textureBytes = (size_t)image.size[0] * image.size[1] * Star::bytesPerPixel(image.format);
     memoryAccountAdd(MemoryCategory::TextureAtlas, (int64_t)glLoneTexture->textureBytes);
   }

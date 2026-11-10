@@ -339,7 +339,7 @@ private:
   };
 
   static bool logGlErrorSummary(String prefix);
-  static void uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uint8_t const* data, bool sameStorage = false);
+  static void uploadTextureImage(PixelFormat pixelFormat, Vec2U size, uint8_t const* data, TextureFiltering filtering, bool sameStorage = false);
 
   
   static RefPtr<GlLoneTexture> createGlTexture(ImageView const& image, TextureAddressing addressing, TextureFiltering filtering);
