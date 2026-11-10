@@ -25,6 +25,7 @@ Build the pinned, checksum-verified source into an isolated prefix:
 bash scripts/switch/build-abseil.sh "$PWD/build/switch-abseil"
 cd source
 cmake --preset switch-release \
+  -Dabsl_DIR="$PWD/../build/switch-abseil/install/lib/cmake/absl" \
   -DCMAKE_PREFIX_PATH="$PWD/../build/switch-abseil/install"
 ```
 
