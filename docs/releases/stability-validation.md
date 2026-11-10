@@ -1,10 +1,15 @@
 # Stability release preparation
 
-This pass continues `main` at `b282bc6e`, on the local `stability` branch.
-The existing, dirty `v2` checkout was left alone. `VERSION` remains `1.1`;
-these are preview builds, not a published release. No issue comments, closures,
-pushes, tags, or release uploads were made. Commits use the maintainer's
-existing name, email, and short message style.
+This pass continues `main` at `b282bc6e`. The eight stability commits now live
+on `main` in the primary oSBM checkout; the temporary worktree and its branch
+have been removed. Uncommitted v2 source edits are preserved in the stash named
+`v2 before stability on main`; generated packages, Rust build output, and design
+scratch files are retained in the ignored `build/retired-v2/` directory, with
+recovery instructions in its `README.txt`.
+
+`VERSION` remains `1.1`; these are preview builds, not a published release.
+No issue comments, closures, pushes, tags, or release uploads were made. Commits
+use the maintainer's existing name, email, and short message style.
 
 Validation date: November 9, 2026. This is evidence for a release candidate,
 not evidence that every open issue is fixed.
@@ -203,13 +208,16 @@ an isolated API 35 Google APIs x86_64 AVD, two cores, 3072 MB RAM, SwiftShader,
 no audio/snapshots, serial `emulator-5580`. All adb operations selected that
 serial; the shared adb server was not stopped.
 
-Switch used:
+Switch validation used an isolated dependency prefix. To reproduce it in this
+checkout, keep that prefix under the repository's ignored build directory:
 
 ```sh
-bash scripts/switch/build-abseil.sh /tmp/osbm-switch-abseil
+# From the repository root:
+bash scripts/switch/build-abseil.sh "$PWD/build/switch-abseil"
+cd source
 cmake --preset switch-release -DSTAR_SWITCH_PACKED_PAK= \
-  -Dabsl_DIR=/tmp/osbm-switch-abseil/install/lib/cmake/absl \
-  -DCMAKE_PREFIX_PATH=/tmp/osbm-switch-abseil/install
+  -Dabsl_DIR="$PWD/../build/switch-abseil/install/lib/cmake/absl" \
+  -DCMAKE_PREFIX_PATH="$PWD/../build/switch-abseil/install"
 cmake --build --preset switch-release --target starbound_nro --parallel 2
 ```
 
