@@ -56,6 +56,7 @@ jobs:
       - name: Test
         run: |
           ctest --test-dir build/linux-launcher-release -L NoAssets --output-on-failure --timeout 300 --no-tests=error
+          bash -n scripts/ci/*.sh scripts/switch/build-abseil.sh
           python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
       - name: Upload test results
         if: always()

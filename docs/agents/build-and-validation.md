@@ -220,6 +220,9 @@ The full Android job requires the existing `ANDROID_DEBUG_KEYSTORE_B64` secret.
 No release is published automatically. Package checks reject `packed.pak`,
 missing bundled asset trees, absent executables, and incomplete/mislabeled APK
 ABIs. Artifacts carry the commit SHA in their name or an accompanying file.
+Android also inspects undefined native symbols with the NDK's `llvm-readelf`:
+the known API-28 `iconv` imports are rejected because the app supports API 26.
+This guards #49 without claiming to validate every Android API at runtime.
 
 ### Switch runner provisioning
 
