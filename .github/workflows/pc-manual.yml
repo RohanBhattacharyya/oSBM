@@ -1,6 +1,11 @@
 name: PC Build (Manual)
 
 on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        default: all
   workflow_dispatch:
     inputs:
       target:
@@ -68,41 +73,12 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          persist-credentials: false
 
       - name: Install Linux build dependencies
         if: steps.gate.outputs.run == 'true' && startsWith(matrix.name, 'linux')
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ninja-build \
-            pkg-config \
-            build-essential \
-            autoconf \
-            autoconf-archive \
-            automake \
-            libtool \
-            libltdl-dev \
-            libasound2-dev \
-            libpulse-dev \
-            libx11-dev \
-            libxext-dev \
-            libxrandr-dev \
-            libxcursor-dev \
-            libxfixes-dev \
-            libxi-dev \
-            libxss-dev \
-            libxtst-dev \
-            libxkbcommon-dev \
-            libdrm-dev \
-            libgbm-dev \
-            libgl1-mesa-dev \
-            libglu1-mesa-dev \
-            libegl1-mesa-dev \
-            libdbus-1-dev \
-            libudev-dev \
-            libwayland-dev \
-            libdecor-0-dev
+          bash scripts/ci/install-linux-deps.sh
 
       - name: Install ninja (Windows)
         if: steps.gate.outputs.run == 'true' && matrix.name == 'windows'
@@ -151,7 +127,12 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         working-directory: source
         shell: bash
-        run: cmake --build --preset ${{ matrix.preset }} --target starbound --parallel
+        run: cmake --build --preset ${{ matrix.preset }} --target starbound core_tests game_tests mobile_controls_tests launcher_support_tests --parallel
+
+      - name: Run asset-free tests
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: ctest --test-dir build/${{ matrix.preset }} -L NoAssets --output-on-failure --timeout 300 --no-tests=error
 
       - name: Stage artifact
         if: steps.gate.outputs.run == 'true'
@@ -159,6 +140,8 @@ jobs:
         run: |
           echo "OSBM_VERSION=$(tr -d ' \n' < VERSION)" >> "${GITHUB_ENV}"
           mkdir -p pc-staging
+          printf '%s\n' "${GITHUB_SHA}" > pc-staging/commit.txt
+          test -s dist/starbound${{ matrix.name == 'windows' && '.exe' || '' }}
           cp -v dist/starbound* pc-staging/ 2>/dev/null || true
           cp -v dist/*.dll pc-staging/ 2>/dev/null || true
           cp -v dist/*.dylib pc-staging/ 2>/dev/null || true
@@ -172,6 +155,11 @@ jobs:
           mkdir -p pc-staging/assets
           cp -r assets/opensb pc-staging/assets/
           cp -r assets/osbm pc-staging/assets/
+
+      - name: Check packaged assets
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: python3 scripts/ci/check-package.py desktop pc-staging
 
       - name: Upload artifact
         if: steps.gate.outputs.run == 'true'

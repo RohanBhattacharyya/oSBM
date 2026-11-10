@@ -1,0 +1,66 @@
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflows:
+    name: Workflow syntax
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color -shellcheck= -pyflakes=
+  linux:
+    name: Linux compile and regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CCACHE_COMPILERCHECK: content
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: bash scripts/ci/install-linux-deps.sh
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: pr-linux
+          max-size: 2G
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: '**/source/vcpkg.json'
+          vcpkgConfigurationJsonGlob: '**/source/vcpkg-configuration.json'
+      - name: Configure
+        working-directory: source
+        run: >-
+          cmake --preset linux-launcher-release
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DVCPKG_INSTALL_OPTIONS=--clean-after-build
+      - name: Compile client and tests
+        run: cmake --build build/linux-launcher-release --target starbound core_tests game_tests mobile_controls_tests launcher_support_tests --parallel 2
+      - name: Test
+        run: |
+          ctest --test-dir build/linux-launcher-release -L NoAssets --output-on-failure --timeout 300 --no-tests=error
+          python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-test-results
+          path: build/linux-launcher-release/Testing/Temporary/LastTest.log
+          if-no-files-found: warn

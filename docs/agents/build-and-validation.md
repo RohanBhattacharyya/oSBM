@@ -74,9 +74,17 @@ binary directly: `dist/core_tests --gtest_filter='Json*'`. Because test
 binaries also live in the shared `dist/`, rebuild the test target from the
 preset you mean to test before running ctest.
 
-Tests never cover: launcher behavior, touch/gamepad input, packaging, JNI/
-Objective-C++/libnx glue, or mobile runtime issues. Those need levels 5–6
-(package + device) from `AGENTS.md`.
+Desktop launcher presets additionally build `mobile_controls_tests` and
+`launcher_support_tests`, both labeled `NoAssets`. They cover input ownership,
+menu transitions, touchpad/attack combinations and storage migration. Build
+those targets explicitly alongside `core_tests`, then run
+`ctest --test-dir ../build/linux-launcher-release -L NoAssets --output-on-failure`.
+`game_tests` includes a real-asset navigation-cache regression for previews of
+other visited systems and delayed celestial data.
+
+These tests do not validate rendering, native pickers, physical controllers,
+JNI/Objective-C++/libnx glue or device lifecycle behavior. Those still need
+levels 5–6 (package + device) from `AGENTS.md`.
 
 ## Android
 
@@ -149,9 +157,9 @@ cmake --build build/ios-arm64-ipa --config Release --parallel --target ipa
 
 The `ipa` target (`source/client/CMakeLists.txt`) always deletes and re-stages
 `Payload/` from the current app bundle. **Use it; never hand-stage or reuse an
-old `Payload/`.** The CI workflow builds `--target starbound` and packages the
-IPA itself with equivalent fresh-`Payload` logic, naming it
-`oSBM-<version>-ios.ipa`.
+old `Payload/`.** CI uses this same `ipa` target and checks the resulting
+`OpenStarbound-iOS-Release-unsigned.ipa`. The target's historical filename is
+also used for Debug builds; the uploaded artifact identifies the configuration.
 
 Levels are distinct: compile (`ios-arm64-debug`) < app bundle < unsigned IPA <
 signed install on a device. Signing/sideloading happens outside this repo.
@@ -160,9 +168,10 @@ signed install on a device. Signing/sideloading happens outside this repo.
 
 Prereqs: `DEVKITPRO` pointing at a devkitPro root with devkitA64, libnx,
 switch-tools, and the cross-compiled portlibs (SDL3, imgui, re2, cpr, zstd,
-abseil, opus, freetype, mesa/nouveau GL stack). **Three of those libraries
-must carry the repo's patches** — run `scripts/switch/apply-toolchain-patches.sh`
-and read `toolchains/patches/README.md` first. An unpatched toolchain
+abseil, opus, freetype, mesa/nouveau GL stack). The devkitPro libraries need
+`scripts/switch/apply-toolchain-patches.sh`; Abseil needs the separate isolated
+`scripts/switch/build-abseil.sh` build and its prefix passed to CMake. Read
+`toolchains/patches/README.md` first. An unpatched toolchain
 produces: monotonically decaying FPS, a dead touchscreen, a broken software
 keyboard, and (under Ryujinx) every C++ `throw` crashing.
 
@@ -192,14 +201,44 @@ cmake --build --preset switch-release --parallel
 
 ## CI
 
-Three `workflow_dispatch` (manual) workflows; no push-triggered CI:
+`pr-checks.yml` runs on PRs targeting `main`: workflow syntax, Linux launcher
+compilation, all three `NoAssets` suites, and Python package-validator tests.
+It requires no signing secret or game assets, and runs on GitHub-hosted runners.
+
+`full-platform.yml` runs on pushes to `main`, version tags, or manual dispatch.
+It calls the same package workflows available for individual manual runs:
 
 - `android-manual.yml` — arch choice (arm64/armv7/x86_64/universal) × build
   type; enforces the release signing identity via a fingerprint-checked
   keystore secret.
 - `ios-manual.yml` — Release/Debug unsigned IPA artifact on macOS runners.
 - `pc-manual.yml` — the five desktop *launcher* presets (all or one OS;
-  selecting Linux builds both x64 and native ARM64).
+  selecting Linux builds both x64 and native ARM64), with `NoAssets` tests.
+- `switch-manual.yml` — release NRO, without an embedded game archive.
+
+The full Android job requires the existing `ANDROID_DEBUG_KEYSTORE_B64` secret.
+No release is published automatically. Package checks reject `packed.pak`,
+missing bundled asset trees, absent executables, and incomplete/mislabeled APK
+ABIs. Artifacts carry the commit SHA in their name or an accompanying file.
+
+### Switch runner provisioning
+
+Switch builds require a trusted self-hosted Linux x64 runner labeled
+`osbm-switch`. Stock hosted runners lack this project's patched SDK and extra
+static dependencies. Install the dependencies from the Switch section above,
+apply `scripts/switch/apply-toolchain-patches.sh`, and set `DEVKITPRO` in the
+runner service environment. If extra static packages are outside the SDK,
+set `OSBM_SWITCH_PREFIX_PATH` to their semicolon-separated CMake prefixes.
+The job builds the pinned patched Abseil itself into `RUNNER_TEMP` and selects
+that package explicitly, avoiding stale cached `absl_DIR` values.
+The workflow sets `DEVKITA64` and adds SDK tools to PATH. Use a runner dedicated
+to trusted builds; public PRs must never run on it. No keys, firmware, game
+assets or emulator configuration are needed for packaging.
+
+The job deliberately waits for that runner rather than silently skipping the
+Switch build. Until one is registered and provisioned, full-platform CI cannot
+complete. A successful NRO build still requires separate hardware/emulator
+testing. The repository workflows do not provision or register a runner.
 
 When a CI run fails with symptoms identical to the bug you just fixed,
 verify the fix was actually pushed (`git status`, `git log origin/main..`)

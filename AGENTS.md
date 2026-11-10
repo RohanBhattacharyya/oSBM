@@ -36,7 +36,7 @@ third-party code is vendored in `source/extern/` or comes from vcpkg
 | The `starbound` target per platform, iOS `ipa` target, Switch link wraps | `source/client/CMakeLists.txt` |
 | Android app identity, signing, APK naming | `source/application/mobile/android/host/app/build.gradle` |
 | Switch toolchain prerequisites and their rationale | `toolchains/patches/README.md` |
-| CI behavior | `.github/workflows/android-manual.yml`, `ios-manual.yml`, `pc-manual.yml` |
+| CI behavior | `.github/workflows/pr-checks.yml`, `full-platform.yml`, and the Android/iOS/PC/Switch package workflows |
 
 ## Repository map
 
@@ -94,8 +94,9 @@ Desktop/Android/iOS dependencies use vcpkg manifest mode: `source/vcpkg.json`
 with per-platform expressions (e.g. `"platform": "!android & !ios"`), a pinned
 registry baseline, overlay triplets in `triplets/` and an overlay port in
 `ports/openssl/`. Switch does **not** use vcpkg: dependencies are static
-devkitPro portlibs plus locally cross-compiled libraries, three of which
-require repo-carried patches (`toolchains/patches/`).
+devkitPro portlibs plus locally cross-compiled libraries, several of which
+require repo-carried patches (`toolchains/patches/`), including the isolated
+Abseil build described there.
 
 Before adding or upgrading a dependency, evaluate: availability (or an
 explicit exclusion) on all four platform groups; static-link viability on

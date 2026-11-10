@@ -1,6 +1,17 @@
 name: Android Build (Manual)
 
 on:
+  workflow_call:
+    inputs:
+      build_type:
+        type: string
+        default: Release
+      arch:
+        type: string
+        default: universal
+    secrets:
+      ANDROID_DEBUG_KEYSTORE_B64:
+        required: true
   workflow_dispatch:
     inputs:
       build_type:
@@ -40,7 +51,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          persist-credentials: false
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -180,16 +191,11 @@ jobs:
 
       - name: Check packaged assets
         run: |
-          for apk in apk-staging/oSBM-*.apk; do
-            if unzip -Z1 "$apk" | grep -E '(^|/)packed\.pak$' >/dev/null; then
-              echo "Unexpected packed.pak in $apk" >&2
-              exit 1
-            fi
-          done
+          python3 scripts/ci/check-package.py apk apk-staging/*.apk
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: oSBM-${{ env.OSBM_VERSION }}-android-${{ inputs.arch }}-${{ inputs.build_type }}
+          name: oSBM-${{ env.OSBM_VERSION }}-${{ github.sha }}-android-${{ inputs.arch }}-${{ inputs.build_type }}
           path: apk-staging/oSBM-*.apk
           if-no-files-found: error
