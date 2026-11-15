@@ -16,6 +16,7 @@
 #include "StarWorld.hpp"
 #include "StarGameTimers.hpp"
 #include "StarLuaRoot.hpp"
+#include "StarLuaComponents.hpp"
 #include "StarTickRateMonitor.hpp"
 
 namespace Star {
@@ -43,7 +44,11 @@ std::atomic<int>& worldClientLiveCount();
 
 class WorldClient : public World {
 public:
+  typedef LuaMessageHandlingComponent<LuaUpdatableComponent<LuaWorldComponent<LuaBaseComponent>>> ScriptComponent;
+  typedef shared_ptr<ScriptComponent> ScriptComponentPtr;
+  
   WorldClient(PlayerPtr mainPlayer, LuaRootPtr luaRoot);
+  WorldClient(ClientSubWorldId subWorldId);
   ~WorldClient();
 
   ConnectionId connection() const override;
@@ -112,6 +117,9 @@ public:
 
   // Is this WorldClient properly initialized in a world
   bool inWorld() const;
+  
+  bool isHeadless() const;
+  ClientSubWorldId subWorldId() const;
 
   // True once after a live world was torn down. The client app pulls this to
   // drop GPU textures the departing world loaded; WorldClient cannot see the
@@ -142,6 +150,8 @@ public:
   void overrideGravity(float gravity);
   void resetGravity();
 
+  List<EntityId> entityIds() const;
+
   // Disable normal client-side lighting algorithm, everything full brightness.
   bool fullBright() const;
   void setFullBright(bool fullBright);
@@ -162,6 +172,10 @@ public:
   void centerClientWindowOnPlayer();
   RectI clientWindow() const;
   WorldClientState& clientState();
+
+  Maybe<Json> receiveMessage(ConnectionId fromConnection, String const& message, JsonArray const& args);
+
+  ScriptComponentPtr scriptContext(String const& contextName);
 
   void update(float dt);
   // borderTiles here should extend the client window for border tile
@@ -197,8 +211,11 @@ public:
 
   typedef std::function<bool(PlayerPtr, StringView)> BroadcastCallback;
   BroadcastCallback& broadcastCallback();
-
-
+  
+  bool shouldExpire();
+  
+  bool pullRequestedDestroy();
+  void requestDestroy();
 
 private:
   static const float DropDist;
@@ -342,6 +359,11 @@ private:
   // set to true after we have entered a world *and* the first batch of updates
   // are received.
   bool m_inWorld;
+  
+  bool m_headless;
+  
+  ClientSubWorldId m_subWorldId;
+  bool m_requestedDestroy;
 
   GameTimer m_worldDimTimer;
   float m_worldDimLevel;
@@ -471,6 +493,10 @@ private:
   HashSet<uint64_t> m_entityExceptionsLogged;
 
   bool m_worldCleared = false;
+  
+  StringMap<ScriptComponentPtr> m_scriptContexts;
+
+  GameTimer m_expiryTimer;
 };
 
 }

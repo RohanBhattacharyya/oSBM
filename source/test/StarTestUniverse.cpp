@@ -20,16 +20,18 @@ TestUniverse::TestUniverse(Vec2U clientWindowSize) {
   auto playerStorage = make_shared<PlayerStorage>(File::relativeTo(m_storagePath, "player"));
   auto statistics = make_shared<Statistics>(File::relativeTo(m_storagePath, "statistics"));
   m_server = make_shared<UniverseServer>(File::relativeTo(m_storagePath, "universe"));
-  m_client = make_shared<UniverseClient>(playerStorage, statistics);
+  m_client = make_shared<UniverseClient>(playerStorage, statistics, File::relativeTo(m_storagePath, "universeclient"));
 
   m_server->start();
 
   m_mainPlayer = root.playerFactory()->create();
+  m_mainPlayer->setSpecies("human");
   m_mainPlayer->finalizeCreation();
   m_mainPlayer->setAdmin(true);
   m_mainPlayer->setModeType(PlayerMode::Survival);
   m_client->setMainPlayer(m_mainPlayer);
-  m_client->connect(m_server->addLocalClient(), "test", "");
+  if (auto error = m_client->connect(m_server->addLocalClient(), true, "test", ""))
+    throw StarException(strf("Test client could not connect: {}", *error));
 }
 
 TestUniverse::~TestUniverse() {
@@ -41,7 +43,10 @@ TestUniverse::~TestUniverse() {
 
 void TestUniverse::warpPlayer(WorldId worldId) {
   m_client->warpPlayer(WarpToWorld(worldId), true);
+  auto deadline = Time::monotonicMilliseconds() + 60000;
   while (m_mainPlayer->isTeleporting() || m_client->playerWorld().empty()) {
+    if (!m_client->isConnected() || Time::monotonicMilliseconds() > deadline)
+      throw StarException(strf("Test warp to {} did not complete", printWorldId(worldId)));
     m_client->update(0.016f);
     Thread::sleep(16);
   }

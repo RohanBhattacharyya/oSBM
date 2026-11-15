@@ -58,6 +58,8 @@ CelestialMasterDatabase::CelestialMasterDatabase(Maybe<String> databaseFile) {
   auto assets = Root::singleton().assets();
 
   auto config = assets->json("/celestial.config");
+  
+  m_chunksAlwaysPersistent = config.getBool("saveAllChunks",false);
 
   m_baseInformation.planetOrbitalLevels = config.getInt("planetOrbitalLevels");
   m_baseInformation.satelliteOrbitalLevels = config.getInt("satelliteOrbitalLevels");
@@ -366,6 +368,7 @@ void CelestialMasterDatabase::updateParameters(CelestialCoordinate const& coordi
     ds.write(versionedChunk);
     VersionedJson::writeSubVersioning(ds, versionedChunk);
     m_database.insert(DataStreamBuffer::serialize(chunkIndex), compressData(ds.data()));
+    chunk.persistent = true;
 
     m_chunkCache.remove(chunkIndex);
   } else {
@@ -383,6 +386,26 @@ Maybe<CelestialOrbitRegion> CelestialMasterDatabase::orbitRegion(
       return region;
   }
   return {};
+}
+
+void CelestialMasterDatabase::markPersistent(CelestialCoordinate const& coordinate) {
+  RecursiveMutexLocker locker(m_mutex);
+
+  auto chunkIndex = chunkIndexFor(coordinate);
+  auto chunk = getChunk(chunkIndex);
+  if (chunk.persistent) {
+    // chunk is already considered persistent and is in the database
+    return;
+  }
+  if (m_database.isOpen()) {
+    auto versioningDatabase = Root::singleton().versioningDatabase();
+    auto versionedChunk = versioningDatabase->makeCurrentVersionedJson("CelestialChunk", chunk.toJson());
+    DataStreamBuffer ds;
+    ds.write(versionedChunk);
+    VersionedJson::writeSubVersioning(ds, versionedChunk);
+    m_database.insert(DataStreamBuffer::serialize(chunkIndex), compressData(ds.data()));
+    chunk.persistent = true;
+  }
 }
 
 CelestialChunk const& CelestialMasterDatabase::getChunk(Vec2I const& chunkIndex, UnlockDuringFunction unlockDuring) {
@@ -409,12 +432,16 @@ CelestialChunk const& CelestialMasterDatabase::getChunk(Vec2I const& chunkIndex,
         unlockDuring(producer);
       else
         producer();
-      if (m_database.isOpen()) {
-        auto versionedChunk = versioningDatabase->makeCurrentVersionedJson("CelestialChunk", newChunk.toJson());
-        DataStreamBuffer ds;
-        ds.write(versionedChunk);
-        VersionedJson::writeSubVersioning(ds, versionedChunk);
-        m_database.insert(DataStreamBuffer::serialize(chunkIndex), compressData(ds.data()));
+    
+      if (m_chunksAlwaysPersistent) {
+        if (m_database.isOpen()) {
+          auto versionedChunk = versioningDatabase->makeCurrentVersionedJson("CelestialChunk", newChunk.toJson());
+          DataStreamBuffer ds;
+          ds.write(versionedChunk);
+          VersionedJson::writeSubVersioning(ds, versionedChunk);
+          m_database.insert(DataStreamBuffer::serialize(chunkIndex), compressData(ds.data()));
+          newChunk.persistent = true;
+        }
       }
 
       return newChunk;

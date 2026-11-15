@@ -2,7 +2,6 @@
 #include "StarUtilityLuaBindings.hpp"
 #include "StarRootLuaBindings.hpp"
 #include "StarScriptableThread.hpp"
-#include "StarRpcThreadPromise.hpp"
 #include "StarLuaGameConverters.hpp"
 
 namespace Star {
@@ -10,7 +9,6 @@ namespace Star {
 LuaBaseComponent::LuaBaseComponent() {
   addCallbacks("sb", LuaBindings::makeUtilityCallbacks());
   addCallbacks("root", LuaBindings::makeRootCallbacks());
-  addCallbacks("threads", makeThreadsCallbacks());
   setAutoReInit(true);
 }
 
@@ -141,6 +139,10 @@ Maybe<LuaContext>& LuaBaseComponent::context() {
 void LuaBaseComponent::contextSetup() {
   m_context->setPath("self", m_context->createTable());
 
+  // set up here instead
+  if (!m_callbacks.contains("threads"))
+    addCallbacks("threads", makeThreadsCallbacks());
+  
   for (auto const& p : m_callbacks)
     m_context->setCallbacks(p.first, p.second);
 }
@@ -161,36 +163,62 @@ bool LuaBaseComponent::checkInitialization() {
   return initialized();
 }
 
+void LuaBaseComponent::cleanThreads() {
+  for (auto const& p : m_threads) {
+    if (p.second->shouldExpire()) {
+      m_threads.remove(p.first);
+    }
+  }
+}
+
 LuaCallbacks LuaBaseComponent::makeThreadsCallbacks() {
   LuaCallbacks callbacks;
   
   callbacks.registerCallback("create", [this](Json parameters) {
-    auto name = parameters.getString("name");
+    cleanThreads();
+    auto name = parameters.getString("name",Uuid().hex());
     if (m_threads.contains(name)) {
       m_threads.get(name)->stop();
       m_threads.remove(name);
     }
-    auto thread = make_shared<ScriptableThread>(parameters);
+    auto thread = make_shared<ScriptableThread>(parameters.set("name",name), this);
     thread->setPause(false);
     thread->start();
     m_threads.set(name,thread);
     return name;
   });
   callbacks.registerCallback("setPause", [this](String const& threadName, bool paused) {
+    if (m_threads.contains(threadName))
       m_threads.get(threadName)->setPause(paused);
   });
   callbacks.registerCallback("stop", [this](String const& threadName) {
+    if (m_threads.contains(threadName)) {
       m_threads.get(threadName)->stop();
       m_threads.remove(threadName);
+    }
+    cleanThreads();
   });
-  callbacks.registerCallback("sendMessage", [this](String const& threadName, String const& message, LuaVariadic<Json> args) {
+  callbacks.registerCallback("sendMessage", [this](String const& threadName, String const& message, LuaVariadic<Json> args) -> RpcThreadPromise<Json> {
+    if (!m_threads.contains(threadName))
+      return RpcThreadPromise<Json>::createFailed("Thread does not exist");
+    
+    auto thread = m_threads.get(threadName);
+    if (thread->shouldExpire())
+      return RpcThreadPromise<Json>::createFailed("Thread is stopped");
+    
     auto pair = RpcThreadPromise<Json>::createPair();
-    RecursiveMutexLocker locker(m_threadLock);
-    m_threads.get(threadName)->passMessage({ message, args, pair.second });
+    thread->passMessage({ message, JsonArray::from(std::move(args)), pair.second });
     return pair.first;
   });
   
   return callbacks;
+}
+
+RpcThreadPromise<Json> LuaBaseComponent::threadPassMessage(String const& thread, String const& message, JsonArray const& args) {
+  _unused(thread);
+  _unused(message);
+  _unused(args);
+  return RpcThreadPromise<Json>::createFailed("Lua component cannot handle messages");
 }
 
 }

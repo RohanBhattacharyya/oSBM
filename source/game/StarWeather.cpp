@@ -343,13 +343,13 @@ void ClientWeather::update(double dt) {
   if (m_currentWeatherIndex == NPos) {
     m_currentWeatherType = {};
   } else {
-    if (m_visibleRegion.yMax() > m_undergroundLevel)
+    if (m_visibleRegion == RectI() || m_visibleRegion.yMax() > m_undergroundLevel)
       m_currentWeatherType = Root::singleton().biomeDatabase()->weatherType(m_weatherPool.item(m_currentWeatherIndex));
     else
       m_currentWeatherType = {};
   }
 
-  if (m_currentWeatherType)
+  if (m_currentWeatherType && m_visibleRegion != RectI())
     spawnWeatherParticles(RectF(m_visibleRegion), dt);
 }
 
@@ -393,7 +393,7 @@ void ClientWeather::spawnWeatherParticles(RectF newClientRegion, float dt) {
   for (auto const& particleConfig : m_currentWeatherType->particles) {
     // Move client region to same wrap region as newClientRegion
     RectF visibleRegion(m_worldGeometry.nearestTo(newClientRegion.min(), m_lastParticleVisibleRegion.min()),
-        m_worldGeometry.nearestTo(newClientRegion.min(), m_lastParticleVisibleRegion.max()));
+        m_worldGeometry.nearestTo(newClientRegion.max(), m_lastParticleVisibleRegion.max()));
 
     Vec2F targetVelocity = particleConfig.particle.velocity + Vec2F(wind(), 0);
     float angleChange = Vec2F::angleBetween2(Vec2F(0, 1), targetVelocity);

@@ -12,6 +12,7 @@ public:
 
   void warpPlayer(WorldId worldId);
   WorldId currentPlayerWorld() const;
+  UniverseClientPtr client() const { return m_client; }
 
   void update(unsigned times = 1);
 

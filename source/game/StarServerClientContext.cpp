@@ -151,6 +151,16 @@ void ServerClientContext::setAdmin(bool admin) {
   m_isAdminNetState.set(admin);
 }
 
+bool ServerClientContext::serverDebug() const {
+  RecursiveMutexLocker locker(m_mutex);
+  return m_serverDebug;
+}
+
+void ServerClientContext::setServerDebug(bool serverDebug) {
+  RecursiveMutexLocker locker(m_mutex);
+  m_serverDebug = serverDebug;
+}
+
 EntityDamageTeam ServerClientContext::team() const {
   RecursiveMutexLocker locker(m_mutex);
   return m_teamNetState.get();
@@ -202,13 +212,22 @@ ByteArray ServerClientContext::writeUpdate() {
 
   ByteArray netGroupUpdate;
   tie(netGroupUpdate, m_netVersion) = m_netGroup.writeNetState(m_netVersion, m_netRules);
+  
+  StringMap<ByteArray> customWorldChunksUpdate;
+  for (auto& p : m_customWorlds) {
+    if (!p.second.chunksUpdate.empty())
+      customWorldChunksUpdate[p.first] = DataStreamBuffer::serialize(take(p.second.chunksUpdate));
+  }
 
-  if (rpcUpdate.empty() && shipChunksUpdate.empty() && netGroupUpdate.empty())
+  if (rpcUpdate.empty() && shipChunksUpdate.empty() && netGroupUpdate.empty() && (m_netRules.version() < 15 || customWorldChunksUpdate.empty()))
     return {};
 
   DataStreamBuffer ds;
   ds.write(rpcUpdate);
   ds.write(shipChunksUpdate);
+  if (m_netRules.version() >= 15) {
+    ds.write(customWorldChunksUpdate);
+  }
   ds.write(netGroupUpdate);
 
   return ds.takeData();
@@ -258,6 +277,37 @@ void ServerClientContext::clearPlayerWorld() {
   setPlayerWorld({});
 }
 
+void ServerClientContext::setSubWorld(ClientSubWorldId subWorldId, WorldServerThreadPtr worldThread) {
+  RecursiveMutexLocker locker(m_mutex);
+  if (m_subWorldThreads[subWorldId] == worldThread)
+    return;
+
+  m_subWorldThreads[subWorldId] = std::move(worldThread);
+}
+
+WorldServerThreadPtr ServerClientContext::subWorld(ClientSubWorldId subWorldId) const {
+  RecursiveMutexLocker locker(m_mutex);
+  if (m_subWorldThreads.contains(subWorldId)) {
+    return m_subWorldThreads.get(subWorldId);
+  } else {
+    return {};
+  }
+}
+
+bool ServerClientContext::hasSubWorld(ClientSubWorldId subWorldId) const {
+  RecursiveMutexLocker locker(m_mutex);
+  return m_subWorldThreads.contains(subWorldId);
+}
+
+void ServerClientContext::clearSubWorld(ClientSubWorldId subWorldId) {
+  m_subWorldThreads.remove(subWorldId);
+}
+
+List<ClientSubWorldId> ServerClientContext::subWorlds() const {
+  RecursiveMutexLocker locker(m_mutex);
+  return m_subWorldThreads.keys();
+}
+
 WarpToWorld ServerClientContext::playerReturnWarp() const {
   RecursiveMutexLocker locker(m_mutex);
   return m_returnWarp;
@@ -276,6 +326,74 @@ WarpToWorld ServerClientContext::playerReviveWarp() const {
 void ServerClientContext::setPlayerReviveWarp(WarpToWorld warp) {
   RecursiveMutexLocker locker(m_mutex);
   m_reviveWarp = std::move(warp);
+}
+
+ServerClientContext::CustomWorld::CustomWorld() : chunks(WorldChunks()), chunksUpdate(WorldChunks()), active(false) {}
+ServerClientContext::CustomWorld::CustomWorld(WorldChunks initialChunks) : chunks(initialChunks), chunksUpdate(WorldChunks()), active(false) {}
+
+void ServerClientContext::customWorldRequested(String name, RpcThreadPromiseKeeper<WorldChunks> promise) {
+  RecursiveMutexLocker locker(m_mutex);
+  m_worldRequests.add(name,promise);
+}
+
+void ServerClientContext::customWorldReceived(String name, WorldChunks chunks) {
+  RecursiveMutexLocker locker(m_mutex);
+  if (auto promise = m_worldRequests.maybeTake(name)) {
+    (*promise).fulfill(chunks);
+  }
+  m_customWorlds.add(name,CustomWorld(std::move(chunks)));
+}
+
+void ServerClientContext::failWorldRequests() {
+  RecursiveMutexLocker locker(m_mutex);
+  for (auto& p : m_worldRequests) {
+    p.second.fail("Client disconnected");
+  }
+  m_worldRequests = {};
+}
+
+Maybe<WorldChunks> ServerClientContext::customWorldChunks(String name) const {
+  RecursiveMutexLocker locker(m_mutex);
+  if (m_customWorlds.contains(name)) {
+    return m_customWorlds.get(name).chunks;
+  } else {
+    return {};
+  }
+}
+
+void ServerClientContext::updateCustomWorldChunks(String name, WorldChunks newWorldChunks) {
+  RecursiveMutexLocker locker(m_mutex);
+  if (!m_customWorlds.contains(name)) {
+    m_customWorlds.add(name,CustomWorld());
+  }
+  auto &world = m_customWorlds.get(name);
+  world.chunksUpdate.merge(WorldStorage::getWorldChunksUpdate(world.chunks, newWorldChunks), true);
+  world.chunks = std::move(newWorldChunks);
+}
+
+void ServerClientContext::setCustomWorldActive(String name, bool active) {
+  RecursiveMutexLocker locker(m_mutex);
+  if (m_customWorlds.contains(name)) {
+    m_customWorlds.get(name).active = active;
+  }
+}
+
+List<String> ServerClientContext::customWorlds() const {
+  RecursiveMutexLocker locker(m_mutex);
+  return m_customWorlds.keys();
+}
+
+void ServerClientContext::cleanInactiveCustomWorlds() {
+  RecursiveMutexLocker locker(m_mutex);
+  for (auto worldName : m_customWorlds.keys()) {
+    if (m_customWorlds.contains(worldName)) {
+      auto &world = m_customWorlds.get(worldName);
+      if (!world.active && world.chunksUpdate.empty()) {
+        Logger::info("Removing inactive custom world '{}' for client '{}'",worldName,m_playerUuid.hex());
+        m_customWorlds.remove(worldName);
+      }
+    }
+  }
 }
 
 void ServerClientContext::loadServerData(Json const& store) {

@@ -70,6 +70,8 @@ bool WorldServerThread::shouldExpire() {
 bool WorldServerThread::spawnTargetValid(SpawnTarget const& spawnTarget) {
   try {
     RecursiveMutexLocker locker(m_mutex);
+    if (!m_worldServer)
+      return false;
     return m_worldServer->spawnTargetValid(spawnTarget);
   } catch (std::exception const& e) {
     String error = strf("{}", outputException(e, true));
@@ -79,11 +81,14 @@ bool WorldServerThread::spawnTargetValid(SpawnTarget const& spawnTarget) {
   }
 }
 
-bool WorldServerThread::addClient(ConnectionId clientId, SpawnTarget const& spawnTarget, bool isLocal, bool isAdmin, NetCompatibilityRules netRules) {
+bool WorldServerThread::addClient(ConnectionId clientId, SpawnTarget const& spawnTarget, bool isLocal, bool isAdmin, NetCompatibilityRules netRules, ClientSubWorldId subWorldId) {
   try {
     RecursiveMutexLocker locker(m_mutex);
-    if (m_worldServer->addClient(clientId, spawnTarget, isLocal, isAdmin, netRules)) {
+    if (!m_worldServer)
+      return false;
+    if (m_worldServer->addClient(clientId, spawnTarget, isLocal, isAdmin, netRules, subWorldId)) {
       m_clients.add(clientId);
+      m_clientSubWorlds[clientId] = subWorldId;
       return true;
     }
 
@@ -106,12 +111,20 @@ List<PacketPtr> WorldServerThread::removeClient(ConnectionId clientId) {
   List<PacketPtr> outgoingPackets;
   try {
     auto incomingPackets = take(m_incomingPacketQueue[clientId]);
-    if (m_worldServer->hasClient(clientId))
+    if (m_worldServer && m_worldServer->hasClient(clientId))
       m_worldServer->handleIncomingPackets(clientId, std::move(incomingPackets));
 
     outgoingPackets = take(m_outgoingPacketQueue[clientId]);
-    if (m_worldServer->hasClient(clientId))
+    if (m_worldServer && m_worldServer->hasClient(clientId)) {
       outgoingPackets.appendAll(m_worldServer->removeClient(clientId));
+    } else if (!m_worldServer) {
+      List<PacketPtr> stopped{make_shared<WorldStopPacket>("Removed")};
+      auto subWorldId = m_clientSubWorlds.get(clientId);
+      if (subWorldId == MainClientWorldId)
+        outgoingPackets.appendAll(std::move(stopped));
+      else
+        outgoingPackets.append(make_shared<ClientSubWorldPackets>(subWorldId, std::move(stopped)));
+    }
 
   } catch (std::exception const& e) {
     String error = strf("{}", outputException(e, true));
@@ -120,6 +133,7 @@ List<PacketPtr> WorldServerThread::removeClient(ConnectionId clientId) {
   }
 
   m_clients.remove(clientId);
+  m_clientSubWorlds.remove(clientId);
   m_incomingPacketQueue.remove(clientId);
   m_outgoingPacketQueue.remove(clientId);
   return outgoingPackets;
@@ -140,9 +154,15 @@ bool WorldServerThread::noClients() const {
   return m_clients.empty();
 }
 
+ClientSubWorldId WorldServerThread::clientSubWorld(ConnectionId clientId) const {
+  RecursiveMutexLocker locker(m_mutex);
+  return m_clientSubWorlds.value(clientId, MainClientWorldId);
+}
 
 List<ConnectionId> WorldServerThread::erroredClients() const {
   RecursiveMutexLocker locker(m_mutex);
+  if (!m_worldServer)
+    return {};
   auto unerroredClients = HashSet<ConnectionId>::from(m_worldServer->clientIds());
   return m_clients.difference(unerroredClients).values();
 }
@@ -160,6 +180,8 @@ List<PacketPtr> WorldServerThread::pullOutgoingPackets(ConnectionId clientId) {
 Maybe<Vec2F> WorldServerThread::playerRevivePosition(ConnectionId clientId) const {
   try {
     RecursiveMutexLocker locker(m_mutex);
+    if (!m_worldServer)
+      return {};
     if (auto player = m_worldServer->clientPlayer(clientId))
       return player->position() + player->feetOffset();
     return {};
@@ -174,6 +196,8 @@ Maybe<Vec2F> WorldServerThread::playerRevivePosition(ConnectionId clientId) cons
 Maybe<pair<String, String>> WorldServerThread::pullNewPlanetType() {
   try {
     RecursiveMutexLocker locker(m_mutex);
+    if (!m_worldServer)
+      return {};
     return m_worldServer->pullNewPlanetType();
   } catch (std::exception const& e) {
     String error = strf("{}", outputException(e, true));
@@ -297,7 +321,7 @@ void WorldServerThread::run() {
     return;
   try {
     Logger::info("WorldServerThread: destroying world {} on its own thread", m_worldId);
-    if (!m_errorOccurred && m_worldId.is<ClientShipWorldId>()) {
+    if (!m_errorOccurred && (m_worldId.is<ClientShipWorldId>() || m_worldId.is<ClientCustomWorldId>())) {
       m_worldServer->unloadAll(true);
       m_finalChunks = m_worldServer->readChunks();
     }

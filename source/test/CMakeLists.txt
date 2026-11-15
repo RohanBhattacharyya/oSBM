@@ -26,6 +26,7 @@ SET (star_core_tests_SOURCES
       byte_array_test.cpp
       clock_test.cpp
       color_test.cpp
+      compression_test.cpp
       container_test.cpp
       encode_test.cpp
       file_test.cpp
@@ -64,7 +65,10 @@ SET (star_core_tests_SOURCES
 ADD_EXECUTABLE (core_tests
   $<TARGET_OBJECTS:star_extern> $<TARGET_OBJECTS:star_core>
   ${star_core_tests_SOURCES})
-TARGET_LINK_LIBRARIES (core_tests ${STAR_EXT_LIBS})
+# zlib is the reference implementation for compatibility with existing saves
+# and peers. The engine itself calls only zlib-ng's native, prefixed API.
+FIND_PACKAGE(ZLIB REQUIRED)
+TARGET_LINK_LIBRARIES (core_tests ${STAR_EXT_LIBS} ZLIB::ZLIB)
 ADD_TEST (NAME core_tests WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY} COMMAND ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/core_tests)
 
 SET (star_game_tests_SOURCES

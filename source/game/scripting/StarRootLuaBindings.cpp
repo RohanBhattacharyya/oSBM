@@ -1,4 +1,5 @@
 #include "StarRootLuaBindings.hpp"
+#include "StarXXHash.hpp"
 #include "StarLuaGameConverters.hpp"
 #include "StarRoot.hpp"
 #include "StarStoredFunctions.hpp"
@@ -27,6 +28,13 @@
 #include "StarStatusEffectDatabase.hpp"
 
 namespace Star {
+
+enum VariantTerrainLayer { Background, Platform, Foreground };
+EnumMap<VariantTerrainLayer> VariantTerrainLayerNames{
+  {VariantTerrainLayer::Background, "Background"},
+  {VariantTerrainLayer::Platform, "Platform"},
+  {VariantTerrainLayer::Foreground, "Foreground"},
+};
 
 LuaCallbacks LuaBindings::makeRootCallbacks() {
   LuaCallbacks callbacks;
@@ -67,6 +75,28 @@ LuaCallbacks LuaBindings::makeRootCallbacks() {
 
   callbacks.registerCallbackWithSignature<Maybe<String>, String, Maybe<String>>("materialMiningSound", bind(RootCallbacks::materialMiningSound, root, _1, _2));
   callbacks.registerCallbackWithSignature<Maybe<String>, String, Maybe<String>>("materialFootstepSound", bind(RootCallbacks::materialFootstepSound, root, _1, _2));
+
+  auto getVariant = [](unsigned x, unsigned y, bool isMatMod, VariantTerrainLayer layer, unsigned variants) -> unsigned {
+    // This small state fits on the stack. Avoid another static TLS allocation
+    // (and a heap allocation on first use) in the shared mobile engine.
+    XXHash32 state(2938728349);
+    state.push((char const*)&x, sizeof(x));
+    state.push((char const*)&y, sizeof(y));
+    state.push((char const*)&layer, sizeof(layer));
+    if (isMatMod)
+      state.push("mod", 3);
+    else
+      state.push("main", 4);
+    return state.digest() % variants;
+  };
+
+  callbacks.registerCallback("materialVariant", [root, getVariant](Vec2U const& tilePosition, String const& layer, unsigned variants) -> unsigned {
+    return getVariant(tilePosition.x(), tilePosition.y(), false, VariantTerrainLayerNames.getLeft(layer), variants);
+  });
+
+  callbacks.registerCallback("modVariant", [root, getVariant](Vec2U const& tilePosition, String const& layer, unsigned variants) -> unsigned {
+    return getVariant(tilePosition.x(), tilePosition.y(), true, VariantTerrainLayerNames.getLeft(layer), variants);
+  });
 
   callbacks.registerCallback("assetsByExtension", [root](String const& extension) -> CaseInsensitiveStringSet {
     return root->assets()->scanExtension(extension);
@@ -469,7 +499,9 @@ String LuaBindings::RootCallbacks::generateName(Root* root, String const& rulesA
 }
 
 Json LuaBindings::RootCallbacks::questConfig(Root* root, String const& templateId) {
-  return root->questTemplateDatabase()->questTemplate(templateId)->config;
+  if (auto quest = root->questTemplateDatabase()->questTemplate(templateId))
+    return quest->config;
+  throw StarException(strf("No quest template found for id '{}'", templateId));
 }
 
 JsonArray LuaBindings::RootCallbacks::npcPortrait(Root* root,

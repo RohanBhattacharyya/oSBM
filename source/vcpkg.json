@@ -9,7 +9,7 @@
     { "name": "sdl3", "platform": "!linux" },
     { "name": "cpptrace", "platform": "!windows & !android & !ios" },
     "libvorbis",
-    "zlib",
+    "zlib-ng",
     "freetype",
     "libpng",
     "opus",

@@ -75,6 +75,7 @@ public:
   void setUniverseSettings(UniverseSettingsPtr universeSettings);
   UniverseSettingsPtr universeSettings() const;
 
+  void setPause(bool pause);
   void setReferenceClock(ClockPtr clock);
 
   void initLua(UniverseServer* universe);
@@ -94,7 +95,7 @@ public:
 
   // Returns false if the client id already exists, or the spawn target is
   // invalid.
-  bool addClient(ConnectionId clientId, SpawnTarget const& spawnTarget, bool isLocal, bool isAdmin = false, NetCompatibilityRules netRules = {});
+  bool addClient(ConnectionId clientId, SpawnTarget const& spawnTarget, bool isLocal, bool isAdmin = false, NetCompatibilityRules netRules = {}, ClientSubWorldId subWorldId = MainClientWorldId);
 
   // Removes client, sends the WorldStopPacket, and returns any pending packets
   // for that client
@@ -106,6 +107,8 @@ public:
   // May return null if a Player is not available or if the client id is not
   // valid.
   PlayerPtr clientPlayer(ConnectionId clientId) const;
+  
+  ClientSubWorldId clientSubWorld(ConnectionId clientId) const;
 
   List<EntityId> players() const;
 
@@ -222,6 +225,8 @@ public:
 
   ScriptComponentPtr scriptContext(String const& contextName);
 
+  List<EntityId> entityIds() const;
+
   // Queues a microdungeon for placement
   RpcPromise<Vec2I> enqueuePlacement(List<BiomeItemDistribution> distributions, Maybe<DungeonId> id);
 
@@ -297,7 +302,6 @@ public:
   // Returns the list of weather names available in this world
   StringList weatherList() const;
 
-
   // used to notify the universe server that the celestial planet type has changed
   Maybe<pair<String, String>> pullNewPlanetType();
 
@@ -310,6 +314,7 @@ private:
     bool needsDamageNotification(RemoteDamageNotification const& rdn) const;
 
     ConnectionId clientId;
+    ClientSubWorldId subWorldId;
     uint64_t skyNetVersion;
     uint64_t weatherNetVersion;
     WorldClientState clientState;
@@ -423,6 +428,8 @@ private:
   SkyPtr m_sky;
 
   ServerWeather m_weather;
+
+  ClockPtr m_referenceClock;
 
   CollisionGenerator m_collisionGenerator;
   List<CollisionBlock> m_workingCollisionBlocks;

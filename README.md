@@ -156,7 +156,7 @@ cmake --build --preset android-arm64-debug --target android_apk --parallel
 
 The Switch build does not use vcpkg. The required third-party libraries are
 provided by devkitPro or must be cross-compiled as Switch static portlibs:
-SDL3, Dear ImGui, re2, cpr, zstd, abseil, freetype, libpng, libjpeg-turbo,
+SDL3, Dear ImGui, re2, cpr, zstd, abseil, native zlib-ng, freetype, libpng, libjpeg-turbo,
 libogg, libvorbis, libdrm_nouveau, and their dependencies.
 
 Set the devkitPro environment before configuring:
@@ -175,12 +175,18 @@ devkitA64 `libgcc.a` multilib variants:
 ./scripts/switch/apply-toolchain-patches.sh
 ```
 
-Configure and build the release NRO from `source/` (the CMake preset file is
-stored there):
+Build the isolated Abseil and native zlib-ng dependencies, then configure and
+build the release NRO from `source/`. The SDK's ordinary zlib remains available
+for portlibs such as libpng; the engine uses zlib-ng's separate `zng_*` API.
 
 ```bash
+bash scripts/switch/build-abseil.sh "$PWD/build/switch-abseil"
+bash scripts/switch/build-zlib-ng.sh "$PWD/build/switch-zlib-ng"
 cd source
-cmake --preset switch-release
+cmake --preset switch-release \
+  -Dabsl_DIR="$PWD/../build/switch-abseil/install/lib/cmake/absl" \
+  -Dzlib-ng_DIR="$PWD/../build/switch-zlib-ng/install/lib/cmake/zlib-ng" \
+  -DCMAKE_PREFIX_PATH="$PWD/../build/switch-abseil/install;$PWD/../build/switch-zlib-ng/install"
 cmake --build --preset switch-release --target starbound_nro --parallel
 ```
 

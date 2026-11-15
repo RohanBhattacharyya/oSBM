@@ -1,8 +1,31 @@
 #include "StarTileSectorArray.hpp"
+#include "StarThread.hpp"
 
 #include "gtest/gtest.h"
 
 using namespace Star;
+
+TEST(TileSectorArrayTest, ParallelGather) {
+  using TileArray = TileSectorArray<int, 32>;
+  TileArray tiles({96, 64}, -1);
+  tiles.loadSector({0, 0}, make_unique<TileArray::Array>(3));
+  tiles.loadSector({2, 1}, make_unique<TileArray::Array>(7));
+  // Exercise wrapped X coordinates, clamped Y coordinates and absent sectors
+  // with concurrent render/lighting-style gathers sharing the same pool.
+  auto gather = [&] {
+    for (unsigned iteration = 0; iteration < 20; ++iteration) {
+      auto result = tiles.tileEachResult(RectI(-9, -5, 48, 70), [](Vec2I const& pos, int tile) {
+        return tile + pos[0] * 100 + pos[1] * 10000;
+      });
+      for (int x = -9; x < 48; ++x)
+        for (int y = -5; y < 70; ++y)
+          EXPECT_EQ(result(x + 9, y + 5), tiles.tile({x, y}) + x * 100 + y * 10000);
+    }
+  };
+  auto worker = Thread::invoke("ParallelGatherTest", gather);
+  gather();
+  worker.finish();
+}
 
 TEST(TileSectorArrayTest, All) {
   typedef TileSectorArray<int, 32> TileArray;

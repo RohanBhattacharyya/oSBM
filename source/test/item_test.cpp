@@ -1,10 +1,23 @@
 #include "StarItemDatabase.hpp"
+#include "StarPlayerInventory.hpp"
+#include "StarThread.hpp"
 
 #include <list>
 
 #include "gtest/gtest.h"
 
 using namespace Star;
+
+TEST(ItemTest, BlankInventoryIsPerThread) {
+  auto inventory = &PlayerInventory::blankInventory();
+  EXPECT_EQ(inventory, &PlayerInventory::blankInventory());
+  auto worker = Thread::invoke("BlankInventoryTest", [] {
+    auto value = &PlayerInventory::blankInventory();
+    EXPECT_EQ(value, &PlayerInventory::blankInventory());
+    return (uintptr_t)value;
+  });
+  EXPECT_NE((uintptr_t)inventory, worker.finish());
+}
 
 TEST(ItemTest, ItemDescriptorConstruction) {
   ItemDescriptor testItemDescriptor;

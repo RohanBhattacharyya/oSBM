@@ -26,7 +26,9 @@
 #include "StarFallingBlocksAgent.hpp"
 #include "StarWarpTargetEntity.hpp"
 #include "StarUniverseSettings.hpp"
+#include "StarUniverseServer.hpp"
 #include "StarUniverseServerLuaBindings.hpp"
+#include "StarCelestialLuaBindings.hpp"
 
 namespace Star {
 
@@ -146,10 +148,19 @@ UniverseSettingsPtr WorldServer::universeSettings() const {
 void WorldServer::setReferenceClock(ClockPtr clock) {
   m_weather.setReferenceClock(clock);
   m_sky->setReferenceClock(clock);
+  m_referenceClock = clock;
+}
+
+void WorldServer::setPause(bool pause) {
+  if (m_referenceClock && pause)
+    m_referenceClock->stop();
+  else if (m_referenceClock)
+    m_referenceClock->start();
 }
 
 void WorldServer::initLua(UniverseServer* universe) {
   m_luaRoot->addCallbacks("universe", LuaBindings::makeUniverseServerCallbacks(universe));
+  m_luaRoot->addCallbacks("celestial", LuaBindings::makeCelestialCallbacks(universe));
   auto assets = Root::singleton().assets();
   for (auto& p : assets->json("/worldserver.config:scriptContexts").toObject()) {
     auto scriptComponent = make_shared<ScriptComponent>();
@@ -261,7 +272,8 @@ bool WorldServer::spawnTargetValid(SpawnTarget const& spawnTarget) const {
   return true;
 }
 
-bool WorldServer::addClient(ConnectionId clientId, SpawnTarget const& spawnTarget, bool isLocal, bool isAdmin, NetCompatibilityRules netRules) {
+bool WorldServer::addClient(ConnectionId clientId, SpawnTarget const& spawnTarget, bool isLocal, bool isAdmin, NetCompatibilityRules netRules, ClientSubWorldId subWorldId) {
+  // if on a subworld, assumes connection id is the subworld's connectionid
   if (m_clientInfo.contains(clientId))
     return false;
 
@@ -296,6 +308,7 @@ bool WorldServer::addClient(ConnectionId clientId, SpawnTarget const& spawnTarge
   tracker.update(m_currentTime);
 
   auto& clientInfo = m_clientInfo.add(clientId, make_shared<ClientInfo>(clientId, tracker));
+  clientInfo->subWorldId = subWorldId;
   clientInfo->local = isLocal;
   clientInfo->admin = isAdmin;
   clientInfo->clientState.setNetCompatibilityRules(netRules);
@@ -331,6 +344,9 @@ bool WorldServer::addClient(ConnectionId clientId, SpawnTarget const& spawnTarge
 List<PacketPtr> WorldServer::removeClient(ConnectionId clientId) {
   auto const& info = m_clientInfo.get(clientId);
 
+  for (auto& p : m_scriptContexts)
+    p.second->invoke("removeClient", clientId);
+
   for (auto const& entityId : m_entityMap->entityIds()) {
     if (connectionForEntity(entityId) == clientId)
       removeEntity(entityId, false);
@@ -350,14 +366,15 @@ List<PacketPtr> WorldServer::removeClient(ConnectionId clientId) {
   }
 
   auto packets = std::move(info->outgoingPackets);
+  auto subWorldId = info->subWorldId;
   m_clientInfo.remove(clientId);
 
   packets.append(make_shared<WorldStopPacket>("Removed"));
-
-  for (auto& p : m_scriptContexts)
-    p.second->invoke("removeClient", clientId);
-
-  return packets;
+  if (subWorldId == MainClientWorldId) {
+    return packets;
+  } else {
+    return {make_shared<ClientSubWorldPackets>(subWorldId,std::move(packets))};
+  }
 }
 
 List<ConnectionId> WorldServer::clientIds() const {
@@ -382,6 +399,14 @@ PlayerPtr WorldServer::clientPlayer(ConnectionId clientId) const {
     return get<Player>(i->second->clientState.playerId());
   else
     return {};
+}
+
+ClientSubWorldId WorldServer::clientSubWorld(ConnectionId clientId) const {
+  auto i = m_clientInfo.find(clientId);
+  if (i != m_clientInfo.end())
+    return i->second->subWorldId;
+  else
+    return 0;
 }
 
 List<EntityId> WorldServer::players() const {
@@ -603,14 +628,19 @@ void WorldServer::handleIncomingPackets(ConnectionId clientId, List<PacketPtr> c
       // setTemplate re-adds all clients currently, update clientInfo
       clientInfo = m_clientInfo.get(clientId);
     } else {
-      throw WorldServerException::format("Improper packet type {} received by client", (int)packet->type());
+      Logger::warn("UniverseServer: Dropping unexpected {} packet from client",
+          PacketTypeNames.getRight(packet->type()));
     }
   }
 }
 
 List<PacketPtr> WorldServer::getOutgoingPackets(ConnectionId clientId) {
   auto const& clientInfo = m_clientInfo.get(clientId);
-  return std::move(clientInfo->outgoingPackets);
+  if (clientInfo->subWorldId == MainClientWorldId) {
+    return std::move(clientInfo->outgoingPackets);
+  } else {
+    return {make_shared<ClientSubWorldPackets>(clientInfo->subWorldId,std::move(clientInfo->outgoingPackets))};
+  }
 }
 
 bool WorldServer::sendPacket(ConnectionId clientId, PacketPtr const& packet) {
@@ -655,6 +685,10 @@ void WorldServer::setExpiryTime(float expiryTime) {
 
 float WorldServer::expiryTime() {
   return m_expiryTimer.timer;
+}
+
+List<EntityId> WorldServer::entityIds() const {
+  return m_entityMap->entityIds();
 }
 
 void WorldServer::update(float dt) {
@@ -2801,7 +2835,7 @@ bool WorldServer::isVisibleToPlayer(RectF const& region) const {
 }
 
 WorldServer::ClientInfo::ClientInfo(ConnectionId clientId, InterpolationTracker const trackerInit)
-  : clientId(clientId), skyNetVersion(0), weatherNetVersion(0), pendingForward(false), started(false), local(false), admin(false), interpolationTracker(trackerInit) {}
+  : clientId(clientId), subWorldId(MainClientWorldId), skyNetVersion(0), weatherNetVersion(0), pendingForward(false), started(false), local(false), admin(false), interpolationTracker(trackerInit) {}
 
 List<RectI> WorldServer::ClientInfo::monitoringRegions(EntityMapPtr const& entityMap) const {
   return clientState.monitoringRegions([entityMap](EntityId entityId) -> Maybe<RectI> {
@@ -2895,11 +2929,12 @@ void WorldServer::setTemplate(WorldTemplatePtr newTemplate) {
     bool local = info->local;
     bool isAdmin = info->admin;
     auto netRules = info->clientState.netCompatibilityRules();
+    auto subWorldId = info->subWorldId;
     SpawnTarget spawnTarget;
     if (auto player = clientPlayer(client))
       spawnTarget = SpawnTargetPosition(player->position() + player->feetOffset());
     removeClient(client);
-    addClient(client, spawnTarget, local, isAdmin, netRules);
+    addClient(client, spawnTarget, local, isAdmin, netRules, subWorldId);
   }
 }
 

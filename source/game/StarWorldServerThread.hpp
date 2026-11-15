@@ -39,13 +39,14 @@ public:
 
   bool spawnTargetValid(SpawnTarget const& spawnTarget);
 
-  bool addClient(ConnectionId clientId, SpawnTarget const& spawnTarget, bool isLocal, bool isAdmin = false, NetCompatibilityRules netRules = {});
+  bool addClient(ConnectionId clientId, SpawnTarget const& spawnTarget, bool isLocal, bool isAdmin = false, NetCompatibilityRules netRules = {}, ClientSubWorldId subWorldId = MainClientWorldId);
   // Returns final outgoing packets
   List<PacketPtr> removeClient(ConnectionId clientId);
 
   List<ConnectionId> clients() const;
   bool hasClient(ConnectionId clientId) const;
   bool noClients() const;
+  ClientSubWorldId clientSubWorld(ConnectionId clientId) const;
 
   // Clients that have caused an error with incoming packets are removed from
   // the world and no further packets are handled from them.  They are still
@@ -79,8 +80,8 @@ public:
   // into memory, useful for the ship.
   WorldChunks readChunks();
 
-  // Ship snapshot taken on the world thread during teardown, before the
-  // WorldServer is destroyed. Empty when the world was not a ship, or errored.
+  // Ship/client-custom-world snapshot taken on the world thread during teardown,
+  // before the WorldServer is destroyed. Empty for other worlds or on error.
   WorldChunks takeFinalChunks();
 
 protected:
@@ -95,6 +96,8 @@ private:
   mutable RecursiveMutex m_mutex;
 
   HashSet<ConnectionId> m_clients;
+  // UniverseServer still removes clients after the world is destroyed.
+  HashMap<ConnectionId, ClientSubWorldId> m_clientSubWorlds;
 
   WorldServerPtr m_worldServer;
   WorldChunks m_finalChunks;

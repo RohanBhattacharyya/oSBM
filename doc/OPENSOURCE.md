@@ -134,7 +134,15 @@ Open Source Software used in Starbound and Accompanying Utilities
 > source code in a product, acknowledgment is not required but would be
 > appreciated.
 
-[zlib compresison library](www.xiph.org)
+[zlib-ng compression library](https://github.com/zlib-ng/zlib-ng)
+---------------------------------------------------------
+The engine uses zlib-ng's native API. zlib-ng uses the
+[zlib license](https://github.com/zlib-ng/zlib-ng/blob/develop/LICENSE.md),
+copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler.
+
+Ordinary zlib remains a dependency of third-party libraries such as libpng.
+
+[zlib compression library](https://zlib.net/)
 ---------------------------------------------------------
 > Copyright (C) 1995-2013 Jean-loup Gailly and Mark Adler
 >

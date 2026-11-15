@@ -30,9 +30,27 @@ cmake --preset switch-release \
 ```
 
 Append any other non-SDK static-library prefixes to the CMake prefix list as
-needed. This script does not modify the installed SDK or use vcpkg. Switch CI
-builds this prerequisite before configuring the game; the remaining portlibs
-and the devkitPro patches below still need to be provisioned on its runner.
+needed. This script does not modify the installed SDK or use vcpkg. Switch
+builds and the remaining prerequisites are provisioned locally.
+
+## Native zlib-ng
+
+The OpenStarbound 0.1.15.1 engine calls the native, prefixed `zng_*` API.
+The SDK's `libz.a` cannot satisfy those symbols. Build checksum-verified
+zlib-ng 2.3.3 as a separate static library without changing the SDK:
+
+```sh
+bash scripts/switch/build-zlib-ng.sh "$PWD/build/switch-zlib-ng"
+```
+
+Pass `-Dzlib-ng_DIR="$PWD/../build/switch-zlib-ng/install/lib/cmake/zlib-ng"`
+when configuring from `source/`, and append its install prefix to
+`CMAKE_PREFIX_PATH` alongside Abseil. The helper enables the gzip file API and
+disables runtime CPU detection for the fixed Switch Cortex-A57 target. Its
+compiler/architecture flags still come from the existing devkitPro toolchain.
+The native API coexists with the SDK's zlib needed by PNG and other portlibs;
+do not replace or remove the SDK's zlib. Desktop, Android and iOS obtain the
+native zlib-ng package from the pinned vcpkg manifest instead.
 
 ## libdrm_nouveau-bufctx-ref-dedup.patch
 

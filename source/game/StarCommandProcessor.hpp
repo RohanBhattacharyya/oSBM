@@ -22,6 +22,7 @@ private:
 
   String help(ConnectionId connectionId, String const& argumentString);
   String admin(ConnectionId connectionId, String const& argumentString);
+  String serverDebug(ConnectionId connectionId, String const& argumentString);
   String pvp(ConnectionId connectionId, String const& argumentString);
   String whoami(ConnectionId connectionId, String const& argumentString);
 	
@@ -60,6 +61,8 @@ private:
   String updatePlanetType(ConnectionId connectionId, String const& argumentString);
   String setWeather(ConnectionId connectionId, String const& argumentString);
   String setEnvironmentBiome(ConnectionId connectionId, String const& argumentString);
+
+  static const CaseInsensitiveStringMap<std::function<String(CommandProcessor*, ConnectionId, String)>> s_commandMap;
 
   mutable Mutex m_mutex;
 

@@ -68,6 +68,17 @@ bool supportsLinearFloatTextures() {
 #endif
 }
 
+bool supportsHdrFramebuffers() {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
+  // Float textures are core GLES 3, but rendering into them is optional.
+  auto extensions = reinterpret_cast<char const*>(glGetString(GL_EXTENSIONS));
+  return extensions && (std::strstr(extensions, "GL_EXT_color_buffer_float")
+      || std::strstr(extensions, "GL_EXT_color_buffer_half_float"));
+#else
+  return true;
+#endif
+}
+
 void setTextureFiltering(TextureFiltering filtering) {
   if (filtering == TextureFiltering::Nearest) {
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -271,6 +282,19 @@ static void GLAPIENTRY GlMessageCallback(GLenum, GLenum type, GLuint, GLenum, GL
 */
 
 void flushPooledGlObjects(bool deleteObjects);
+extern EnumMap<BoolSettingMode> const BoolSettingModeNames{
+  {BoolSettingMode::Enabled, "Enabled"},
+  {BoolSettingMode::FromSetting, "FromSetting"},
+  {BoolSettingMode::Disabled, "Disabled"}
+};
+
+bool settingModeValue(BoolSettingMode const& mode, bool const& setting) {
+  if (mode == BoolSettingMode::FromSetting) {
+    return setting;
+  } else {
+    return mode == BoolSettingMode::Enabled;
+  }
+}
 
 OpenGlRenderer::OpenGlRenderer() {
   // Discard (without glDelete) any pooled object ids from a previous, now-dead context.
@@ -278,9 +302,6 @@ OpenGlRenderer::OpenGlRenderer() {
   auto glewResult = glewInit();
   if (glewResult != GLEW_OK && glewResult != GLEW_ERROR_NO_GLX_DISPLAY)
     throw RendererException::format("Could not initialize GLEW: {}", (char*)glewGetErrorString(glewResult));
-
-  if (!GLEW_VERSION_2_0)
-    throw RendererException("OpenGL 2.0 not available!");
 
   Logger::info("OpenGL version: '{}' vendor: '{}' renderer: '{}' shader: '{}'",
       (const char*)glGetString(GL_VERSION),
@@ -307,6 +328,7 @@ OpenGlRenderer::OpenGlRenderer() {
   m_limitTextureGroupSize = false;
   m_useMultiTexturing = true;
   m_multiSampling = false;
+  m_hdrSetting = true;
 
   logGlErrorSummary("OpenGL errors during renderer initialization");
 }
@@ -348,23 +370,47 @@ OpenGlRenderer::GlFrameBuffer::GlFrameBuffer(Json const& fbConfig) : config(fbCo
   if (texture->textureId == 0)
     throw RendererException("Could not generate OpenGL texture for framebuffer");
 
+  clear = config.getBool("clear",true);
+  
   multisample = GLEW_VERSION_4_0 ? config.getUInt("multisample", 0) : 0;
   GLenum target = multisample ? GL_TEXTURE_2D_MULTISAMPLE : GL_TEXTURE_2D;
   glBindTexture(target, texture->glTextureId());
+  
+  hdrMode = BoolSettingModeNames.getLeft(config.getString("hdr","Disabled"));
+  bool hdr = settingModeValue(hdrMode,config.getBool("hdrSetting",false)) && supportsHdrFramebuffers();
+  alpha = config.getBool("alpha",false) || multisample;
 
-  sizeDiv = config.getUInt("sizeDiv", 1);
+  sizeDiv = std::max(1u, (unsigned)config.getUInt("sizeDiv", 1));
   sizeMul = config.getFloat("sizeMul", 1.0f);
   preserve = config.getBool("preserve", false);
   premultiplied = config.getBool("premultiplied", false);
   // A premultiplied overlay buffer must carry real destination alpha
   // (coverage); the platform default framebuffer format may be GL_RGB.
-  textureFormat = premultiplied ? GL_RGBA : FrameBufferTextureFormat;
-  Vec2U size = framebufferTextureSize(jsonToVec2U(config.getArray("size", { 256, 256 })), sizeDiv, sizeMul);
+  alpha = alpha || premultiplied || FrameBufferTextureFormat == GL_RGBA;
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS) || defined(STAR_SYSTEM_SWITCH)
+  // GLES float color-buffer extensions guarantee RGBA16F, not RGB16F.
+  alpha = alpha || hdr;
+#endif
+  textureFormat = alpha ? GL_RGBA : GL_RGB;
+  Vec2U size = framebufferTextureSize({256, 256}, sizeDiv, sizeMul);
+  if (auto oSize = config.optArray("size")) {
+    overrideSize = jsonToVec2U(*oSize);
+    size = *overrideSize;
+  }
 
-  if (multisample)
-    glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, GL_RGBA8, size[0], size[1], GL_TRUE);
-  else {
-    glTexImage2D(GL_TEXTURE_2D, 0, textureFormat, size[0], size[1], 0, textureFormat, GL_UNSIGNED_BYTE, NULL);
+  if (multisample) {
+    auto internalFormat =  hdr ? GL_RGBA16F : GL_RGBA8;
+    
+    glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, internalFormat, size[0], size[1], GL_TRUE);
+  } else {
+    auto format = alpha ? GL_RGBA : GL_RGB;
+    auto internalFormat =  hdr ? 
+        (alpha ? GL_RGBA16F : GL_RGB16F) :
+        (alpha ? GL_RGBA8 : GL_RGB8);
+    auto type = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
+    
+    glTexImage2D(
+      GL_TEXTURE_2D, 0, internalFormat, size[0], size[1], 0, format, type, NULL);
   }
   // Track the allocated size on the texture object: a framebuffer texture
   // drawn as an ordinary textured quad (e.g. compositeFrameBufferToCurrent)
@@ -373,14 +419,14 @@ OpenGlRenderer::GlFrameBuffer::GlFrameBuffer(Json const& fbConfig) : config(fbCo
   texture->textureSize = size;
   auto addressing = TextureAddressingNames.getLeft(config.getString("textureAddressing", "clamp"));
   auto filtering = TextureFilteringNames.getLeft(config.getString("textureFiltering", "nearest"));
-  if (addressing == TextureAddressing::Clamp) {
-    glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  } else {
-    glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  }
   if (!multisample) {
+    if (addressing == TextureAddressing::Clamp) {
+      glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    } else {
+      glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_REPEAT);
+      glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    }
     if (filtering == TextureFiltering::Nearest) {
       glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
       glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -402,22 +448,116 @@ OpenGlRenderer::GlFrameBuffer::GlFrameBuffer(Json const& fbConfig) : config(fbCo
     throw RendererException("OpenGL framebuffer is not complete!");
 }
 
+void OpenGlRenderer::GlFrameBuffer::makeAlt(Vec2U const& screenSize) {
+  // Bott: ...this is a lot of repeated code. unfortunately it's also rather difficult to make it not repeated.
+  altTexture = make_ref<GlLoneTexture>();
+  altTexture->textureFiltering = TextureFiltering::Nearest;
+  altTexture->textureAddressing = TextureAddressing::Clamp;
+  altTexture->textureSize = {0, 0};
+  glGenTextures(1, &altTexture->textureId);
+  if (altTexture->textureId == 0)
+    throw RendererException("Could not generate OpenGL texture for framebuffer");
+
+  
+  GLenum target = multisample ? GL_TEXTURE_2D_MULTISAMPLE : GL_TEXTURE_2D;
+  glBindTexture(target, altTexture->glTextureId());
+  
+  bool hdr = settingModeValue(hdrMode,config.getBool("hdrSetting",false)) && supportsHdrFramebuffers();
+
+  Vec2U size = overrideSize ? *overrideSize : framebufferTextureSize(screenSize, sizeDiv, sizeMul);
+  altTexture->textureSize = size;
+
+  if (multisample) {
+    auto internalFormat =  hdr ? GL_RGBA16F : GL_RGBA8;
+    
+    glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, internalFormat, size[0], size[1], GL_TRUE);
+  } else {
+    auto format = alpha ? GL_RGBA : GL_RGB;
+    auto internalFormat =  hdr ? 
+        (alpha ? GL_RGBA16F : GL_RGB16F) :
+        (alpha ? GL_RGBA8 : GL_RGB8);
+    auto type = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
+    
+    glTexImage2D(
+      GL_TEXTURE_2D, 0, internalFormat, size[0], size[1], 0, format, type, NULL);
+  }
+  auto addressing = TextureAddressingNames.getLeft(config.getString("textureAddressing", "clamp"));
+  auto filtering = TextureFilteringNames.getLeft(config.getString("textureFiltering", "nearest"));
+  if (!multisample) {
+    if (addressing == TextureAddressing::Clamp) {
+      glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    } else {
+      glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_REPEAT);
+      glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    }
+    if (filtering == TextureFiltering::Nearest) {
+      glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    } else {
+      glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    }
+  }
+
+  altId = 0;
+  glGenFramebuffers(1, &altId);
+  if (!altId)
+    throw RendererException("Failed to create OpenGL framebuffer");
+
+  glBindFramebuffer(GL_FRAMEBUFFER, altId);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, altTexture->glTextureId(), 0);
+
+  auto framebufferStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+  if (framebufferStatus != GL_FRAMEBUFFER_COMPLETE)
+    throw RendererException("OpenGL framebuffer is not complete!");
+  
+  hasAlt = true;
+}
+
+void OpenGlRenderer::GlFrameBuffer::swap() {
+  if (!hasAlt)
+    throw RendererException("Attempting to swap framebuffer without an alt!");
+  
+  std::swap(id,altId);
+  std::swap(texture,altTexture);
+  justSwapped = true;
+}
 
 OpenGlRenderer::GlFrameBuffer::~GlFrameBuffer() {
   glDeleteFramebuffers(1, &id);
+  if (hasAlt)
+    glDeleteFramebuffers(1, &altId);
   texture.reset();
+  altTexture.reset();
 }
 
 void OpenGlRenderer::loadConfig(Json const& config) {
   setMobileStartupStatus("Renderer: resetting framebuffer configuration...");
   m_frameBuffers.clear();
+  m_currentFrameBuffer.reset();
+  m_currentEffect = nullptr;
+
+  // Release references to old framebuffer attachments. Ordinary effect
+  // textures (including static mod textures) must survive HDR/MSAA changes.
+  for (auto& effect : m_effects) {
+    for (auto const& attachment : effect.second.config.getArray("frameBufferTextures", {})) {
+      if (auto texture = effect.second.textures.ptr(attachment.getString("texture")))
+        texture->textureValue.reset();
+    }
+  }
 
   for (auto& pair : config.getObject("frameBuffers", {})) {
     setMobileStartupStatus(strf("Renderer: creating framebuffer {}...", pair.first));
     Json config = pair.second;
     config = config.set("multisample", m_multiSampling);
+    config = config.set("hdrSetting", m_hdrSetting);
     Logger::info("Creating framebuffer {}", pair.first);
-    m_frameBuffers[pair.first] = make_ref<GlFrameBuffer>(config);
+    auto buf = make_ref<GlFrameBuffer>(config);
+    if (config.getBool("double",false)) {
+      buf->makeAlt();
+    }
+    m_frameBuffers[pair.first] = buf;
 
   }
   setScreenSize(m_screenSize);
@@ -588,6 +728,26 @@ void OpenGlRenderer::loadEffectConfig(String const& name, Json const& effectConf
       effect.textures[p.first] = effectTexture;
     }
   }
+  
+  if (auto outFrameBufferId = effect.config.optString("frameBuffer")) {
+    if (auto blitFrameBufferId = effect.config.optString("blitFrameBuffer")) {
+      if ((*outFrameBufferId).equals((*blitFrameBufferId))) {
+        effect.doubleBuffered = true;
+      }
+    }
+    if (!effect.doubleBuffered) {
+      if (auto fbts = effect.config.optArray("frameBufferTextures")) {
+        for (auto const& fbt : *fbts) {
+          if (auto inFrameBufferId = fbt.optString("framebuffer")) {
+            if ((*outFrameBufferId).equals((*inFrameBufferId))) {
+              effect.doubleBuffered = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
 
   if (DebugEnabled)
     logGlErrorSummary("OpenGL errors setting effect config");
@@ -704,19 +864,8 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
   if (m_currentEffect == &effect)
     return true;
 
-  if (auto blitFrameBufferId = effect.config.optString("blitFrameBuffer")) {
-    if (!m_frameBufferBypass.contains(*blitFrameBufferId))
-      blitGlFrameBuffer(getGlFrameBuffer(*blitFrameBufferId));
-  }
-#ifdef STAR_SYSTEM_SWITCH
-  else {
-    static int64_t s_noBlitSwitches = 0;
-    if (++s_noBlitSwitches % 300 == 0)
-      Logger::info("[blit] {} effect switches without blitFrameBuffer (to '{}')", s_noBlitSwitches, name);
-  }
-#endif
-
   auto effectScreenSize = m_screenSize;
+  Maybe<String> outFrameBufferId = effect.config.optString("frameBuffer");
   Maybe<String> effectFrameBuffer = effect.config.optString("frameBuffer");
   // Bypassed framebuffers render directly to the screen: when nothing will
   // ever sample the intermediate (no post-process layers), the FB indirection
@@ -726,13 +875,18 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
     effectFrameBuffer = {};
   if (auto frameBufferId = effectFrameBuffer) {
     auto buf = getGlFrameBuffer(*frameBufferId);
+    if (effect.doubleBuffered) {
+      if (!buf->hasAlt)
+        buf->makeAlt(m_screenSize);
+      buf->swap();
+    }
     switchGlFrameBuffer(buf);
     // Shader screenSize stays the LOGICAL size (vertices are authored in full screen
     // pixels) so the world maps to the full NDC range; only the physical viewport
     // shrinks by sizeMul, so the same view rasterizes into fewer pixels and is then
     // upscaled on blit -- a fill-rate win with the field of view preserved.
     effectScreenSize = m_screenSize / (buf->sizeDiv);
-    Vec2U fbViewport = framebufferTextureSize(m_screenSize, buf->sizeDiv, buf->sizeMul);
+    Vec2U fbViewport = buf->texture->textureSize;
     // Intermediate FBOs are canvas-sized with no screen offset; the offset
     // only applies to the final blit onto the physical screen FBO.
     glViewport(0, 0, fbViewport[0], fbViewport[1]);
@@ -754,10 +908,13 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
         auto textureUniform = fbt.getString("texture");
         auto ptr = m_currentEffect->textures.ptr(textureUniform);
         if (ptr) {
-          if (!ptr->textureValue || ptr->textureValue->textureId == 0) {  
-            auto texture = getGlFrameBuffer(*frameBufferId)->texture;
+          auto undefined = !ptr->textureValue || ptr->textureValue->textureId == 0;
+          auto swapped = effect.doubleBuffered && outFrameBufferId && (*frameBufferId).equals(*outFrameBufferId);
+          auto buf = getGlFrameBuffer(*frameBufferId);
+          if (undefined || buf->hasAlt) {
+            auto texture = swapped ? buf->altTexture : buf->texture;
             ptr->textureValue = texture;
-            if (ptr->textureSizeUniform != -1) {
+            if (ptr->textureSizeUniform != -1 && undefined) {
               auto textureSize = ptr->textureValue->glTextureSize();
               glUniform2f(ptr->textureSizeUniform, textureSize[0], textureSize[1]);
             }
@@ -766,6 +923,12 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
       }
     }
   }
+  
+  if (auto blitFrameBufferId = effect.config.optString("blitFrameBuffer")) {
+    if (!m_frameBufferBypass.contains(*blitFrameBufferId))
+      blitGlFrameBuffer(getGlFrameBuffer(*blitFrameBufferId), effect.doubleBuffered);
+  }
+  
   return true;
 }
 
@@ -790,7 +953,7 @@ bool OpenGlRenderer::switchFrameBuffer(String const& id) {
   // screenSize uniform keeps the LOGICAL size (vertices are authored in full
   // screen pixels), only the physical viewport shrinks by sizeDiv/sizeMul, so
   // the same view rasterizes into fewer pixels.
-  Vec2U fbViewport = framebufferTextureSize(m_screenSize, (*ptr)->sizeDiv, (*ptr)->sizeMul);
+  Vec2U fbViewport = (*ptr)->texture->textureSize;
   glViewport(0, 0, fbViewport[0], fbViewport[1]);
   return true;
 }
@@ -803,7 +966,7 @@ void OpenGlRenderer::blitFrameBufferToCurrent(String const& id) {
     // Current target is the screen (e.g. when the usual intermediate is
     // bypassed): stretch-blit onto the physical screen viewport.
     flushImmediatePrimitives();
-    Vec2U srcSize = framebufferTextureSize(m_screenSize, (*ptr)->sizeDiv, (*ptr)->sizeMul);
+    Vec2U srcSize = (*ptr)->texture->textureSize;
     glBindFramebuffer(GL_READ_FRAMEBUFFER, (*ptr)->id);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
     glBlitFramebuffer(0, 0, srcSize[0], srcSize[1],
@@ -814,8 +977,8 @@ void OpenGlRenderer::blitFrameBufferToCurrent(String const& id) {
     return;
   }
   flushImmediatePrimitives();
-  Vec2U srcSize = framebufferTextureSize(m_screenSize, (*ptr)->sizeDiv, (*ptr)->sizeMul);
-  Vec2U dstSize = framebufferTextureSize(m_screenSize, m_currentFrameBuffer->sizeDiv, m_currentFrameBuffer->sizeMul);
+  Vec2U srcSize = (*ptr)->texture->textureSize;
+  Vec2U dstSize = m_currentFrameBuffer->texture->textureSize;
   glBindFramebuffer(GL_READ_FRAMEBUFFER, (*ptr)->id);
   glBlitFramebuffer(
     0, 0, srcSize[0], srcSize[1],
@@ -917,6 +1080,14 @@ void OpenGlRenderer::setMultiSampling(unsigned multiSampling) {
   loadConfig(m_config);
 }
 
+void OpenGlRenderer::setMainHDR(bool enabled) {
+  if (m_hdrSetting == enabled)
+    return;
+  
+  m_hdrSetting = enabled;
+  loadConfig(m_config);
+}
+
 TextureGroupPtr OpenGlRenderer::createTextureGroup(TextureGroupSize textureSize, TextureFiltering filtering) {
   int maxTextureSize;
   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize);
@@ -970,17 +1141,38 @@ void OpenGlRenderer::setScreenSize(Vec2U screenSize) {
   glUniform2f(m_screenSizeUniform, m_screenSize[0], m_screenSize[1]);
 
   for (auto& frameBuffer : m_frameBuffers) {
+    if (frameBuffer.second->overrideSize) {
+      continue; // don't resize this one
+    }
     unsigned sizeDiv = frameBuffer.second->sizeDiv;
     Vec2U textureSize = framebufferTextureSize(m_screenSize, sizeDiv, frameBuffer.second->sizeMul);
+    bool hdr = settingModeValue(frameBuffer.second->hdrMode,m_hdrSetting) && supportsHdrFramebuffers();
     if (unsigned multisample = frameBuffer.second->multisample) {
+      auto internalFormat =  hdr ? GL_RGBA16F : GL_RGBA8;
+      
       glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, frameBuffer.second->texture->glTextureId());
-      glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, GL_RGBA8, textureSize[0], textureSize[1], GL_TRUE);
+      glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, internalFormat, textureSize[0], textureSize[1], GL_TRUE);
+      if (frameBuffer.second->hasAlt) {
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, frameBuffer.second->altTexture->glTextureId());
+        glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, internalFormat, textureSize[0], textureSize[1], GL_TRUE);
+      }
     } else {
+      auto format = frameBuffer.second->alpha ? GL_RGBA : GL_RGB;
+      auto internalFormat =  hdr ? 
+          (frameBuffer.second->alpha ? GL_RGBA16F : GL_RGB16F) :
+          (frameBuffer.second->alpha ? GL_RGBA8 : GL_RGB8);
+      auto type = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
+      
       glBindTexture(GL_TEXTURE_2D, frameBuffer.second->texture->glTextureId());
-      GLenum fbFormat = frameBuffer.second->textureFormat ? frameBuffer.second->textureFormat : FrameBufferTextureFormat;
-      glTexImage2D(GL_TEXTURE_2D, 0, fbFormat, textureSize[0], textureSize[1], 0, fbFormat, GL_UNSIGNED_BYTE, NULL);
-      frameBuffer.second->texture->textureSize = textureSize;
+      glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, textureSize[0], textureSize[1], 0, format, type, NULL);
+      if (frameBuffer.second->hasAlt) {
+        glBindTexture(GL_TEXTURE_2D, frameBuffer.second->altTexture->glTextureId());
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, textureSize[0], textureSize[1], 0, format, type, NULL);
+      }
     }
+    frameBuffer.second->texture->textureSize = textureSize;
+    if (frameBuffer.second->hasAlt)
+      frameBuffer.second->altTexture->textureSize = textureSize;
   }
 }
 
@@ -1027,7 +1219,15 @@ void OpenGlRenderer::startFrame() {
   for (auto& frameBuffer : m_frameBuffers) {
     if (!frameBuffer.second->preserve && !m_frameBufferBypass.contains(frameBuffer.first)) {
       glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer.second->id);
-      glClear(GL_COLOR_BUFFER_BIT);
+      if (frameBuffer.second->clear)
+        glClear(GL_COLOR_BUFFER_BIT);
+      
+      if (frameBuffer.second->hasAlt) {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer.second->altId);
+        if (frameBuffer.second->clear)
+          glClear(GL_COLOR_BUFFER_BIT);
+      }
+      
     }
     frameBuffer.second->blitted = false;
   }
@@ -1912,10 +2112,20 @@ void OpenGlRenderer::renderGlBuffer(GlRenderBuffer const& renderBuffer, Mat3F co
 
     glBindBuffer(GL_ARRAY_BUFFER, vb.vertexBuffer);
 
-    glVertexAttribPointer(m_positionAttribute, 2, GL_FLOAT, GL_FALSE, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, pos));
-    glVertexAttribPointer(m_texCoordAttribute, 2, GL_FLOAT, GL_FALSE, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, uv));
-    glVertexAttribPointer(m_colorAttribute, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, color));
-    glVertexAttribIPointer(m_dataAttribute, 1, GL_INT, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, pack));
+    // check if these exist (might not in mod shaders) so we don't get a bunch of useless errors
+#define APPLY_IF_VALID(Func, Arg1, ...) \
+    if (Arg1 != -1) Func(Arg1, __VA_ARGS__)
+
+    if (m_positionAttribute != -1) glEnableVertexAttribArray(m_positionAttribute);
+    if (m_texCoordAttribute != -1) glEnableVertexAttribArray(m_texCoordAttribute);
+    if (m_colorAttribute != -1) glEnableVertexAttribArray(m_colorAttribute);
+    if (m_dataAttribute != -1) glEnableVertexAttribArray(m_dataAttribute);
+
+    APPLY_IF_VALID(glVertexAttribPointer,  m_positionAttribute, 2, GL_FLOAT,         GL_FALSE, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, pos));
+    APPLY_IF_VALID(glVertexAttribPointer,  m_texCoordAttribute, 2, GL_FLOAT,         GL_FALSE, sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, uv));
+    APPLY_IF_VALID(glVertexAttribPointer,  m_colorAttribute,    4, GL_UNSIGNED_BYTE, GL_TRUE,  sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, color));
+    APPLY_IF_VALID(glVertexAttribIPointer, m_dataAttribute,     1, GL_INT,                     sizeof(GlRenderVertex), (GLvoid*)offsetof(GlRenderVertex, pack));
+#undef APPLY_IF_VALID
 
     glDrawArrays(GL_TRIANGLES, 0, vb.vertexCount);
 #ifdef STAR_SYSTEM_SWITCH
@@ -1977,7 +2187,7 @@ RefPtr<OpenGlRenderer::GlFrameBuffer> OpenGlRenderer::getGlFrameBuffer(String co
     throw RendererException::format("Frame buffer '{}' does not exist", id);
 }
 
-void OpenGlRenderer::blitGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer) {
+void OpenGlRenderer::blitGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer, bool const& useAlt) {
 #ifdef STAR_SYSTEM_SWITCH
   static int64_t s_blitRan = 0, s_blitSkipped = 0;
   if (frameBuffer->blitted)
@@ -1988,8 +2198,6 @@ void OpenGlRenderer::blitGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer)
     Logger::info("[blit] ran={} skipped={} draw-fbo-target={} screenViewport={}x{} offset={},{}",
         s_blitRan, s_blitSkipped, m_screenFbo, m_screenViewportSize[0], m_screenViewportSize[1], m_screenOffset[0], m_screenOffset[1]);
 #endif
-  if (frameBuffer->blitted)
-    return;
 
   auto& viewport = m_screenViewportSize;
   auto& off  = m_screenOffset;
@@ -1997,23 +2205,24 @@ void OpenGlRenderer::blitGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer)
   // by sizeDiv/sizeMul), and we blit it stretched to the full screen viewport. This
   // both fixes a latent bug (the source rect previously assumed full screen size)
   // and implements the upscale for render-scaled framebuffers.
-  Vec2U src = framebufferTextureSize(m_screenSize, frameBuffer->sizeDiv, frameBuffer->sizeMul);
-  bool scaled = (frameBuffer->sizeDiv != 1) || (frameBuffer->sizeMul != 1.0f);
-  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
-  glBindFramebuffer(GL_READ_FRAMEBUFFER, frameBuffer->id);
+  Vec2U src = frameBuffer->texture->textureSize;
+  Vec2U destination = m_currentFrameBuffer ? m_currentFrameBuffer->texture->textureSize : viewport;
+  Vec2U offset = m_currentFrameBuffer ? Vec2U() : off;
+  bool scaled = src != destination;
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_currentFrameBuffer ? m_currentFrameBuffer->id : m_screenFbo);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, (useAlt && frameBuffer->hasAlt) ? frameBuffer->altId : frameBuffer->id);
   glBlitFramebuffer(
     0, 0, src[0], src[1],
-    off[0], off[1], off[0] + viewport[0], off[1] + viewport[1],
+    offset[0], offset[1], offset[0] + destination[0], offset[1] + destination[1],
     GL_COLOR_BUFFER_BIT, scaled ? GL_LINEAR : GL_NEAREST
   );
-
-  frameBuffer->blitted = true;
 }
 
 void OpenGlRenderer::switchGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer) {
-  if (m_currentFrameBuffer == frameBuffer)
+  if (m_currentFrameBuffer == frameBuffer && !frameBuffer->justSwapped)
     return;
-
+  
+  frameBuffer->justSwapped = false;
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer->id);
   // Premultiplied overlay targets accumulate premultiplied color plus correct
   // coverage in alpha; everything else uses the standard blend.

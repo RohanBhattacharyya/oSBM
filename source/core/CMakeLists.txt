@@ -242,6 +242,7 @@ ENDIF ()
 
 CONFIGURE_FILE (StarVersion.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/StarVersion.cpp)
 ADD_LIBRARY (star_core OBJECT ${star_core_SOURCES} ${star_core_HEADERS} ${CMAKE_CURRENT_BINARY_DIR}/StarVersion.cpp)
+TARGET_LINK_LIBRARIES(star_core PRIVATE zlib-ng::zlib)
 
 IF(STAR_PRECOMPILED_HEADERS)
   TARGET_PRECOMPILE_HEADERS (star_core PUBLIC StarPch.hpp)

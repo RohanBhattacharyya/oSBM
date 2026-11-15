@@ -13,7 +13,7 @@ BEGIN
       VALUE "LegalCopyright", "Chucklefish LTD"
       VALUE "OriginalFilename", "starbound_server.exe"
       VALUE "ProductName", "OpenStarbound Server"
-      VALUE "ProductVersion", "1.0"
+      VALUE "ProductVersion", "1.4.4"
     END
   END
 
@@ -23,3 +23,4 @@ BEGIN
   END
 END
 icon ICON "openstarbound_server.ico"
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "starbound_server.exe.manifest"

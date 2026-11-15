@@ -10,6 +10,11 @@
 #include "StarItemBag.hpp"
 #include "StarAssets.hpp"
 #include "StarJsonExtra.hpp"
+#include "StarPlayer.hpp"
+
+#ifndef STAR_SYSTEM_WINDOWS
+#include <pthread.h>
+#endif
 
 namespace Star {
 
@@ -91,6 +96,7 @@ PlayerInventory::PlayerInventory() {
   addNetElement(&m_essentialNetState[EssentialItem::InspectionTool]);
 
   m_equipmentVisibilityMask = 0xFFFFFFFF;
+  m_player = nullptr;
 }
 
 ItemPtr PlayerInventory::itemsAt(InventorySlot const& slot) const {
@@ -966,6 +972,51 @@ void PlayerInventory::cleanup() {
     });
 }
 
+void PlayerInventory::setPlayer(Player* player) {
+  m_player = player;
+}
+
+PlayerInventory const& PlayerInventory::blankInventory() {
+#ifndef STAR_SYSTEM_WINDOWS
+  // Keep this cache per-thread without growing compiler TLS: the additional
+  // static TLS in 1.15.1 breaks fsdev startup with the tested Switch SDK.
+  // A process-wide inventory is unsafe because NetElementGroup serializes
+  // through a mutable buffer, even in its const methods.
+  static auto key = [] {
+    pthread_key_t result;
+    if (auto error = pthread_key_create(&result, [](void* value) { delete (PlayerInventory*)value; }))
+      throw StarException::format("Could not create inventory TLS key: {}", error);
+    return result;
+  }();
+  auto inventory = (PlayerInventory*)pthread_getspecific(key);
+  if (!inventory) {
+    auto value = std::make_unique<PlayerInventory>();
+    if (auto error = pthread_setspecific(key, value.get()))
+      throw StarException::format("Could not set inventory TLS value: {}", error);
+    inventory = value.release();
+  }
+  return *inventory;
+#else
+  static thread_local auto inventory = std::make_shared<PlayerInventory>();
+  return *inventory;
+#endif
+}
+
+void PlayerInventory::netStore(DataStream& ds, NetCompatibilityRules rules) const {
+  if (m_player && !m_player->isMaster() && !rules.isAdmin())
+    return blankInventory().netStore(ds, rules);
+  else
+    return NetElementSyncGroup::netStore(ds, rules);
+}
+
+
+bool PlayerInventory::writeNetDelta(DataStream& ds, uint64_t fromVersion, NetCompatibilityRules rules) const {
+  if (m_player && !m_player->isMaster() && !rules.isAdmin())
+    return blankInventory().writeNetDelta(ds, fromVersion, rules);
+  else
+    return NetElementSyncGroup::writeNetDelta(ds, fromVersion, rules);
+}
+
 bool PlayerInventory::checkInventoryFilter(ItemPtr const& items, String const& filterName) {
   Json filterConfig;
 
@@ -980,7 +1031,7 @@ bool PlayerInventory::checkInventoryFilter(ItemPtr const& items, String const& f
     auto config = Root::singleton().assets()->json("/player.config:inventoryFilters");
     filterConfig = config.opt(filterName).value();
     if (!filterConfig.isType(Json::Type::Object))
-      filterConfig = config.get("default");
+      filterConfig = config.get("default", JsonObject());
   }
 
   // filter by item type if an itemTypes filter is set

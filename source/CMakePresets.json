@@ -102,7 +102,9 @@
       "binaryDir": "${sourceParentDir}/build/linux-arm-release",
       "architecture": { "value": "arm64", "strategy": "external" },
       "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "arm64-linux-mixed"
+        "VCPKG_TARGET_TRIPLET": "arm64-linux-mixed",
+        "STAR_ENABLE_STEAM_INTEGRATION": false,
+        "STAR_ENABLE_DISCORD_INTEGRATION": false
       }
     },
     {

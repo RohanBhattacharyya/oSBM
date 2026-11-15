@@ -80,6 +80,16 @@ STAR_CLASS(OpenGlRenderer);
 
 constexpr size_t FrameBufferCount = 1;
 
+// TODO: Bott - This isn't really rendering-specific. Don't really like it either. It's nicer than having redundant bool options, though.
+enum class BoolSettingMode {
+  Enabled,
+  FromSetting,
+  Disabled
+};
+extern EnumMap<BoolSettingMode> const BoolSettingModeNames;
+
+bool settingModeValue(BoolSettingMode const& mode, bool const& setting);
+
 // OpenGL 2.0 implementation of Renderer.  OpenGL context must be created and
 // active during construction, destruction, and all method calls.
 class OpenGlRenderer : public Renderer {
@@ -118,6 +128,7 @@ public:
   void setSizeLimitEnabled(bool enabled) override;
   void setMultiTexturingEnabled(bool enabled) override;
   void setMultiSampling(unsigned multiSampling) override;
+  void setMainHDR(bool enabled) override;
   TextureGroupPtr createTextureGroup(TextureGroupSize size, TextureFiltering filtering) override;
   RenderBufferPtr createRenderBuffer() override;
 
@@ -295,9 +306,16 @@ private:
   struct GlFrameBuffer : RefCounter {
     GLuint id = 0;
     RefPtr<GlLoneTexture> texture;
+    
+    bool hasAlt = false;
+    GLuint altId = 0;
+    RefPtr<GlLoneTexture> altTexture;
 
     Json config;
-    bool blitted = false;
+    Maybe<Vec2U> overrideSize;
+    BoolSettingMode hdrMode = BoolSettingMode::Disabled;
+    bool alpha = false;
+    bool clear = true;
     unsigned multisample = 0;
     unsigned sizeDiv = 1;
     // Fractional render-scale (e.g. 0.66 = render this framebuffer at 66% of screen
@@ -318,6 +336,13 @@ private:
     bool premultiplied = false;
     GLenum textureFormat = 0; // set from premultiplied/platform default in ctor
 
+    
+    bool blitted = false;
+    bool justSwapped = false;
+    
+    void makeAlt(Vec2U const& screenSize = Vec2U(256, 256));
+    void swap();
+    
     GlFrameBuffer(Json const& config);
     ~GlFrameBuffer();
   };
@@ -336,6 +361,7 @@ private:
     GLuint getAttribute(String const& name);
     GLuint getUniform(String const& name);
     bool includeVBTextures;
+    bool doubleBuffered = false;
   };
 
   static bool logGlErrorSummary(String prefix);
@@ -353,7 +379,7 @@ private:
   void setupGlUniforms(Effect& effect, Vec2U screenSize);
 
   RefPtr<OpenGlRenderer::GlFrameBuffer> getGlFrameBuffer(String const& id);
-  void blitGlFrameBuffer(RefPtr<OpenGlRenderer::GlFrameBuffer> const& frameBuffer);
+  void blitGlFrameBuffer(RefPtr<OpenGlRenderer::GlFrameBuffer> const& frameBuffer, bool const& useAlt = false);
   void switchGlFrameBuffer(RefPtr<OpenGlRenderer::GlFrameBuffer> const& frameBuffer);
 
   Vec2U m_screenSize = {0, 0};
@@ -405,6 +431,7 @@ private:
   bool m_limitTextureGroupSize;
   bool m_useMultiTexturing;
   unsigned m_multiSampling; // if non-zero, is enabled and acts as sample count
+  bool m_hdrSetting;
   List<shared_ptr<GlTextureGroup>> m_liveTextureGroups;
 
   List<RenderPrimitive> m_immediatePrimitives;

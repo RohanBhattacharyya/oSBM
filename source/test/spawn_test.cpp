@@ -1,6 +1,8 @@
 #include "StarAssets.hpp"
 #include "StarCelestialDatabase.hpp"
 #include "StarRoot.hpp"
+#include "StarWorldClient.hpp"
+#include "StarWorldTemplate.hpp"
 
 #include "StarTestUniverse.hpp"
 #include "gtest/gtest.h"
@@ -45,4 +47,20 @@ TEST(SpawnTest, RandomInstanceWorld) {
   testUniverse.warpPlayer(instanceWorld);
   EXPECT_EQ(testUniverse.currentPlayerWorld(), instanceWorld);
   validateWorld(testUniverse);
+}
+
+TEST(SpawnTest, ClientCustomWorldRoundTrip) {
+  TestUniverse testUniverse(Vec2U(100, 100));
+  auto client = testUniverse.client();
+  auto uuid = client->clientContext()->playerUuid();
+  client->createCustomWorld("merge-test", WorldTemplate(Vec2U(64, 64)).store());
+  WorldId customWorld = ClientCustomWorldId{uuid, "merge-test"};
+  testUniverse.warpPlayer(customWorld);
+  ASSERT_EQ(testUniverse.currentPlayerWorld(), customWorld);
+  client->worldClient()->setProperty("mergeTest", 42);
+  testUniverse.update(20);
+  testUniverse.warpPlayer(ClientShipWorldId(uuid));
+  testUniverse.warpPlayer(customWorld);
+  EXPECT_EQ(testUniverse.currentPlayerWorld(), customWorld);
+  EXPECT_EQ(client->worldClient()->getProperty("mergeTest"), Json(42));
 }

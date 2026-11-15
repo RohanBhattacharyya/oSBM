@@ -1,6 +1,5 @@
 #include "StarScriptableThread.hpp"
 #include "StarLuaRoot.hpp"
-#include "StarLuaComponents.hpp"
 #include "StarConfigLuaBindings.hpp"
 #include "StarTickRateMonitor.hpp"
 #include "StarNpc.hpp"
@@ -11,16 +10,18 @@
 
 namespace Star {
 
-ScriptableThread::ScriptableThread(Json parameters)
+ScriptableThread::ScriptableThread(Json parameters, LuaBaseComponent* parent)
   : Thread("ScriptableThread: " + parameters.getString("name")),
     m_parameters(std::move(parameters)),
     m_stop(false),
     m_errorOccurred(false),
-    m_shouldExpire(true) {
+    m_shouldExpire(false),
+    m_parent(parent) {
       m_luaRoot = make_shared<LuaRoot>();
       m_luaRoot->luaEngine().setNullTerminated(false);
       m_luaRoot->tuneAutoGarbageCollection(m_parameters.getFloat("luaGcPause",1.2), m_parameters.getFloat("luaGcStepMultiplier",1.2));
       m_name = m_parameters.getString("name");
+      m_logMapped = m_parameters.getBool("logMapped",true);
       
       m_timestep = 1.0f / m_parameters.getFloat("tickRate",60.0f);
       
@@ -84,7 +85,8 @@ void ScriptableThread::run() {
     TickRateApproacher tickApproacher(1.0f / m_timestep, updateMeasureWindow);
 
     while (!m_stop && !m_errorOccurred) {
-      LogMap::set(strf("lua_{}_update", m_name), strf("{:4.2f}Hz", tickApproacher.rate()));
+      if (m_logMapped)
+        LogMap::set(strf("lua_{}_update", m_name), strf("{:4.2f}Hz", tickApproacher.rate()));
 
       update();
       tickApproacher.setTargetTickRate(1.0f / m_timestep);
@@ -134,7 +136,8 @@ void ScriptableThread::update() {
     else
       message.promise.fail("Message not handled by thread");
   }
-  LogMap::set(strf("lua_{}_lua_mem", m_name), m_luaRoot->luaMemoryUsage());
+  if (m_logMapped)
+    LogMap::set(strf("lua_{}_lua_mem", m_name), m_luaRoot->luaMemoryUsage());
 }
 
 LuaCallbacks ScriptableThread::makeThreadCallbacks() {
@@ -142,6 +145,11 @@ LuaCallbacks ScriptableThread::makeThreadCallbacks() {
 
   callbacks.registerCallback("stop", [this]() {
       m_stop = true;
+      m_shouldExpire = true;
+    });
+
+  callbacks.registerCallback("sendParentMessage", [this](String const& message, LuaVariadic<Json> args) {
+      return m_parent->threadPassMessage(m_name, message, JsonArray::from(std::move(args)));
     });
 
   return callbacks;

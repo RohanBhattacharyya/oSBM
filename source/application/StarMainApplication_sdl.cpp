@@ -576,27 +576,18 @@ public:
     }
 
     SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_ICON_NAME, "openstarbound");
-    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_STREAM_NAME, "Audio");
-#endif
-
-#if defined(__APPLE__)
-    // GL 3.2 Core + GLSL 150
-    const char* glsl_version = "#version 150";
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG); // Always required on Mac
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-#else
-    // GL 3.0 + GLSL 130
-    const char* glsl_version = "#version 130";
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 #endif
 
     Logger::info("Application: Creating SDL OpenGL context");
-    m_sdlGlContext = SDL_GL_CreateContext(m_sdlWindow);
+    static const std::pair<int,int> versions[] = {{4,6},{4,5},{4,4},{4,3},{4,2},{4,1},{4,0},{3,3},{3,2},{3,1}};
+    for (auto& [majorVersion, minorVersion] : versions) {
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, majorVersion);
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minorVersion);
+      m_sdlGlContext = SDL_GL_CreateContext(m_sdlWindow);
+      if (m_sdlGlContext) break;
+    }
     if (!m_sdlGlContext)
       throw ApplicationException::format("Application: Could not create OpenGL context: {}", SDL_GetError());
 
@@ -648,7 +639,7 @@ public:
     style.ScaleAllSizes(main_scale);
 
     ImGui_ImplSDL3_InitForOpenGL(m_sdlWindow, m_sdlGlContext);
-    ImGui_ImplOpenGL3_Init(glsl_version);
+    ImGui_ImplOpenGL3_Init(nullptr);
 
   }
 
@@ -979,10 +970,12 @@ private:
         if (auto displayMode = SDL_GetDesktopDisplayMode(SDL_GetDisplayForWindow(parent->m_sdlWindow))) {
           parent->m_windowSize = {(unsigned)displayMode->w, (unsigned)displayMode->h};
           #ifdef STAR_SYSTEM_WINDOWS
+          if (m_borderlessWorkaround) { // breaks brightness on some setups god what the fuck fuck microsoft fuck nvidia
             auto handle = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(parent->m_sdlWindow), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
             SetWindowLongPtr(handle, GWL_STYLE, WS_OVERLAPPED);
             SetWindowLongPtr(handle, GWL_EXSTYLE, WS_EX_APPWINDOW);
             SetWindowPos(handle, HWND_TOP, 0, 0, displayMode->w, displayMode->h, SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+          } // fuck everything dude it's all so fucked. everything is so fucked
           #endif
           SDL_SetWindowPosition(parent->m_sdlWindow, 0, 0);
           SDL_SetWindowSize(parent->m_sdlWindow, parent->m_windowSize[0], parent->m_windowSize[1]);
@@ -993,6 +986,13 @@ private:
         }
       }
     }
+
+    #ifdef STAR_SYSTEM_WINDOWS
+    bool m_borderlessWorkaround = false;
+    void setBorderlessWorkaround(bool enabled) override {
+      m_borderlessWorkaround = enabled;
+    }
+    #endif
 
     void setVSyncEnabled(bool vSync) override {
       if (parent->m_windowVSync != vSync) {

@@ -164,6 +164,13 @@ LuaCallbacks LuaBindings::makePlayerCallbacks(Player* player) {
 
   callbacks.registerCallback(   "interactRadius", [player]()         { return player->interactRadius();       });
   callbacks.registerCallback("setInteractRadius", [player](float radius) { player->setInteractRadius(radius); });
+  
+  callbacks.registerCallback("setRenderLayer", [player](Maybe<String> const& layer) { 
+    if (layer)
+      player->setRenderLayer(parseRenderLayer(*layer)); 
+    else
+      player->setRenderLayer({});
+  });
 
   callbacks.registerCallback("actionBarGroup", [player]() {
     return luaTupleReturn(player->inventory()->customBarGroup() + 1, player->inventory()->customBarGroups());
@@ -374,6 +381,20 @@ LuaCallbacks LuaBindings::makePlayerCallbacks(Player* player) {
         return item->descriptor().toJson();
       return Json();
     });
+
+  callbacks.registerCallback("armorVisible", [player](String const& slotName) -> Maybe<bool> {
+    if (auto slotPtr = EquipmentSlotNames.leftPtr(slotName))
+      return player->inventory()->equipmentVisibility(*slotPtr);
+    return {};
+  });
+
+  callbacks.registerCallback("setArmorVisible", [player](String const& slotName, bool visible) -> bool {
+    if (auto slotPtr = EquipmentSlotNames.leftPtr(slotName)) {
+      player->inventory()->setEquipmentVisibility(*slotPtr, visible);
+      return true;
+    }
+    return false;
+  });
 
   callbacks.registerCallback("hasItem", [player](Json const& item, Maybe<bool> exactMatch) {
       return player->hasItem(ItemDescriptor(item), exactMatch.value(false));
@@ -809,6 +830,14 @@ LuaCallbacks LuaBindings::makePlayerCallbacks(Player* player) {
 
   callbacks.registerCallback("setCameraFocusEntity", [player](Maybe<EntityId> const& entityId) {
     player->setCameraFocusEntity(entityId);
+  });
+
+  callbacks.registerCallback("headRotation", [player]() {
+    return player->getSecretProperty("humanoid.headRotation");
+  });
+  // more accurate than mcontroller.facingDirection
+  callbacks.registerCallback("facingDirection", [player]() {
+    return numericalDirection(player->humanoid()->facingDirection());
   });
 
   return callbacks;

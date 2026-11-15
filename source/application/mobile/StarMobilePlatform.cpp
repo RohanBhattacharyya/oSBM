@@ -574,6 +574,14 @@ private:
 #endif
     }
 
+#ifdef STAR_SYSTEM_WINDOWS
+    void setBorderlessWorkaround(bool active) override {
+      // This host uses SDL's desktop fullscreen mode instead of the classic
+      // client's borderless window emulation, so its Win32 workaround is unused.
+      _unused(active);
+    }
+#endif
+
     void setVSyncEnabled(bool enabled) override {
       // Avoid Android vsync receiver races during surface size/inset changes.
       _unused(enabled);

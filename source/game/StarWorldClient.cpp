@@ -43,6 +43,7 @@ const std::string SECRET_BROADCAST_PREFIX = "\0Broadcast\0"s;
 const float WorldClient::DropDist = 6.0f;
 WorldClient::WorldClient(PlayerPtr mainPlayer, LuaRootPtr luaRoot) {
   worldClientLiveCount().fetch_add(1, std::memory_order_relaxed);
+  // main client world, set up to render
   auto& root = Root::singleton();
   auto assets = root.assets();
 
@@ -50,6 +51,11 @@ WorldClient::WorldClient(PlayerPtr mainPlayer, LuaRootPtr luaRoot) {
   m_particleRegionPadding = m_clientConfig.getInt("particleRegionPadding");
   m_itemRequestResetInterval = m_clientConfig.getInt("itemRequestReset");
   m_worldClientStateUpdateDelta = m_clientConfig.getInt("worldClientStateUpdateDelta");
+  
+  m_expiryTimer = GameTimer(0);
+  
+  m_headless = false;
+  m_subWorldId = MainClientWorldId;
 
   m_currentStep = 0;
   m_currentTime = 0;
@@ -112,6 +118,54 @@ WorldClient::WorldClient(PlayerPtr mainPlayer, LuaRootPtr luaRoot) {
   clearWorld();
 }
 
+WorldClient::WorldClient(ClientSubWorldId subWorldId) {
+  worldClientLiveCount().fetch_add(1, std::memory_order_relaxed);
+  // client subworld, doesn't render
+  auto& root = Root::singleton();
+  auto assets = root.assets();
+
+  m_clientConfig = assets->json("/client.config");
+  m_particleRegionPadding = m_clientConfig.getInt("particleRegionPadding");
+  m_itemRequestResetInterval = m_clientConfig.getInt("itemRequestReset");
+  m_worldClientStateUpdateDelta = m_clientConfig.getInt("worldClientStateUpdateDelta");
+  m_collisionDebug = false;
+  m_asyncLighting = false;
+  m_stopLightingThread = false;
+  m_pendingLightReady = false;
+  
+  m_expiryTimer = GameTimer(m_clientConfig.getFloat("idleSubWorldExpireTime"));
+  
+  m_headless = true;
+
+  m_currentStep = 0;
+  m_currentTime = 0;
+
+  m_inWorld = false;
+  m_subWorldId = subWorldId;
+
+  m_luaRoot = make_shared<LuaRoot>();
+  m_luaRoot->luaEngine().setNullTerminated(false);
+  m_luaRoot->tuneAutoGarbageCollection(m_clientConfig.getFloat("luaGcPause"), m_clientConfig.getFloat("luaGcStepMultiplier"));
+
+  m_collisionGenerator.init([this](int x, int y) {
+    if (!m_predictedTiles.empty()) {
+      if (auto p = m_predictedTiles.ptr({x, y})) {
+        if (p->collision)
+          return *p->collision;
+      }
+    }
+    return m_tileArray->tile({x, y}).collision;
+  });
+
+  m_modifiedTilePredictionTimeout = (int)round(m_clientConfig.getFloat("modifiedTilePredictionTimeout") / GlobalTimestep);
+
+  m_latency = 0.0;
+
+  m_damageNotificationBatchDuration = m_clientConfig.getFloat("damageNotificationBatchDuration");
+
+  clearWorld();
+}
+
 WorldClient::~WorldClient() {
   worldClientLiveCount().fetch_sub(1, std::memory_order_relaxed);
   clearWorld();
@@ -127,6 +181,14 @@ bool WorldClient::pullWorldCleared() {
   return cleared;
 }
 
+bool WorldClient::isHeadless() const {
+  return m_headless;
+}
+
+ClientSubWorldId WorldClient::subWorldId() const {
+  return m_subWorldId;
+}
+
 bool WorldClient::inSpace() const {
   if (!m_sky)
     return false;
@@ -140,14 +202,14 @@ bool WorldClient::flying() const {
 }
 
 bool WorldClient::mainPlayerDead() const {
-  if (inWorld())
+  if (inWorld() && !m_headless)
     return !m_entityMap->get<Player>(m_mainPlayer->entityId());
   else
     return false;
 }
 
 void WorldClient::reviveMainPlayer() {
-  if (inWorld() && mainPlayerDead()) {
+  if (inWorld() && !m_headless && mainPlayerDead()) {
     m_mainPlayer->revive(m_playerStart);
     m_mainPlayer->init(this, m_entityMap->reserveEntityId(), EntityMode::Master);
     m_entityMap->addEntity(m_mainPlayer);
@@ -530,6 +592,9 @@ WorldClientState& WorldClient::clientState() {
 }
 
 void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
+  if (m_headless)
+    return;
+
   renderData.clear();
   if (!inWorld())
     return;
@@ -941,7 +1006,7 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
     });
 
   for (auto& pair : m_predictedTiles) {
-    Vec2I tileArrayPos = m_geometry.diff(pair.first, renderData.tileMinPosition);
+    Vec2I tileArrayPos(m_geometry.pdiff(pair.first[0], renderData.tileMinPosition[0]), pair.first[1] - renderData.tileMinPosition[1]);
     if (tileArrayPos[0] >= 0 && tileArrayPos[0] < (int)renderData.tiles.size(0) && tileArrayPos[1] >= 0 && tileArrayPos[1] < (int)renderData.tiles.size(1)) {
       RenderTile& renderTile = renderData.tiles(tileArrayPos[0], tileArrayPos[1]);
       PredictedTile& p = pair.second;
@@ -962,7 +1027,7 @@ void WorldClient::render(WorldRenderData& renderData, unsigned bufferTiles) {
   }
 
   for (auto const& previewTile : m_previewTiles) {
-    Vec2I tileArrayPos = m_geometry.diff(previewTile.position, renderData.tileMinPosition);
+    Vec2I tileArrayPos(m_geometry.pdiff(previewTile.position[0], renderData.tileMinPosition[0]), previewTile.position[1] - renderData.tileMinPosition[1]);
     if (tileArrayPos[0] >= 0 && tileArrayPos[0] < (int)renderData.tiles.size(0) && tileArrayPos[1] >= 0 && tileArrayPos[1] < (int)renderData.tiles.size(1)) {
       RenderTile& renderTile = renderData.tiles(tileArrayPos[0], tileArrayPos[1]);
 
@@ -1308,12 +1373,14 @@ void WorldClient::handleIncomingPackets(List<PacketPtr> const& packets) {
             m_predictedTiles.erase(findPrediction);
         }
 
-        if (auto placeMaterial = modification.second.ptr<PlaceMaterial>()) {
-          auto stack = materialDatabase->materialItemDrop(placeMaterial->material);
-          tryGiveMainPlayerItem(itemDatabase->item(stack), true);
-        } else if (auto placeMod = modification.second.ptr<PlaceMod>()) {
-          auto stack = materialDatabase->modItemDrop(placeMod->mod);
-          tryGiveMainPlayerItem(itemDatabase->item(stack), true);
+        if (!m_headless) {
+          if (auto placeMaterial = modification.second.ptr<PlaceMaterial>()) {
+            auto stack = materialDatabase->materialItemDrop(placeMaterial->material);
+            tryGiveMainPlayerItem(itemDatabase->item(stack), true);
+          } else if (auto placeMod = modification.second.ptr<PlaceMod>()) {
+            auto stack = materialDatabase->modItemDrop(placeMod->mod);
+            tryGiveMainPlayerItem(itemDatabase->item(stack), true);
+          }
         }
       }
 
@@ -1323,7 +1390,11 @@ void WorldClient::handleIncomingPackets(List<PacketPtr> const& packets) {
         tile->liquid = liquidUpdate->liquidUpdate.liquidLevel();
 
     } else if (auto giveItem = as<GiveItemPacket>(packet)) {
-      tryGiveMainPlayerItem(itemDatabase->item(giveItem->item));
+      if (m_headless) {
+        // TODO: call something on world script
+      } else {
+        tryGiveMainPlayerItem(itemDatabase->item(giveItem->item));
+      }
 
     } else if (auto stepUpdate = as<StepUpdatePacket>(packet)) {
       m_interpolationTracker.receiveTimeUpdate(stepUpdate->remoteTime);
@@ -1495,9 +1566,31 @@ void WorldClient::setRenderInterpolationAlpha(float alpha) {
   m_renderInterpolationAlpha = alpha;
 }
 
+Maybe<Json> WorldClient::receiveMessage(ConnectionId fromConnection, String const& message, JsonArray const& args) {
+  m_expiryTimer.reset();
+  if (!inWorld()) {
+    // script contexts aren't active to handle this message
+    return {};
+  }
+  Maybe<Json> result;
+  for (auto& p : m_scriptContexts) {
+    result = p.second->handleMessage(message, fromConnection == ServerConnectionId, args);
+    if (result)
+      break;
+  }
+  return result;
+}
+
+WorldClient::ScriptComponentPtr WorldClient::scriptContext(String const& contextName) {
+  if (auto context = m_scriptContexts.ptr(contextName))
+    return *context;
+  else
+    return nullptr;
+}
+
 void WorldClient::update(float dt) {
-  // Advances once per sim tick; WorldClient::render uses it to detect fresh
-  // ticks when maintaining per-entity position history for interpolation.
+  m_expiryTimer.tick(dt);
+  
   ++m_renderTickStamp;
   if (!inWorld())
     return;
@@ -1534,18 +1627,20 @@ void WorldClient::update(float dt) {
     }
   });
 
-  // Secret broadcasts are transmitted through DamageNotifications for vanilla server compatibility.
-  // Because DamageNotification packets are spoofable, we have to sign the data so other clients can validate that it is legitimate.
-  // Curve25519::publicKey() is a process-lifetime constant, so the String
-  // conversion (a heap allocation + copy) only needs to happen once, not
-  // every single update tick.
-  static String const publicKeyString = [] {
-    auto& publicKey = Curve25519::publicKey();
-    return String((const char*)publicKey.data(), publicKey.size());
-  }();
-  m_mainPlayer->setSecretProperty(SECRET_BROADCAST_PUBLIC_KEY, publicKeyString);
-  // Temporary: Backwards compatibility with StarExtensions
-  m_mainPlayer->effectsAnimator()->setGlobalTag("\0SE_VOICE_SIGNING_KEY"s, publicKeyString);
+  if (!m_headless) {
+    // Secret broadcasts are transmitted through DamageNotifications for vanilla server compatibility.
+    // Because DamageNotification packets are spoofable, we have to sign the data so other clients can validate that it is legitimate.
+    // Curve25519::publicKey() is a process-lifetime constant, so the String
+    // conversion (a heap allocation + copy) only needs to happen once, not
+    // every single update tick.
+    static String const publicKeyString = [] {
+      auto& publicKey = Curve25519::publicKey();
+      return String((const char*)publicKey.data(), publicKey.size());
+    }();
+    m_mainPlayer->setSecretProperty(SECRET_BROADCAST_PUBLIC_KEY, publicKeyString);
+    // Temporary: Backwards compatibility with StarExtensions
+    m_mainPlayer->effectsAnimator()->setGlobalTag("\0SE_VOICE_SIGNING_KEY"s, publicKeyString);
+  }
 
   ++m_currentStep;
   m_currentTime += dt;
@@ -1616,8 +1711,31 @@ void WorldClient::update(float dt) {
     }, [](EntityPtr const& a, EntityPtr const& b) {
       return a->entityType() < b->entityType();
     });
-  m_clientState.setPlayer(m_mainPlayer->entityId());
+  
+  if (m_headless) {
+    if (m_entityMap->size() > 0) {
+      m_expiryTimer.reset();
+    } else if (m_expiryTimer.ready()) {
+      // world has had no entities and isn't being used, destroy it
+      requestDestroy();
+    }
+  }
+
+  RectI particleRegion;
+  if (!m_headless) {
+    m_clientState.setPlayer(m_mainPlayer->entityId());
+    
+    m_sky->setAltitude(m_clientState.windowCenter()[1]);
+    
+    particleRegion = m_clientState.window().padded(m_particleRegionPadding);
+
+    m_weather.setVisibleRegion(particleRegion);
+  }
+  
   m_clientState.setClientPresenceEntities(std::move(clientPresenceEntities));
+
+  for (auto& pair : m_scriptContexts)
+    pair.second->update(pair.second->updateDt(dt));
 
 #ifdef STAR_SYSTEM_SWITCH
   wcLap(s_wcEntities);
@@ -1625,91 +1743,83 @@ void WorldClient::update(float dt) {
   m_damageManager->update(dt);
   handleDamageNotifications();
 
-  m_sky->setAltitude(m_clientState.windowCenter()[1]);
   m_sky->update(dt);
 
-  RectI particleRegion = m_clientState.window().padded(m_particleRegionPadding);
-
-  m_weather.setVisibleRegion(particleRegion);
-  // Under load, halve weather particle spawn density: each drop costs a
-  // tile-exposure query at spawn, an update every tick, and a draw every
-  // frame -- in storms these dominated the frame (16ms update + 20ms draw).
-  // Half-density rain in a storm at sub-20fps is not visually conspicuous.
+  // Keep the existing adaptive weather density on the main world.
   m_weather.setDensityScale(updateUnderLoad ? 0.5f : 1.0f);
   m_weather.update(dt);
 
-  if (!m_mainPlayer->isDead()) {
-    // Clear m_requestedDrops every so often in case of entity id reuse or
-    // desyncs etc
-    if (m_currentStep % m_itemRequestResetInterval == 0)
+  if (!m_headless) {
+    if (!m_mainPlayer->isDead()) {
+      // Clear m_requestedDrops every so often in case of entity id reuse or
+      // desyncs etc
+      if (m_currentStep % m_itemRequestResetInterval == 0)
+        m_requestedDrops.clear();
+
+      Vec2F playerPos = m_mainPlayer->position();
+      auto dropList = m_entityMap->query<ItemDrop>(RectF(playerPos - Vec2F::filled(DropDist / 2), playerPos + Vec2F::filled(DropDist / 2)));
+      for (auto itemDrop : dropList) {
+        auto distSquared = m_geometry.diff(itemDrop->position(), playerPos).magnitudeSquared();
+
+        // If the drop is within DropDist and not owned, request it.
+        if (itemDrop->canTake() && !m_requestedDrops.contains(itemDrop->entityId()) && distSquared < square(DropDist)) {
+          m_requestedDrops.add(itemDrop->entityId());
+          if (m_mainPlayer->itemsCanHold(itemDrop->item()) != 0) {
+            m_startupHiddenEntities.erase(itemDrop->entityId());
+            itemDrop->takeBy(m_mainPlayer->entityId(), (float)m_latency / 1000);
+            m_outgoingPackets.append(make_shared<RequestDropPacket>(itemDrop->entityId()));
+          }
+        }
+      }
+    } else {
       m_requestedDrops.clear();
+    }
 
-    Vec2F playerPos = m_mainPlayer->position();
-    auto dropList = m_entityMap->query<ItemDrop>(RectF(playerPos - Vec2F::filled(DropDist / 2), playerPos + Vec2F::filled(DropDist / 2)));
-    for (auto itemDrop : dropList) {
-      auto distSquared = m_geometry.diff(itemDrop->position(), playerPos).magnitudeSquared();
+    sparkDamagedBlocks();
 
-      // If the drop is within DropDist and not owned, request it.
-      if (itemDrop->canTake() && !m_requestedDrops.contains(itemDrop->entityId()) && distSquared < square(DropDist)) {
-        m_requestedDrops.add(itemDrop->entityId());
-        if (m_mainPlayer->itemsCanHold(itemDrop->item()) != 0) {
-          m_startupHiddenEntities.erase(itemDrop->entityId());
-          itemDrop->takeBy(m_mainPlayer->entityId(), (float)m_latency / 1000);
-          m_outgoingPackets.append(make_shared<RequestDropPacket>(itemDrop->entityId()));
+    m_particles->addParticles(m_weather.pullNewParticles());
+    m_particles->update(dt, RectF(particleRegion), m_weather.wind());
+
+    if (auto audioSample = m_ambientSounds.updateAmbient(currentAmbientNoises(), m_sky->isDayTime()))
+      m_samples.append(audioSample);
+    if (auto audioSample = m_ambientSounds.updateWeather(currentWeatherNoises()))
+      m_samples.append(audioSample);
+
+    if (inSpace()) {
+      m_samples.appendAll(m_sky->pullSounds());
+
+      if (m_spaceSound && m_spaceSound->finished()) {
+        m_spaceSound = {};
+        m_activeSpaceSound = "";
+      }
+
+      auto skyAmbientNoise = m_sky->ambientNoise();
+      if (skyAmbientNoise != m_activeSpaceSound) {
+        if (m_spaceSound) {
+          m_spaceSound->stop(skyAmbientNoise == "" ? 3.0 : 0.0);
+        } else {
+          m_activeSpaceSound = skyAmbientNoise;
+          if (!m_activeSpaceSound.empty()) {
+            m_spaceSound = make_shared<AudioInstance>(*assets->audio(m_activeSpaceSound));
+            m_samples.append(m_spaceSound);
+          }
         }
       }
     }
-  } else {
-    m_requestedDrops.clear();
-  }
 
-  sparkDamagedBlocks();
-
-  m_particles->addParticles(m_weather.pullNewParticles());
-  m_particles->update(dt, RectF(particleRegion), m_weather.wind());
-#ifdef STAR_SYSTEM_SWITCH
-  wcLap(s_wcParticles);
-#endif
-
-  if (auto audioSample = m_ambientSounds.updateAmbient(currentAmbientNoises(), m_sky->isDayTime()))
-    m_samples.append(audioSample);
-  if (auto audioSample = m_ambientSounds.updateWeather(currentWeatherNoises()))
-    m_samples.append(audioSample);
-
-  if (inSpace()) {
-    m_samples.appendAll(m_sky->pullSounds());
-
-    if (m_spaceSound && m_spaceSound->finished()) {
-      m_spaceSound = {};
-      m_activeSpaceSound = "";
+    if (auto newAltMusic = m_mainPlayer->pullPendingAltMusic()) {
+      if (newAltMusic->first)
+        playAltMusic(newAltMusic->first->first, newAltMusic->second, newAltMusic->first->second);
+      else
+        stopAltMusic(newAltMusic->second);
     }
 
-    auto skyAmbientNoise = m_sky->ambientNoise();
-    if (skyAmbientNoise != m_activeSpaceSound) {
-      if (m_spaceSound) {
-        m_spaceSound->stop(skyAmbientNoise == "" ? 3.0 : 0.0);
-      } else {
-        m_activeSpaceSound = skyAmbientNoise;
-        if (!m_activeSpaceSound.empty()) {
-          m_spaceSound = make_shared<AudioInstance>(*assets->audio(m_activeSpaceSound));
-          m_samples.append(m_spaceSound);
-        }
-      }
-    }
+    if (auto audioSample = m_altMusicTrack.updateAmbient(currentAltMusicTrack(), true))
+      m_music.append(audioSample);
+
+    if (auto audioSample = m_musicTrack.updateAmbient(currentMusicTrack(), m_sky->isDayTime()))
+      m_music.append(audioSample);
   }
-
-  if (auto newAltMusic = m_mainPlayer->pullPendingAltMusic()) {
-    if (newAltMusic->first)
-      playAltMusic(newAltMusic->first->first, newAltMusic->second, newAltMusic->first->second);
-    else
-      stopAltMusic(newAltMusic->second);
-  }
-
-  if (auto audioSample = m_altMusicTrack.updateAmbient(currentAltMusicTrack(), true))
-    m_music.append(audioSample);
-
-  if (auto audioSample = m_musicTrack.updateAmbient(currentMusicTrack(), m_sky->isDayTime()))
-    m_music.append(audioSample);
 
   for (EntityId entityId : toRemove)
     removeEntity(entityId, true);
@@ -1731,7 +1841,7 @@ void WorldClient::update(float dt) {
     m_outgoingPackets.append(make_shared<PingPacket>(*m_pingTime));
   }
 
-  LogMap::set("client_ping", m_latency);
+  LogMap::set(strf("client_{}_ping",m_subWorldId), m_latency);
 
   // Remove active sectors that are outside of the current monitoring region
   Set<ClientTileSectorArray::Sector> neededSectors;
@@ -1752,10 +1862,9 @@ void WorldClient::update(float dt) {
   if (m_collisionDebug)
     renderCollisionDebug();
 
-  LogMap::set("client_entities", m_entityMap->size());
-  LogMap::set("client_sectors", toString(loadedSectors.size()));
-  LogMap::set("client_lua_mem", m_luaRoot->luaMemoryUsage());
-
+  LogMap::set(strf("client_{}_entities",m_subWorldId), m_entityMap->size());
+  LogMap::set(strf("client_{}_sectors",m_subWorldId), toString(loadedSectors.size()));
+  LogMap::set(strf("client_{}_lua_mem",m_subWorldId), m_luaRoot->luaMemoryUsage());
 #ifdef STAR_SYSTEM_SWITCH
   wcLap(s_wcRest);
   if (++s_wcTicks >= 150) {
@@ -1917,7 +2026,7 @@ bool WorldClient::waitForLighting(WorldRenderData* renderData) {
   if (renderData && !m_lightMap.empty()) {
     for (auto& previewTile : m_previewTiles) {
       if (previewTile.updateLight) {
-        Vec2I lightArrayPos = m_geometry.diff(previewTile.position, m_lightMinPosition);
+        Vec2I lightArrayPos(m_geometry.pdiff(previewTile.position[0], m_lightMinPosition[0]), previewTile.position[1] - m_lightMinPosition[1]);
         if (lightArrayPos[0] >= 0 && lightArrayPos[0] < (int)m_lightMap.width()
          && lightArrayPos[1] >= 0 && lightArrayPos[1] < (int)m_lightMap.height())
           m_lightMap.set(lightArrayPos[0], lightArrayPos[1], Color::v3bToFloat(previewTile.light));
@@ -2016,7 +2125,13 @@ void WorldClient::handleDamageNotifications() {
       return false;
     });
 
+  if (m_headless) {
+    m_damageManager->pullPendingNotifications();
+    return;
+  }
+  
   for (auto const& damageNotification : m_damageManager->pullPendingNotifications()) {
+    
     auto damageDatabase = Root::singleton().damageDatabase();
     DamageKind const& damageKind = damageDatabase->damageKind(damageNotification.damageSourceKind);
     ElementalType const& elementalType = damageDatabase->elementalType(damageKind.elementalType);
@@ -2134,10 +2249,10 @@ RpcPromise<InteractAction> WorldClient::interact(InteractRequest const& request)
   if (auto targetEntity = m_entityMap->entity(request.targetId)) {
     if (targetEntity->isMaster()) {
       // client-side-master entities need to be handled here rather than over network
-      auto interactiveTarget = as<InteractiveEntity>(targetEntity);
-      starAssert(interactiveTarget);
-
-      return RpcPromise<InteractAction>::createFulfilled(interactiveTarget->interact(request));
+      if (auto interactiveTarget = as<InteractiveEntity>(targetEntity))
+        return RpcPromise<InteractAction>::createFulfilled(interactiveTarget->interact(request));
+      else
+        return RpcPromise<InteractAction>::createFulfilled(InteractAction());
     }
   }
 
@@ -2158,7 +2273,7 @@ void WorldClient::lightingTileGather() {
 
   // Each column in tileEvalColumns is guaranteed to be no larger than the sector size.
 
-  m_tileArray->tileEvalColumns(m_lightingCalculator.calculationRegion(), [&](Vec2I const& pos, ClientTile const* column, size_t ySize) {
+  m_tileArray->tileEvalColumnsParallel(m_lightingCalculator.calculationRegion(), [&](Vec2I const& pos, ClientTile const* column, size_t ySize) {
     size_t baseIndex = m_lightingCalculator.baseIndexFor(pos);
     for (size_t y = 0; y < ySize; ++y) {
       auto& tile = column[y];
@@ -2199,8 +2314,15 @@ void WorldClient::lightingCalc() {
 
   prepLocker.unlock();
 
+  Vec2I regionMin = m_lightingCalculator.calculationRegion().min();
+  auto resolvePosition = [&](Vec2F const& pos) -> Vec2F {
+    float xFloor = floor(pos[0]);
+    float xOffset = (float)m_geometry.pdiff((int)xFloor, regionMin[0]) + (pos[0] - xFloor);
+    return Vec2F(regionMin[0] + xOffset, pos[1]);
+  };
+
   for (auto const& light : lights) {
-    Vec2F position = m_geometry.nearestTo(Vec2F(m_lightingCalculator.calculationRegion().min()), light.position);
+    Vec2F position = resolvePosition(light.position);
     if (light.type == LightType::Spread)
       m_lightingCalculator.addSpreadLight(position, light.color);
     else {
@@ -2218,7 +2340,7 @@ void WorldClient::lightingCalc() {
   }
 
   for (auto const& lightPair : particleLights) {
-    Vec2F position = m_geometry.nearestTo(Vec2F(m_lightingCalculator.calculationRegion().min()), lightPair.first);
+    Vec2F position = resolvePosition(lightPair.first);
     m_lightingCalculator.addSpreadLight(position, lightPair.second);
   }
 
@@ -2280,7 +2402,8 @@ void WorldClient::initWorld(WorldStartPacket const& startPacket) {
   m_entityUpdateTimer = GameTimer(m_interpolationTracker.entityUpdateDelta() * (startPacket.localInterpolationMode ? 4.0f : 1.0f));
 
   m_clientId = startPacket.clientId;
-  m_mainPlayer->clientContext()->setConnectionId(startPacket.clientId);
+  if (!m_headless)
+    m_mainPlayer->clientContext()->setConnectionId(startPacket.clientId);
   auto entitySpace = connectionEntitySpace(startPacket.clientId);
   m_worldTemplate = make_shared<WorldTemplate>(startPacket.templateData);
   m_entityMap = make_shared<EntityMap>(m_worldTemplate->size(), entitySpace.first, entitySpace.second);
@@ -2332,23 +2455,50 @@ void WorldClient::initWorld(WorldStartPacket const& startPacket) {
 
   m_inWorld = true;
   
-  if (!m_mainPlayer->isDead()) {
-    m_mainPlayer->init(this, m_entityMap->reserveEntityId(), EntityMode::Master);
-    m_entityMap->addEntity(m_mainPlayer);
-  }
-  m_mainPlayer->moveTo(startPacket.playerStart);
-  if (const auto& parameters = m_worldTemplate->worldParameters())
-    m_mainPlayer->overrideTech(parameters->overrideTech);
-  else
-    m_mainPlayer->overrideTech({});
+  if (!m_headless) {
+    if (!m_mainPlayer->isDead()) {
+      m_mainPlayer->init(this, m_entityMap->reserveEntityId(), EntityMode::Master);
+      m_entityMap->addEntity(m_mainPlayer);
+    }
+    m_mainPlayer->moveTo(startPacket.playerStart);
+    if (const auto& parameters = m_worldTemplate->worldParameters())
+      m_mainPlayer->overrideTech(parameters->overrideTech);
+    else
+      m_mainPlayer->overrideTech({});
 
-  // Auto reposition the client window on the player when the main player
-  // changes position.
-  centerClientWindowOnPlayer();
+    // Auto reposition the client window on the player when the main player
+    // changes position.
+    centerClientWindowOnPlayer();
+  }
+  
+  // script contexts for both kinds of worlds
+  for (auto& p : m_clientConfig.getObject("worldScriptContexts")) {
+    auto scriptComponent = make_shared<ScriptComponent>();
+    scriptComponent->setScripts(jsonToStringList(p.second.toArray()));
+
+    m_scriptContexts.set(p.first, scriptComponent);
+    scriptComponent->init(this);
+  }
+  
+  for (auto& p : m_clientConfig.getObject(m_headless ? "subWorldScriptContexts" : "mainWorldScriptContexts")) {
+    if (m_scriptContexts.contains(p.first)) {
+      Logger::error("World script context {} is already defined!", p.first);
+      continue;
+    }
+    
+    auto scriptComponent = make_shared<ScriptComponent>();
+    scriptComponent->setScripts(jsonToStringList(p.second.toArray()));
+
+    m_scriptContexts.set(p.first, scriptComponent);
+    scriptComponent->init(this);
+  }
 }
 
 void WorldClient::clearWorld() {
   MemoryDomain memoryDomain(m_memoryHeap);
+  for (auto& p : m_scriptContexts)
+    p.second->invoke("preUninit");
+  
   bool wasInWorld = m_inWorld;
   m_inWorld = false;
 
@@ -2378,6 +2528,11 @@ void WorldClient::clearWorld() {
         removeEntity(entityId, false);
     }
   }
+  
+  for (auto& p : m_scriptContexts)
+    p.second->uninit();
+
+  m_scriptContexts.clear();
 
   waitForLighting();
 
@@ -2459,6 +2614,9 @@ void WorldClient::clearWorld() {
   }
   memoryDomainReleaseHeap(m_memoryHeap);
   m_memoryHeap = nullptr;
+
+  m_expiryTimer.reset();
+  m_requestedDestroy = false;
 }
 
 void WorldClient::tryGiveMainPlayerItem(ItemPtr item, bool silent) {
@@ -2475,6 +2633,10 @@ void WorldClient::notifyEntityCreate(EntityPtr const& entity) {
     m_outgoingPackets.append(make_shared<EntityCreatePacket>(entity->entityType(),
       Root::singleton().entityFactory()->netStoreEntity(entity, netRules), std::move(firstNetState.first), entity->entityId()));
   }
+}
+
+List<EntityId> WorldClient::entityIds() const {
+  return m_entityMap->entityIds();
 }
 
 Vec2I WorldClient::environmentBiomeTrackPosition() const {
@@ -2848,6 +3010,17 @@ LuaRootPtr WorldClient::luaRoot() {
   return m_luaRoot;
 }
 
+bool WorldClient::pullRequestedDestroy() {
+  auto out = m_requestedDestroy;
+  m_requestedDestroy = false;
+  return out;
+}
+
+void WorldClient::requestDestroy() {
+  m_expiryTimer.reset();
+  m_requestedDestroy = true;
+}
+
 RpcPromise<Vec2F> WorldClient::findUniqueEntity(String const& uniqueId) {
   if (!inWorld())
     return RpcPromise<Vec2F>::createFailed("Not currently in a world");
@@ -3038,6 +3211,14 @@ void WorldClient::setupForceRegions() {
     bottomForceRegion.categoryFilter = regionCategoryFilter;
     m_forceRegions.append(bottomForceRegion);
   }
+}
+
+bool WorldClient::shouldExpire() {
+  if (inWorld()) {
+    return false;
+  }
+
+  return m_expiryTimer.ready();
 }
 
 }

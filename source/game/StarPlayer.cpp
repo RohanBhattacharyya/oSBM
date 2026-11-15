@@ -40,6 +40,7 @@
 #include "StarScriptedAnimatorLuaBindings.hpp"
 #include "StarEntityLuaBindings.hpp"
 #include "StarDanceDatabase.hpp"
+#include "StarUniverseClient.hpp"
 
 namespace Star {
 
@@ -102,6 +103,8 @@ Player::Player(PlayerConfigPtr config, Uuid uuid) {
   m_deployment = make_shared<PlayerDeployment>(m_config->deploymentConfig);
 
   m_inventory = make_shared<PlayerInventory>();
+  m_inventory->setPlayer(this);
+
   m_blueprints = make_shared<PlayerBlueprints>();
   m_universeMap = make_shared<PlayerUniverseMap>();
   m_codexes = make_shared<PlayerCodexes>();
@@ -137,6 +140,8 @@ Player::Player(PlayerConfigPtr config, Uuid uuid) {
 
   m_chatMessageChanged = false;
   m_chatMessageUpdated = false;
+
+  m_interruptRadioMessage = false;
 
   m_songbook = make_shared<Songbook>(species());
 
@@ -365,6 +370,7 @@ void Player::init(World* world, EntityId entityId, EntityMode mode) {
     for (auto& p : m_genericScriptContexts) {
       p.second->addActorMovementCallbacks(m_movementController.get());
       p.second->addCallbacks("player", LuaBindings::makePlayerCallbacks(this));
+      p.second->addCallbacks("entity", LuaBindings::makeEntityCallbacks(this));
       p.second->addCallbacks("status", LuaBindings::makeStatusControllerCallbacks(m_statusController.get()));
       p.second->addCallbacks("songbook", LuaBindings::makeSongbookCallbacks(m_songbook.get()));
       p.second->addCallbacks("animator", LuaBindings::makeNetworkedAnimatorCallbacks(humanoid()->networkedAnimator()));
@@ -1247,6 +1253,11 @@ void Player::update(float dt, uint64_t) {
         setSecretProperty("humanoid.headRotation", headRotation);
     }
   }
+  
+  if (isMaster()) {
+    for (auto& p : m_genericScriptContexts)
+      p.second->invoke("postUpdate");
+  }
 
   m_pendingMoves.clear();
 #ifdef STAR_SYSTEM_SWITCH
@@ -1336,7 +1347,14 @@ void Player::render(RenderCallback* renderCallback) {
   }
 
   auto loungeAnchor = as<LoungeAnchor>(m_movementController->entityAnchor());
-  EntityRenderLayer renderLayer = loungeAnchor ? loungeAnchor->loungeRenderLayer : RenderLayerPlayer;
+  
+  EntityRenderLayer renderLayer = RenderLayerPlayer;
+  if (auto overrideRenderLayer = getSecretProperty("overrideRenderLayer"); overrideRenderLayer.canConvert(Json::Type::Int)) {
+    renderLayer = overrideRenderLayer.toUInt();
+  }
+  if (loungeAnchor) {
+    renderLayer = loungeAnchor->loungeRenderLayer;
+  }
 
   renderCallback->addDrawables(drawables(), renderLayer);
   if (!isTeleporting())
@@ -1355,6 +1373,10 @@ void Player::render(RenderCallback* renderCallback) {
 void Player::renderLightSources(RenderCallback* renderCallback) {
   renderCallback->addLightSources(lightSources());
   m_deployment->renderLightSources(renderCallback);
+}
+
+void Player::setRenderLayer(Maybe<EntityRenderLayer> layer) {
+  setSecretProperty("overrideRenderLayer", layer ? Json(*layer) : Json());
 }
 
 Json Player::getGenericProperty(String const& name, Json const& defaultValue) const {

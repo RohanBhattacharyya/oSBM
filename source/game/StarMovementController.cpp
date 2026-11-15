@@ -669,6 +669,9 @@ void MovementController::tickMaster(float dt) {
 #ifdef STAR_SYSTEM_SWITCH
   int64_t mtT1 = Time::monotonicMicroseconds();
 #endif
+  if (!m_colliding.get())
+    m_stickingDirection.set({});
+  
   Vec2F newVelocity = relativeVelocity + m_surfaceVelocity;
 
   updateLiquidPercentage();

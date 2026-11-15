@@ -168,16 +168,20 @@ signed install on a device. Signing/sideloading happens outside this repo.
 
 Prereqs: `DEVKITPRO` pointing at a devkitPro root with devkitA64, libnx,
 switch-tools, and the cross-compiled portlibs (SDL3, imgui, re2, cpr, zstd,
-abseil, opus, freetype, mesa/nouveau GL stack). The devkitPro libraries need
+abseil, native zlib-ng, opus, freetype, mesa/nouveau GL stack). The devkitPro libraries need
 `scripts/switch/apply-toolchain-patches.sh`; Abseil needs the separate isolated
-`scripts/switch/build-abseil.sh` build and its prefix passed to CMake. Read
+`scripts/switch/build-abseil.sh` build and its prefix passed to CMake. Native
+zlib-ng needs `scripts/switch/build-zlib-ng.sh` and its separate prefix. Read
 `toolchains/patches/README.md` first. An unpatched toolchain
 produces: monotonically decaying FPS, a dead touchscreen, a broken software
 keyboard, and (under Ryujinx) every C++ `throw` crashing.
 
 ```sh
 cd source
-cmake --preset switch-release      # uses $DEVKITPRO/cmake/Switch.cmake, no vcpkg
+cmake --preset switch-release \
+  -Dabsl_DIR="$PWD/../build/switch-abseil/install/lib/cmake/absl" \
+  -Dzlib-ng_DIR="$PWD/../build/switch-zlib-ng/install/lib/cmake/zlib-ng" \
+  -DCMAKE_PREFIX_PATH="$PWD/../build/switch-abseil/install;$PWD/../build/switch-zlib-ng/install"
 cmake --build --preset switch-release --parallel
 # → build/switch-release/oSBM-<version>-switch.nro  (target starbound_nro, part of ALL)
 ```

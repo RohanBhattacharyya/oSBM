@@ -96,10 +96,15 @@ void EnvironmentPainter::renderStars(float pixelRatio, Vec2F const& screenSize, 
 }
 
 void EnvironmentPainter::renderDebrisFields(float pixelRatio, Vec2F const& screenSize, SkyRenderData const& sky) {
-  if (!sky.settings)
+  if (!sky.settings || m_debrisGenerators.empty())
     return;
 
-  if (sky.type == SkyType::Orbital || sky.type == SkyType::Warp) {
+  if (auto types = sky.settings.optArray("debrisSkyTypes")) {
+    if (!types->transformed([](Json const& type) { return type.toString(); }).contains(SkyTypeNames.getRight(sky.type)))
+      return;
+  }
+
+  {
     Vec2F viewSize = screenSize / pixelRatio;
     Vec2F viewCenter = viewSize / 2;
     Vec2D viewMin = Vec2D(sky.starOffset - viewCenter);
