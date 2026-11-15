@@ -8,6 +8,7 @@
 #include "SDL3/SDL.h"
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -42,6 +43,9 @@ enum class MobileTouchActionKind {
   ActionWheel,
   InventoryWheel,
   UiNavigation,
+  BodyTech,
+  TouchAimModeCycle,
+  OverlayVisibilityCycle,
   None
 };
 
@@ -57,6 +61,7 @@ struct MobileTouchAction {
 };
 
 struct MobileTouchConfig {
+  bool revamped = true;
   bool enabled = true;
   bool directTouchGestures = true;
   DirectTouchGestureMode directTouchGestureMode = DirectTouchGestureMode::Touchscreen;
@@ -74,7 +79,7 @@ struct MobileTouchConfig {
   // of truth is this copy; the gamepad copy is kept in sync from it.
   bool joystickAimCursorEnabled = true;
   bool gyroEnabled = false;
-  float opacity = 0.35f;
+  float opacity = 0.85f;
   float size = 1.0f;
   float outlineThickness = 1.5f;
   float deadzone = 0.15f;
@@ -154,6 +159,8 @@ struct MobileTouchElement {
   bool preciseAim = false;
   // Only meaningful for kind == PerformanceCounter.
   PerformanceCounterMode perfCounterMode = PerformanceCounterMode::Fps;
+  String sprite;
+  bool hideWhenWindowsOpen = false;
 };
 
 struct MobileGamepadBinding {
@@ -181,7 +188,8 @@ String pressModeName(MobileTouchPressMode mode);
 MobileTouchPressMode pressModeFromName(String const& name, MobileTouchPressMode def = MobileTouchPressMode::Hold);
 String perfCounterModeName(PerformanceCounterMode mode);
 PerformanceCounterMode perfCounterModeFromName(String const& name, PerformanceCounterMode def = PerformanceCounterMode::Fps);
-std::vector<MobileTouchElement> defaultTouchElements();
+std::vector<MobileTouchElement> defaultTouchElements(bool revamped = true);
+String touchElementSprite(MobileTouchElement const& element, bool held = false, unsigned aimMode = 0, unsigned hotbarGroup = 0);
 std::vector<MobileGamepadBinding> defaultGamepadBindings();
 String elementKindName(MobileTouchElementKind kind);
 MobileTouchElementKind elementKindFromName(String const& name);
@@ -213,6 +221,11 @@ public:
 
   void setConfig(MobileTouchConfig config);
   void setGameplayActive(bool active);
+  void setInterfaceObstructed(bool obstructed);
+  void setHotbarGroup(unsigned group);
+  void setFacingLeft(bool left);
+  void setTextureLoader(std::function<uintptr_t(String const&)> loader);
+  void setHudVisibilityHandler(std::function<void(bool)> handler);
   void setGyroAvailable(bool available);
   void setElements(std::vector<MobileTouchElement> elements);
   void beginFrame();

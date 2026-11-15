@@ -31,7 +31,8 @@ EnumMap<MainInterfacePanes> const MainInterfacePanesNames{
   {MainInterfacePanes::QuestTracker, "QuestTracker"},
   {MainInterfacePanes::MmUpgrade, "MmUpgrade"},
   {MainInterfacePanes::Collections, "Collections"},
-  {MainInterfacePanes::CharacterSwap, "CharacterSwap"}
+  {MainInterfacePanes::CharacterSwap, "CharacterSwap"},
+  {MainInterfacePanes::OsbmQuickMenu, "OsbmQuickMenu"}
 };
 
 MainInterfaceConfigPtr MainInterfaceConfig::loadFromAssets() {
@@ -41,6 +42,7 @@ MainInterfaceConfigPtr MainInterfaceConfig::loadFromAssets() {
 
   auto config = make_shared<MainInterfaceConfig>();
 
+  config->mobileHud = assets->json("/interface.config").getBool("osbmMobileHud", false);
   config->textStyle = assets->json("/interface.config:textStyle");
   config->inventoryImage = assets->json("/interface.config:mainBar.inventory.base").toString();
   config->inventoryImageHover = assets->json("/interface.config:mainBar.inventory.hover").toString();

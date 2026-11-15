@@ -182,7 +182,23 @@ extern float ServerGlobalTimestep;
 // Written by the client state machine, sampled by the host before input.
 // Keeping this at the app boundary avoids a game-layer dependency here.
 std::atomic_bool g_mobileGameplayActive{false};
-void setMobileGameplayActive(bool active) { g_mobileGameplayActive.store(active, std::memory_order_relaxed); }
+std::atomic_bool g_mobileInterfaceObstructed{false};
+std::atomic_uint g_mobileHotbarGroup{0};
+std::atomic_bool g_mobileFacingLeft{false};
+std::atomic_int g_mobileHudVisibilityRequest{0};
+int takeMobileHudVisibilityRequest() { return g_mobileHudVisibilityRequest.exchange(0, std::memory_order_relaxed); }
+void setMobileGameplayActive(bool active) {
+  g_mobileGameplayActive.store(active, std::memory_order_relaxed);
+  if (!active) {
+    g_mobileInterfaceObstructed.store(false, std::memory_order_relaxed);
+    g_mobileHudVisibilityRequest.store(0, std::memory_order_relaxed);
+  }
+}
+void setMobileInterfaceState(bool obstructed, unsigned hotbarGroup, bool facingLeft) {
+  g_mobileInterfaceObstructed.store(obstructed, std::memory_order_relaxed);
+  g_mobileHotbarGroup.store(hotbarGroup, std::memory_order_relaxed);
+  g_mobileFacingLeft.store(facingLeft, std::memory_order_relaxed);
+}
 
 String getMobileStartupStatus();
 void setMobileStartupStatus(String const& status);
@@ -281,7 +297,10 @@ struct LauncherState {
   String locale;
   String systemLocale;
   bool uiSettingsOpen = false;
+  bool osbmTweaksEnabled = true;
   MobileTouchConfig touchConfig;
+  std::vector<MobileTouchElement> legacyTouchElements;
+  std::vector<MobileTouchElement> revampedTouchElements;
   std::vector<MobileTouchElement> touchElements;
   MobileGamepadConfig gamepadConfig;
   std::vector<MobileGamepadBinding> gamepadBindings;
@@ -1232,8 +1251,9 @@ private:
       glBindTexture(GL_TEXTURE_2D, textureId);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      GLint filter = relativePath.beginsWith("osbm/controls/") ? GL_NEAREST : GL_LINEAR;
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
       glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
       glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width(), image.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, image.data());
 
@@ -1439,14 +1459,20 @@ private:
     state.touchConfig.gyroEnabled = config.queryBool("touch.gyroEnabled", false);
     if (!platformGyroAvailable())
       state.touchConfig.gyroEnabled = false;
-    state.touchConfig.opacity = config.queryFloat("touch.opacity", 0.35f);
+    state.touchConfig.opacity = config.queryFloat("touch.opacity", 0.85f);
     state.touchConfig.size = config.queryFloat("touch.size", 1.0f);
     state.touchConfig.outlineThickness = config.queryFloat("touch.outlineThickness", 1.5f);
     state.touchConfig.deadzone = config.queryFloat("touch.deadzone", 0.15f);
     state.touchConfig.gyroSensitivity = config.queryFloat("touch.gyroSensitivity", 1.0f);
     state.touchConfig.gyroInvertX = config.queryBool("touch.gyroInvertX", false);
     state.touchConfig.gyroInvertY = config.queryBool("touch.gyroInvertY", false);
-    state.touchElements = touchElementsFromConfig(config);
+    state.osbmTweaksEnabled = config.queryBool("osbmTweaksEnabled", true);
+    state.touchConfig.revamped = config.queryString("touch.layout", "revamped") != "legacy";
+    state.legacyTouchElements = touchElementsFromConfig(JsonObject{{"touch", JsonObject{
+      {"layout", "legacy"}, {"elements", config.query("touch.elements", JsonArray{})}}}});
+    state.revampedTouchElements = touchElementsFromConfig(JsonObject{{"touch", JsonObject{
+      {"layout", "revamped"}, {"revampedElements", config.query("touch.revampedElements", JsonArray{})}}}});
+    state.touchElements = state.touchConfig.revamped ? state.revampedTouchElements : state.legacyTouchElements;
     state.gamepadConfig = gamepadConfigFromConfig(config);
     // touchConfig is the single source of truth for this setting -- see
     // MobileTouchConfig::joystickAimCursorEnabled.
@@ -2127,6 +2153,10 @@ private:
   }
 
   void renderTouchActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId) {
+    if (action.kind == MobileTouchActionKind::BodyTech || action.kind == MobileTouchActionKind::TouchAimModeCycle || action.kind == MobileTouchActionKind::OverlayVisibilityCycle) {
+      ImGui::Text("%s: %s", label, actionName(action).utf8Ptr());
+      return;
+    }
     renderActionCombo(state, label, action, bufferId, touchActionChoices());
   }
 
@@ -2688,7 +2718,9 @@ private:
     if (!element.enabled)
       return;
 
-    float baseRadius = std::min(canvasSize.x, canvasSize.y) * 0.075f * state.touchConfig.size;
+    float baseRadius = state.touchConfig.revamped
+        ? std::min(canvasSize.x, canvasSize.y) * (56.0f / 720.0f) * state.touchConfig.size
+        : std::min(canvasSize.x, canvasSize.y) * 0.075f * state.touchConfig.size;
     float radius = baseRadius * std::clamp(element.size, 0.45f, 2.4f);
     ImVec2 center(canvasMin.x + element.position[0] * canvasSize.x, canvasMin.y + element.position[1] * canvasSize.y);
 
@@ -2719,6 +2751,27 @@ private:
       element.position[1] = std::clamp(element.position[1] + delta.y / std::max(1.0f, canvasSize.y), 0.03f, 0.97f);
     }
     ImGui::PopID();
+
+    if (state.touchConfig.revamped && !element.sprite.empty()) {
+      draw->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+      auto image = [&](String const& path, float halfSize) {
+        if (auto texture = launcherTexture(path))
+          draw->AddImage(imguiTextureId(*texture), ImVec2(center.x - halfSize, center.y - halfSize),
+              ImVec2(center.x + halfSize, center.y + halfSize), ImVec2(0, 1), ImVec2(1, 0), IM_COL32(255, 255, 255, (int)(255 * op)));
+      };
+      bool stick = element.kind == MobileTouchElementKind::Joystick || element.kind == MobileTouchElementKind::AimJoystick;
+      if (stick)
+        image("osbm/controls/joystick_base.png", radius);
+      image(touchElementSprite(element), radius * (stick ? 0.42f : 0.62f));
+      if (index == state.selectedTouchElement)
+        draw->AddRect(ImVec2(center.x - radius, center.y - radius), ImVec2(center.x + radius, center.y + radius), IM_COL32(150, 220, 255, 255));
+      if (element.sprite == "buttonempty") {
+        auto size = ImGui::CalcTextSize(element.label.utf8Ptr());
+        labels.push_back({ImVec2(center.x - size.x / 2, center.y - size.y / 2), element.label});
+      }
+      draw->AddCallback(applyTouchPreviewContrastBlend, nullptr);
+      return;
+    }
 
     if (element.kind == MobileTouchElementKind::DPad) {
       float arm = radius * 0.38f;
@@ -2849,6 +2902,27 @@ private:
     if (ImGui::Button(launcherText("common.save", "Save").utf8Ptr())) {
       persistLauncherState(state);
       reloadLauncherLocalization(state.locale);
+    }
+
+    sameLineIfNextFits(imguiButtonWidth(launcherText("uiSettings.credits", "Credits").utf8Ptr()));
+    String creditsTitle = launcherText("uiSettings.credits", "Credits");
+    if (ImGui::Button(creditsTitle.utf8Ptr()))
+      ImGui::OpenPopup(creditsTitle.utf8Ptr());
+    ImGui::SetNextWindowSize(ImVec2(std::min(540.0f, ImGui::GetIO().DisplaySize.x - 32.0f), 0), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal(creditsTitle.utf8Ptr(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      // Keep this list in sync with docs/contributing.md when accepting work.
+      ImGui::TextUnformatted("oSBM / OpenStarbound Mobile");
+      ImGui::Separator();
+      ImGui::TextWrapped("%s", launcherText("credits.maintainer", "Rohan Bhattacharyya: creator and maintainer").utf8Ptr());
+      ImGui::TextWrapped("%s", launcherText("credits.localization", "Sunbrella114514: localization").utf8Ptr());
+      ImGui::TextWrapped("%s", launcherText("credits.linuxArm", "lotigara (Ivan Davydov): Linux ARM support").utf8Ptr());
+      ImGui::TextWrapped("%s", launcherText("credits.art", "Ballefroide: touch controls artwork and design (#65)").utf8Ptr());
+      ImGui::Separator();
+      ImGui::TextWrapped("%s", launcherText("credits.upstream", "Built on OpenStarbound and the work of its contributors. Starbound and its game assets are by Chucklefish.").utf8Ptr());
+      ImGui::TextWrapped("github.com/RohanBhattacharyya/oSBM");
+      if (ImGui::Button(launcherText("common.close", "Close").utf8Ptr()))
+        ImGui::CloseCurrentPopup();
+      ImGui::EndPopup();
     }
 
     std::vector<pair<String, String>> localeChoices{
@@ -3066,6 +3140,24 @@ private:
     if (ImGui::Button(launcherText("common.save", "Save").utf8Ptr()))
       persistLauncherState(state);
 
+    String layoutName = state.touchConfig.revamped
+        ? launcherText("touchManager.revamped", "Revamped (default)") : launcherText("touchManager.legacy", "Legacy");
+    if (ImGui::BeginCombo(launcherText("touchManager.layout", "Control layout").utf8Ptr(), layoutName.utf8Ptr())) {
+      for (bool revamped : {true, false}) {
+        String name = revamped ? launcherText("touchManager.revamped", "Revamped (default)") : launcherText("touchManager.legacy", "Legacy");
+        if (ImGui::Selectable(name.utf8Ptr(), state.touchConfig.revamped == revamped) && state.touchConfig.revamped != revamped) {
+          (state.touchConfig.revamped ? state.revampedTouchElements : state.legacyTouchElements) = state.touchElements;
+          state.touchConfig.revamped = revamped;
+          state.touchElements = revamped ? state.revampedTouchElements : state.legacyTouchElements;
+          state.selectedTouchElement = 0;
+          persistLauncherState(state);
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (state.touchConfig.revamped)
+      ImGui::TextWrapped("%s", launcherText("touchManager.revampedHint",
+        "Aim mode cycles left hand, right hand, both hands, then aim only. Walk also enables precise mining. Hide controls cycles full, sticks, then hidden HUD; its button stays available.").utf8Ptr());
     ImGui::TextUnformatted(launcherText("touchManager.touchSection", "Controls").utf8Ptr());
     ImGui::Checkbox(launcherText("touchManager.enableOverlay", "Enable touch overlay").utf8Ptr(), &state.touchConfig.enabled);
     ImGui::Checkbox(launcherText("touchManager.enableDirectGestures", "Enable direct screen touch gestures").utf8Ptr(), &state.touchConfig.directTouchGestures);
@@ -3663,6 +3755,10 @@ private:
       ImGui::Separator();
       String modSearch = String(state.modSearchBuffer).trim();
       size_t shownMods = 0;
+      if (ImGui::Checkbox(launcherText("modManager.osbmTweaks", "oSBM: Mobile HUD (bundled)").utf8Ptr(), &state.osbmTweaksEnabled))
+        persistLauncherState(state);
+      ImGui::TextWrapped("%s", launcherText("modManager.osbmTweaksHint", "Larger mobile HUD and quick menu. Enabled by default; changes apply next launch. Touch artwork remains available when disabled.").utf8Ptr());
+      ImGui::Separator();
       ImGui::Text("%s: %u", launcherText("modManager.installedModsLabel", "Installed mods").utf8Ptr(), (unsigned)state.modEntries.size());
       float modListHeight = std::max(180.0f, ImGui::GetContentRegionAvail().y - 90.0f);
       if (ImGui::BeginChild("ModManagerList", ImVec2(0.0f, modListHeight), true, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
@@ -4017,6 +4113,7 @@ private:
 
   void persistLauncherState(LauncherState const& state) {
     Json config = JsonObject{
+      {"osbmTweaksEnabled", state.osbmTweaksEnabled},
       {"packedPakPath", state.packedPakPath},
       {"launcherUi", JsonObject{
         {"scale", state.uiConfig.scale},
@@ -4028,6 +4125,7 @@ private:
         }}
       }},
       {"touch", JsonObject{
+        {"layout", state.touchConfig.revamped ? "revamped" : "legacy"},
         {"enabled", state.touchConfig.enabled},
         {"directTouchGestures", state.touchConfig.directTouchGestures},
         {"directTouchGestureMode", directTouchGestureModeName(state.touchConfig.directTouchGestureMode)},
@@ -4042,7 +4140,8 @@ private:
         {"gyroSensitivity", state.touchConfig.gyroSensitivity},
         {"gyroInvertX", state.touchConfig.gyroInvertX},
         {"gyroInvertY", state.touchConfig.gyroInvertY},
-        {"elements", jsonFromTouchElements(state.touchElements)}
+        {"elements", jsonFromTouchElements(state.touchConfig.revamped ? state.legacyTouchElements : state.touchElements)},
+        {"revampedElements", jsonFromTouchElements(state.touchConfig.revamped ? state.touchElements : state.revampedTouchElements)}
       }},
       {"performance", JsonObject{
         {"simRate", m_perfSimRate},
@@ -4110,8 +4209,10 @@ private:
     unsigned workerPoolSize = std::min(hwThreads, 2u);
 
     Json bootConfig = JsonObject{
-      {"assetDirectories", JsonArray{bundledAssetsRoot, modsPath}},
-      {"assetSources", JsonArray{state.packedPakPath}},
+      {"assetDirectories", JsonArray{modsPath}},
+      {"assetSources", state.osbmTweaksEnabled
+          ? JsonArray{state.packedPakPath, File::relativeTo(bundledAssetsRoot, "opensb"), File::relativeTo(bundledAssetsRoot, "osbm")}
+          : JsonArray{state.packedPakPath, File::relativeTo(bundledAssetsRoot, "opensb")}},
       {"assetsSettings", JsonObject{
         {"skipDigest", true},
         {"skipPreload", true},
@@ -4267,12 +4368,21 @@ private:
       renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: create touch adapter");
       m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize, &m_renderCanvasSize, &m_displayScale, &m_safeArea);
+      m_touchAdapter->setHudVisibilityHandler([](bool visible) {
+        g_mobileHudVisibilityRequest.store(visible ? 1 : -1, std::memory_order_relaxed);
+      });
+      m_touchAdapter->setTextureLoader([this](String const& path) -> uintptr_t {
+        if (auto texture = launcherTexture(path))
+          return texture->textureId;
+        return 0;
+      });
       m_touchAdapter->setGyroAvailable(platformGyroAvailable());
       m_gamepadAdapter = make_unique<MobileGamepadInputAdapter>(&m_renderCanvasSize);
 
       if (auto configService = m_platformServices->launchConfigService()) {
         auto cfg = configService->loadLauncherConfig();
         MobileTouchConfig touch;
+        touch.revamped = cfg.queryString("touch.layout", "revamped") != "legacy";
         // Defaults must match loadLauncherState (see the same #if there): the
         // launcher persists these into the config this reads back.
 #if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
@@ -4294,7 +4404,7 @@ private:
         touch.gyroEnabled = cfg.queryBool("touch.gyroEnabled", false);
         if (!platformGyroAvailable())
           touch.gyroEnabled = false;
-        touch.opacity = cfg.queryFloat("touch.opacity", 0.35f);
+        touch.opacity = cfg.queryFloat("touch.opacity", 0.85f);
         touch.size = cfg.queryFloat("touch.size", 1.0f);
         touch.outlineThickness = cfg.queryFloat("touch.outlineThickness", 1.5f);
         touch.deadzone = cfg.queryFloat("touch.deadzone", 0.15f);
@@ -4802,6 +4912,9 @@ private:
     SDL_Event event;
     m_touchAdapter->beginFrame();
     m_touchAdapter->setGameplayActive(g_mobileGameplayActive.load(std::memory_order_relaxed));
+    m_touchAdapter->setInterfaceObstructed(g_mobileInterfaceObstructed.load(std::memory_order_relaxed));
+    m_touchAdapter->setHotbarGroup(g_mobileHotbarGroup.load(std::memory_order_relaxed));
+    m_touchAdapter->setFacingLeft(g_mobileFacingLeft.load(std::memory_order_relaxed));
     bool overlayEnabled = m_touchAdapter->overlayEnabled();
     ImGuiIO* io = overlayEnabled ? &ImGui::GetIO() : nullptr;
     if (m_gamepadAdapter)

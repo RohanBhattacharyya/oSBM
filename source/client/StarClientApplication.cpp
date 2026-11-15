@@ -13,6 +13,7 @@
 #include "StarRoot.hpp"
 #include "StarVersionOptionParser.hpp"
 #include "StarPlayer.hpp"
+#include "StarPlayerInventory.hpp"
 #include "StarPlayerStorage.hpp"
 #include "StarPlayerLog.hpp"
 #include "StarAssets.hpp"
@@ -69,6 +70,8 @@ namespace Star {
 void setMobileStartupStatus(String const& status);
 #ifdef STAR_PLATFORM_MOBILE
 void setMobileGameplayActive(bool active);
+int takeMobileHudVisibilityRequest();
+void setMobileInterfaceState(bool obstructed, unsigned hotbarGroup, bool facingLeft);
 #endif
 
 #if defined(STAR_PLATFORM_MOBILE) && !defined(STAR_SYSTEM_SWITCH)
@@ -2190,6 +2193,11 @@ void ClientApplication::updateRunning(float dt) {
     }
 #endif
 
+#ifdef STAR_PLATFORM_MOBILE
+    if (int visibility = takeMobileHudVisibilityRequest())
+      m_mainInterface->setHudVisible(visibility > 0);
+    setMobileInterfaceState(m_mainInterface->windowsOpen() || m_mainInterface->escapeDialogOpen(), m_player->inventory()->customBarGroup(), m_player->facingDirection() == Direction::Left);
+#endif
     bool inputActive = m_mainInterface->textInputActive();
 #ifdef STAR_SYSTEM_SWITCH
     runSwitchKeyboardSession(m_mainInterface->paneManager(), inputActive);

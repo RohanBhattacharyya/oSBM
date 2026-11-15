@@ -36,7 +36,8 @@ enum class MainInterfacePanes {
   QuestTracker,
   MmUpgrade,
   Collections,
-  CharacterSwap
+  CharacterSwap,
+  OsbmQuickMenu
 };
 
 extern EnumMap<MainInterfacePanes> const MainInterfacePanesNames;
@@ -46,6 +47,7 @@ typedef RegisteredPaneManager<MainInterfacePanes> MainInterfacePaneManager;
 struct MainInterfaceConfig {
   static MainInterfaceConfigPtr loadFromAssets();
 
+  bool mobileHud = false;
   TextStyle textStyle;
 
   String inventoryImage;

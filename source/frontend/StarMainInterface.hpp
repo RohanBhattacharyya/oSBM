@@ -172,6 +172,7 @@ private:
   };
 
   PanePtr createEscapeDialog();
+  PanePtr createOsbmQuickMenu();
   void initHttpTrustDialog();
 
   float interfaceScale() const;

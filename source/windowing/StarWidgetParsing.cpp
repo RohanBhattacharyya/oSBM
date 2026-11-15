@@ -499,6 +499,7 @@ WidgetConstructResult WidgetParser::itemSlotHandler(String const& name, Json con
   if (auto callback = m_callbacks.ptr(middleClickCallback))
     itemSlot->setMiddleClickCallback(*callback);
 
+  itemSlot->setItemScale(config.getFloat("itemScale", 1.0f));
   itemSlot->setBackingImageAffinity(config.getBool("showBackingImageWhenFull", false), config.getBool("showBackingImageWhenEmpty", true));
   itemSlot->showDurability(config.getBool("showDurability", false));
   itemSlot->showCount(config.getBool("showCount", true));

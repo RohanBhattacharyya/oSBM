@@ -196,6 +196,10 @@ bool ActionBar::sendEvent(InputEvent const& event) {
 }
 
 void ActionBar::update(float) {
+  // Keep the enlarged bundled HUD below the corner widgets on narrow screens.
+  // Other mods and bottom-bar layouts retain their original anchoring.
+  if (m_config.getBool("osbmResponsive", false) && anchor() == PaneAnchor::CenterTop)
+    m_anchorOffset[1] = context()->windowInterfaceSize()[0] < size()[0] + 200 ? -64 : 0;
   auto inventory = m_player->inventory();
   auto abl = inventory->selectedActionBarLocation();
   if (abl.is<CustomBarIndex>()) {

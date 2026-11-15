@@ -1,6 +1,7 @@
 #include "StarLua.hpp"
 #include "StarLuaConverters.hpp"
 #include "StarLexicalCast.hpp"
+#include "StarFile.hpp"
 
 #include "gtest/gtest.h"
 
@@ -835,4 +836,36 @@ TEST(LuaTest, ProfilingTest) {
   EXPECT_TRUE(names.contains("function1"));
   EXPECT_TRUE(names.contains("function2"));
   EXPECT_TRUE(names.contains("function3"));
+}
+
+TEST(LuaTest, BundledHudPatchesRunInAssetSandbox) {
+  auto engine = LuaEngine::create();
+  // Use only distributable oSBM files and synthetic configs, never packed.pak.
+  String assets = File::relativeTo(File::dirName(__FILE__), "../../assets/osbm");
+  auto patch = [&](String const& path, Json const& config) {
+    auto context = engine->createContext();
+    context.load(File::readFileString(File::relativeTo(assets, path)), path);
+    return context.invokePath<Json>("patch", config, path);
+  };
+  Json layout = JsonObject{
+    {"slot", JsonObject{{"type", "itemslot"}, {"position", JsonArray{16, 8}}, {"backingImage", "/slot.png"}}},
+    {"portrait", JsonObject{{"type", "portrait"}, {"scale", 1.5f}}}};
+  auto actionBar = patch("interface/windowconfig/actionbar.config.patch.lua", JsonObject{
+    {"paneLayout", layout}, {"actionBarSelectOffset", JsonArray{-1, -1}}, {"countMidAnchor", JsonArray{10, -6}}});
+  EXPECT_TRUE(actionBar.queryBool("osbmResponsive"));
+  EXPECT_EQ(1.25f, actionBar.queryFloat("paneLayout.slot.itemScale"));
+  EXPECT_EQ(20, actionBar.query("paneLayout.slot.position[0]").toInt());
+  auto teamBar = patch("interface/windowconfig/teambar.config.patch.lua", JsonObject{
+    {"paneLayout", layout}, {"entry", JsonObject{}}, {"memberPortraitScale", 1.5f}, {"memberSize", 38},
+    {"memberSpacing", 1}, {"memberMenuOffset", JsonArray{29, -15}}, {"selfMenuOffset", JsonArray{31, -78}},
+    {"foodBarFlashOverlay", "/food.png"}});
+  EXPECT_EQ(2.25f, teamBar.queryFloat("paneLayout.portrait.scale"));
+  EXPECT_EQ(57, teamBar.getInt("memberSize"));
+  auto mainBar = patch("interface.config.patch.lua", JsonObject{
+    {"mainBar", JsonObject{{"size", JsonArray{22, 165}}, {"codex", JsonObject{{"base", "/codex.png"}, {"pos", JsonArray{0, 0}}}},
+      {"craft", JsonObject{{"pos", JsonArray{0, 0}}}}, {"inventory", JsonObject{{"base", "/inventory.png"}}}}},
+    {"cursorTooltip", JsonObject{}}});
+  EXPECT_TRUE(mainBar.getBool("osbmMobileHud"));
+  EXPECT_TRUE(mainBar.query("mainBar.craft.poly").toArray().empty());
+  EXPECT_EQ("Quick menu", mainBar.queryString("cursorTooltip.codexText"));
 }

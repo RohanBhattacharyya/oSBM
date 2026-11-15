@@ -146,6 +146,8 @@ MainInterface::MainInterface(UniverseClientPtr client, WorldPainterPtr painter, 
   m_paneManager.registerPane(MainInterfacePanes::CraftingPlain, PaneLayer::Window, m_plainCraftingWindow);
 
   m_paneManager.registerPane(MainInterfacePanes::EscapeDialog, PaneLayer::ModalWindow, createEscapeDialog());
+  if (m_config->mobileHud)
+    m_paneManager.registerPane(MainInterfacePanes::OsbmQuickMenu, PaneLayer::Window, createOsbmQuickMenu());
 
   auto songbookInterface = make_shared<SongbookInterface>(m_client->mainPlayer());
   m_paneManager.registerPane(MainInterfacePanes::Songbook, PaneLayer::Window, songbookInterface);
@@ -1267,6 +1269,24 @@ PanePtr MainInterface::createEscapeDialog() {
   return escapeDialog;
 }
 
+PanePtr MainInterface::createOsbmQuickMenu() {
+  auto menu = make_shared<Pane>();
+  auto menuPtr = menu.get();
+  GuiReader reader;
+  for (auto const& name : {"CraftingPlain", "Codex", "Collections", "MmUpgrade", "Songbook", "Options"}) {
+    auto pane = MainInterfacePanesNames.getLeft(name);
+    reader.registerCallback(name, [this, menuPtr, pane](Widget*) {
+      if (pane == MainInterfacePanes::MmUpgrade && !m_client->mainPlayer()->inventory()->essentialItem(EssentialItem::BeamAxe))
+        return;
+      menuPtr->dismiss();
+      m_paneManager.displayRegisteredPane(pane);
+    });
+  }
+  reader.registerCallback("close", [menuPtr](Widget*) { menuPtr->dismiss(); });
+  reader.construct(Root::singleton().assets()->json("/interface/osbm/quickmenu.config"), menuPtr);
+  return menu;
+}
+
 float MainInterface::interfaceScale() const {
   return m_guiContext->interfaceScale();
 }
@@ -1525,7 +1545,7 @@ void MainInterface::renderMainBar() {
       assets->json("/interface.config:cursorTooltip.craftingText").toString());
 
   Vec2F codexButtonPos = barPos + Vec2F(m_config->mainBarCodexButtonOffset) * interfaceScale();
-  drawStateButton(MainInterfacePanes::Codex,
+  drawStateButton(m_config->mobileHud ? MainInterfacePanes::OsbmQuickMenu : MainInterfacePanes::Codex,
       codexButtonPos,
       m_config->mainBarCodexButtonPoly,
       m_config->codexImage,
@@ -1533,6 +1553,11 @@ void MainInterface::renderMainBar() {
       m_config->codexImageOpen,
       m_config->codexImageHoverOpen,
       assets->json("/interface.config:cursorTooltip.codexText").toString());
+  if (m_config->mobileHud) {
+    Vec2F origin = codexButtonPos / interfaceScale();
+    for (int row = 0; row < 3; ++row)
+      m_guiContext->drawInterfaceQuad(RectF::withSize(origin + Vec2F(8, 9 + row * 6), {18, 3}), Vec4B(230, 230, 230, 255));
+  }
 
   Vec2F mmUpgradeButtonPos = barPos + Vec2F(m_config->mainBarMmUpgradeButtonOffset) * interfaceScale();
   if (m_client->mainPlayer()->inventory()->essentialItem(EssentialItem::BeamAxe)) {
@@ -1571,7 +1596,7 @@ void MainInterface::renderMainBar() {
   // when the player can deploy or beam down, show both buttons
 
   Vec2F deployButtonPos(Vec2F(barPos) + Vec2F(m_config->mainBarDeployButtonOffset) * interfaceScale());
-  if (m_client->canBeamUp()) {
+  if (m_client->canBeamUp() && !m_config->mobileHud) {
     if (overButton(m_config->mainBarDeployButtonPoly, m_cursorScreenPos)) {
       m_guiContext->drawQuad(m_config->beamUpImageHover, deployButtonPos, interfaceScale());
       m_cursorTooltip = assets->json("/interface.config:cursorTooltip.beamUpText").toString();
@@ -1585,12 +1610,17 @@ void MainInterface::renderMainBar() {
     } else {
       m_guiContext->drawQuad(m_config->deployImage, deployButtonPos, interfaceScale());
     }
-  } else {
+  } else if (!m_config->mobileHud) {
     m_guiContext->drawQuad(m_config->deployImageDisabled, deployButtonPos, interfaceScale());
   }
 
   Vec2F beamButtonPos(Vec2F(barPos) + Vec2F(m_config->mainBarBeamButtonOffset) * interfaceScale());
-  if (m_client->canBeamDown()) {
+  if (m_config->mobileHud && m_client->canBeamUp()) {
+    bool hover = overButton(m_config->mainBarBeamButtonPoly, m_cursorScreenPos);
+    m_guiContext->drawQuad(hover ? m_config->beamUpImageHover : m_config->beamUpImage, beamButtonPos, interfaceScale());
+    if (hover)
+      m_cursorTooltip = assets->json("/interface.config:cursorTooltip.beamUpText").toString();
+  } else if (m_client->canBeamDown()) {
     if (overButton(m_config->mainBarBeamButtonPoly, m_cursorScreenPos)) {
       m_guiContext->drawQuad(m_config->beamDownImageHover, beamButtonPos, interfaceScale());
       m_cursorTooltip = assets->json("/interface.config:cursorTooltip.beamDownText").toString();
@@ -1969,11 +1999,15 @@ bool MainInterface::overlayClick(Vec2F const& mousePos, MouseButton) {
   }
 
   if (overButton(m_config->mainBarCodexButtonPoly, mousePos)) {
-    m_paneManager.toggleRegisteredPane(MainInterfacePanes::Codex);
+    if (m_config->mobileHud) {
+      auto menu = m_paneManager.registeredPane(MainInterfacePanes::OsbmQuickMenu);
+      menu->fetchChild<ButtonWidget>("MmUpgrade")->setEnabled((bool)m_client->mainPlayer()->inventory()->essentialItem(EssentialItem::BeamAxe));
+    }
+    m_paneManager.toggleRegisteredPane(m_config->mobileHud ? MainInterfacePanes::OsbmQuickMenu : MainInterfacePanes::Codex);
     return true;
   }
 
-  if (overButton(m_config->mainBarDeployButtonPoly, mousePos)) {
+  if (overButton(m_config->mainBarDeployButtonPoly, mousePos) && (!m_config->mobileHud || m_client->canBeamDown(true))) {
     if (m_client->canBeamDown(true))
       warpToOrbitedWorld(true);
     else if (m_client->canBeamUp())
@@ -1982,7 +2016,9 @@ bool MainInterface::overlayClick(Vec2F const& mousePos, MouseButton) {
   }
 
   if (overButton(m_config->mainBarBeamButtonPoly, mousePos)) {
-    if (m_client->canBeamDown())
+    if (m_config->mobileHud && m_client->canBeamUp())
+      warpToOwnShip();
+    else if (m_client->canBeamDown())
       warpToOrbitedWorld();
     return true;
   }

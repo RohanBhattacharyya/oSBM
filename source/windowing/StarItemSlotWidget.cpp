@@ -148,6 +148,17 @@ void ItemSlotWidget::setProgress(float progress) {
   m_progress = progress;
 }
 
+void ItemSlotWidget::setItemScale(float scale) {
+  scale = clamp(scale, 0.5f, 3.0f);
+  float ratio = scale / m_itemScale;
+  m_itemScale = scale;
+  m_itemDraggableArea = RectI(Vec2I::round(Vec2F(m_itemDraggableArea.min()) * ratio),
+      Vec2I::round(Vec2F(m_itemDraggableArea.max()) * ratio));
+  setSize(size().piecewiseMax(m_itemDraggableArea.max()));
+  m_durabilityBar->setPosition(Vec2I::round(Vec2F(m_durabilityBar->relativePosition()) * ratio));
+  m_durabilityBar->setSize(Vec2I::round(Vec2F(m_durabilityBar->size()) * ratio));
+}
+
 void ItemSlotWidget::setBackingImageAffinity(bool full, bool empty) {
   m_drawBackingImageWhenFull = full;
   m_drawBackingImageWhenEmpty = empty;
@@ -194,7 +205,7 @@ void ItemSlotWidget::setHighlightEnabled(bool highlight) {
 void ItemSlotWidget::renderImpl() {
   auto drawCooldown = [this]() {
     int frame = (int)roundf(m_progress * 18);// TODO: Hardcoded lol
-    context()->drawInterfaceQuad(String(strf("/interface/cooldown.png:{}", frame)), Vec2F(screenPosition()));
+    context()->drawInterfaceQuad(String(strf("/interface/cooldown.png:{}", frame)), Vec2F(screenPosition()), m_itemScale);
   };
   if (m_item) {
     if (m_drawBackingImageWhenFull && m_backingImage != "")
@@ -202,21 +213,23 @@ void ItemSlotWidget::renderImpl() {
 
     List<Drawable> iconDrawables = m_showSecondaryIcon ? m_item->secondaryDrawables().value(m_item->iconDrawables()) : m_item->iconDrawables();
 
+    Drawable::scaleAll(iconDrawables, m_itemScale);
+
     if (m_showRarity) {
       String border = rarityBorder(m_item->instanceValue("rarityBorder", RarityNames.getRight(m_item->rarity())).toString());
-      context()->drawInterfaceQuad(border, Vec2F(screenPosition()));
+      context()->drawInterfaceQuad(border, Vec2F(screenPosition()), m_itemScale);
     }
 
     if (m_showLinkIndicator) {
       // TODO: Hardcoded
-      context()->drawInterfaceQuad(String("/interface/inventory/itemlinkindicator.png"), Vec2F(screenPosition() - Vec2I(1, 1)));
+      context()->drawInterfaceQuad(String("/interface/inventory/itemlinkindicator.png"), Vec2F(screenPosition() - Vec2I(1, 1)), m_itemScale);
     }
 
     for (auto const& i : iconDrawables)
       context()->drawInterfaceDrawable(i, Vec2F(screenPosition() + size() / 2));
 
     if (!m_newItemIndicator.isComplete())
-      context()->drawInterfaceDrawable(m_newItemIndicator.drawable(1.0), Vec2F(screenPosition() + size() / 2), Color::White.toRgba());
+      context()->drawInterfaceDrawable(m_newItemIndicator.drawable(m_itemScale), Vec2F(screenPosition() + size() / 2), Color::White.toRgba());
 
     if (m_showDurability) {
       if (auto durabilityItem = as<DurabilityItem>(m_item)) {
@@ -245,7 +258,7 @@ void ItemSlotWidget::renderImpl() {
   }
 
   if (m_highlightEnabled) {
-    context()->drawInterfaceDrawable(m_highlightAnimation.drawable(1.0), Vec2F(screenPosition() + size() / 2), Color::White.toRgba());
+    context()->drawInterfaceDrawable(m_highlightAnimation.drawable(m_itemScale), Vec2F(screenPosition() + size() / 2), Color::White.toRgba());
   }
 
   if (!m_item)

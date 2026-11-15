@@ -141,3 +141,9 @@ Commands, costs, and what is possible on which host:
 Every task report must state: files changed; behavior changed; commands run
 with their actual results; platforms validated; platforms **not** validated;
 remaining risk.
+
+## Contributor credits
+
+When accepting contributions, update the in-app Settings → Credits dialog and
+launcher translations. Preserve art and design attribution, including
+Ballefroide's controls assets. See [docs/contributing.md](docs/contributing.md).

@@ -23,6 +23,7 @@ public:
   void setItem(ItemPtr const& item);
   ItemPtr item() const;
   void setProgress(float progress);
+  void setItemScale(float scale);
   void setBackingImageAffinity(bool full, bool empty);
   void setCountPosition(TextPositioning textPositioning);
   void setCountFontMode(FontMode fontMode);
@@ -64,6 +65,7 @@ private:
   WidgetCallbackFunc m_rightClickCallback;
   WidgetCallbackFunc m_middleClickCallback;
   float m_progress;
+  float m_itemScale = 1.0f;
 
   ProgressWidgetPtr m_durabilityBar;
 

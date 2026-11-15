@@ -1,0 +1,9 @@
+{
+  "name" : "osbm_mobile_hud",
+  "friendlyName" : "oSBM — Mobile HUD",
+  "author" : "oSBM contributors; controls art and design by Ballefroide",
+  "description" : "Larger HUD, a compact quick menu and mobile controls artwork. Toggle the bundled mod in the oSBM launcher.",
+  "requires" : ["opensb_base"],
+  "priority" : 10,
+  "link" : "https://github.com/RohanBhattacharyya/oSBM/issues/65"
+}
