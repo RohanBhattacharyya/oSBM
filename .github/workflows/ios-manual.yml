@@ -148,6 +148,7 @@ jobs:
           path: |
             build/ios-arm64-ipa/build.log
             build/ios-arm64-ipa/CMakeCache.txt
+            build/ios-arm64-ipa/CMakeFiles/CMakeConfigureLog.yaml
             build/ios-arm64-ipa/CMakeFiles/CMakeOutput.log
             build/ios-arm64-ipa/CMakeFiles/CMakeError.log
           if-no-files-found: warn

@@ -444,7 +444,9 @@ elseif(STAR_COMPILER_CLANG)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-export_dynamic")
     set(CMAKE_XCODE_ATTRIBUTE_CLANG_CXX_LANGUAGE_STANDARD "c++17")
     set(CMAKE_XCODE_ATTRIBUTE_CLANG_CXX_LIBRARY "libc++")
-  elseif(NOT STAR_SYSTEM_WINDOWS)
+  elseif(NOT STAR_SYSTEM_WINDOWS AND NOT STAR_SYSTEM_IOS)
+    # These ELF linker flags are not accepted by the iOS linker and also
+    # break CMake's dependency checks, including FindThreads.
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread -D_REENTRANT")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -D_REENTRANT")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--export-dynamic")
