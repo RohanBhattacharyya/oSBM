@@ -855,6 +855,8 @@ TEST(LuaTest, BundledHudPatchesRunInAssetSandbox) {
   EXPECT_TRUE(actionBar.queryBool("osbmResponsive"));
   EXPECT_EQ(1.25f, actionBar.queryFloat("paneLayout.slot.itemScale"));
   EXPECT_EQ(20, actionBar.query("paneLayout.slot.position[0]").toInt());
+  auto bottomBar = patch("interface/windowconfig/actionbarbottom.config.patch.lua", JsonObject{{"paneLayout", layout}});
+  EXPECT_EQ(1.25f, bottomBar.queryFloat("paneLayout.slot.itemScale"));
   auto teamBar = patch("interface/windowconfig/teambar.config.patch.lua", JsonObject{
     {"paneLayout", layout}, {"entry", JsonObject{}}, {"memberPortraitScale", 1.5f}, {"memberSize", 38},
     {"memberSpacing", 1}, {"memberMenuOffset", JsonArray{29, -15}}, {"selfMenuOffset", JsonArray{31, -78}},

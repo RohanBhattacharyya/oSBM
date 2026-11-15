@@ -28,7 +28,8 @@ releases the right-hand controls, leaving ordinary pointer input for the UI.
 The official **oSBM: Mobile HUD** mod is bundled and enabled automatically.
 Disable it in the launcher's **Mod Manager** and relaunch the game to restore
 the original HUD. This keeps the touch artwork available. The mod enlarges
-the player HUD and hotbar, moves crafting and secondary panes into a quick
+the player HUD and hotbar, fits the hotbar around the corner buttons on narrow
+viewports and larger UI scales, moves crafting and secondary panes into a quick
 menu, and keeps the mech button off planets. It does not require an external
 Quickbar mod or replace the player's UI-scale preference.
 

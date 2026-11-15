@@ -402,3 +402,37 @@ TEST(MobileControls, HudVisibilityUsesHostActionWithoutDependingOnKeyBindings) {
   EXPECT_FALSE(requests[0]);
   EXPECT_TRUE(requests[1]);
 }
+
+TEST(MobileControls, BodyTechKeepsTapEdgesOnSeparateSlowFramesAndStopsForWindows) {
+  TouchDriver d;
+  MobileTouchElement dash;
+  dash.id = "dash"; dash.position = {0.8f, 0.5f}; dash.action.kind = MobileTouchActionKind::BodyTech;
+  dash.hideWhenWindowsOpen = true;
+  d.adapter.setElements({dash});
+  d.finger(SDL_EVENT_FINGER_DOWN, 1, 0.8f);
+  for (unsigned phase = 0; phase < 4; ++phase) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    d.adapter.beginFrame(); d.adapter.endFrame();
+    List<InputEvent> events;
+    d.adapter.appendGeneratedEvents(events);
+    unsigned edges = 0;
+    for (auto const& event : events) {
+      if (event.is<KeyDownEvent>()) { EXPECT_EQ(0u, phase % 2); ++edges; }
+      if (event.is<KeyUpEvent>()) { EXPECT_EQ(1u, phase % 2); ++edges; }
+    }
+    EXPECT_EQ(1u, edges);
+  }
+  d.finger(SDL_EVENT_FINGER_UP, 1, 0.8f);
+  d.finger(SDL_EVENT_FINGER_DOWN, 1, 0.8f);
+  std::this_thread::sleep_for(std::chrono::milliseconds(65));
+  d.adapter.beginFrame(); d.adapter.endFrame();
+  List<InputEvent> events;
+  d.adapter.appendGeneratedEvents(events);
+  d.adapter.setInterfaceObstructed(true);
+  events.clear(); d.adapter.appendGeneratedEvents(events);
+  EXPECT_TRUE(events.any([](auto const& e) { return e.template is<KeyUpEvent>(); }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  d.adapter.beginFrame(); d.adapter.endFrame();
+  events.clear(); d.adapter.appendGeneratedEvents(events);
+  EXPECT_TRUE(events.empty());
+}

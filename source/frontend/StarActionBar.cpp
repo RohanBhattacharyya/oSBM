@@ -15,6 +15,7 @@
 #include "StarImageMetadataDatabase.hpp"
 #include "StarItem.hpp"
 #include "StarMerchantInterface.hpp"
+#include "StarHudLayout.hpp"
 
 namespace Star {
 
@@ -24,7 +25,22 @@ ActionBar::ActionBar(MainInterfacePaneManager* paneManager, PlayerPtr player) {
 
   auto assets = Root::singleton().assets();
 
-  m_config = assets->json("/interface/windowconfig/actionbar.config");
+  m_baseConfig = assets->json("/interface/windowconfig/actionbar.config");
+  constructLayout(1.0f);
+  m_fullLayoutWidth = size()[0];
+}
+
+void ActionBar::constructLayout(float scale) {
+  auto assets = Root::singleton().assets();
+  auto configuration = Root::singleton().configuration();
+  bool bottomBar = configuration->getPath("inventory.bottomActionBar").optBool().value(false);
+  Json layout = bottomBar ? jsonMerge(m_baseConfig, assets->json("/interface/windowconfig/actionbarbottom.config")) : m_baseConfig;
+  m_config = scale == 1.0f ? layout : scaleHudLayout(layout, scale);
+  m_layoutScale = scale;
+  removeAllChildren();
+  m_customBarWidgets.clear();
+  m_essentialBarWidgets.clear();
+  setAnchorOffset({});
 
   m_actionBarSelectOffset = jsonToVec2I(m_config.get("actionBarSelectOffset"));
   m_switchSounds = jsonToStringList(m_config.get("sounds").get("switch"));
@@ -50,11 +66,6 @@ ActionBar::ActionBar(MainInterfacePaneManager* paneManager, PlayerPtr player) {
   reader.registerCallback("swapCustomBar", [this](Widget*) {
       swapCustomBar();
     });
-
-  auto configuration = Root::singleton().configuration();
-  bool bottomBar = configuration->getPath("inventory.bottomActionBar").optBool().value(false);
-  if (bottomBar)
-    m_config = jsonMerge(m_config, assets->json("/interface/windowconfig/actionbarbottom.config"));
 
   reader.construct(m_config.get("paneLayout"), this);
   if (bottomBar) {
@@ -92,6 +103,7 @@ ActionBar::ActionBar(MainInterfacePaneManager* paneManager, PlayerPtr player) {
   for (uint8_t i = 0; i < EssentialItemCount; ++i)
     m_essentialBarWidgets.append(fetchChild<ItemSlotWidget>(strf("essentialBar{}", i + 1)));
   m_essentialSelectedWidget = fetchChild<ImageWidget>("essentialSelect");
+  m_paneManager->invalidatePane(this);
 }
 
 PanePtr ActionBar::createTooltip(Vec2I const& screenPosition) {
@@ -196,10 +208,15 @@ bool ActionBar::sendEvent(InputEvent const& event) {
 }
 
 void ActionBar::update(float) {
+  if (m_baseConfig.getBool("osbmResponsive", false)) {
+    float scale = mobileHotbarScale(context()->windowInterfaceSize()[0], m_fullLayoutWidth);
+    if (std::abs(scale - m_layoutScale) > 0.001f)
+      constructLayout(scale);
+  }
   // Keep the enlarged bundled HUD below the corner widgets on narrow screens.
   // Other mods and bottom-bar layouts retain their original anchoring.
   if (m_config.getBool("osbmResponsive", false) && anchor() == PaneAnchor::CenterTop)
-    m_anchorOffset[1] = context()->windowInterfaceSize()[0] < size()[0] + 200 ? -64 : 0;
+    m_anchorOffset = mobileHotbarOffset(context()->windowInterfaceSize()[0], m_fullLayoutWidth);
   auto inventory = m_player->inventory();
   auto abl = inventory->selectedActionBarLocation();
   if (abl.is<CustomBarIndex>()) {

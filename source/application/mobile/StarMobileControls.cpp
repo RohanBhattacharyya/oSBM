@@ -732,6 +732,10 @@ public:
 
   void setInterfaceObstructed(bool obstructed) {
     if (obstructed != m_interfaceObstructed && m_config.revamped) {
+      if (obstructed) {
+        setKeyOwner("touchBodyTech", m_dashKey, false);
+        m_dashActive = false;
+      }
       // A latched walk/precision key must not turn inventory taps into shift
       // clicks. Keep the visible toggle's preference and resume on closing.
       for (auto const& id : m_toggledElements.values()) {
@@ -769,6 +773,7 @@ public:
   }
 
   void beginFrame() {
+    ++m_inputFrame;
     m_generatedEvents.clear();
     if (!overlayEnabled())
       cancelAll();
@@ -858,7 +863,7 @@ public:
     m_joystickFinger = 0;
     m_joystickElementId.clear();
     m_moveVec = {};
-    m_dashUntilMs = 0;
+    m_dashActive = false;
     m_aimJoystickActive = false;
     m_aimJoystickFinger = 0;
     m_aimJoystickElementId.clear();
@@ -1643,7 +1648,7 @@ private:
   }
 
   void emitActionEdges() {
-    bool dash = Time::monotonicMilliseconds() < m_dashUntilMs;
+    bool dash = m_dashActive;
     setKeyOwner("joystick:right", Key::D, !dash && m_moveVec[0] > 0.30f);
     setKeyOwner("joystick:left", Key::A, !dash && m_moveVec[0] < -0.30f);
     setKeyOwner("joystick:up", Key::W, m_moveVec[1] < -0.30f);
@@ -1651,6 +1656,7 @@ private:
     updateVirtualAimTarget();
     releaseExpiredPulsedActions();
     processMacroEvents();
+    updateBodyTech();
     repeatActionButtons();
     repeatDPadWheelActions();
 
@@ -1799,20 +1805,16 @@ private:
   void pressActionButton(MobileTouchElement const& element) {
     m_heldElements.add(element.id);
     if (element.action.kind == MobileTouchActionKind::BodyTech) {
-      auto now = Time::monotonicMilliseconds();
-      if (now >= m_dashUntilMs) {
-        // Vanilla body techs use a directional double tap. Suspend this
-        // stick's held key while the taps play, otherwise ownership merging
-        // would turn them into a continuous hold. No game-script replacement.
+      if (!m_dashActive) {
+        // Suspend this stick's held direction so the tech sees two taps.
         setKeyOwner("joystick:left", Key::A, false);
         setKeyOwner("joystick:right", Key::D, false);
         bool left = std::abs(m_moveVec[0]) > 0.30f ? m_moveVec[0] < 0 : m_facingLeft;
-        auto key = left ? Key::A : Key::D;
-        // Leave a full release interval before the first tap as well. If
-        // release and press share a game tick, an already-held direction
-        // never appears released to the tech's double-tap detector.
-        enqueueMacro({key, key}, "touchBodyTech", MacroKeyGapMs);
-        m_dashUntilMs = now + MacroKeyGapMs + macroRunDurationMs(2);
+        m_dashKey = left ? Key::A : Key::D;
+        m_dashActive = true;
+        m_dashPhase = 0;
+        m_dashPhaseFrame = m_inputFrame;
+        m_dashNextMs = Time::monotonicMilliseconds() + MacroKeyGapMs;
       }
       return;
     }
@@ -1870,6 +1872,20 @@ private:
       m_nextActionRepeatMs.remove(state.elementId);
       cancelPulsedAction(state.elementId);
     }
+  }
+
+  void updateBodyTech() {
+    auto now = Time::monotonicMilliseconds();
+    if (!m_dashActive || m_dashPhaseFrame == m_inputFrame || now < m_dashNextMs)
+      return;
+    // Advance at most one edge per input frame. Catching up several timed
+    // edges together would make a press disappear at low frame rates.
+    bool down = m_dashPhase % 2 == 0;
+    setKeyOwner("touchBodyTech", m_dashKey, down);
+    m_dashPhaseFrame = m_inputFrame;
+    m_dashNextMs = now + (down ? MacroKeyHoldMs : MacroKeyGapMs);
+    if (++m_dashPhase == 4)
+      m_dashActive = false;
   }
 
   // Owner tokens for the two direct-touch gestures (single-finger "Aim",
@@ -2007,8 +2023,8 @@ private:
     return false;
   }
 
-  void enqueueMacro(List<Key> const& keys, String const& owner, int64_t delayMs = 0) {
-    int64_t base = Time::monotonicMilliseconds() + delayMs;
+  void enqueueMacro(List<Key> const& keys, String const& owner) {
+    int64_t base = Time::monotonicMilliseconds();
     int64_t instance = ++m_macroInstanceCounter;
     int64_t cursor = base;
     size_t step = 0;
@@ -2179,7 +2195,12 @@ private:
   std::function<uintptr_t(String const&)> m_textureLoader;
   bool m_interfaceObstructed = false;
   bool m_facingLeft = false;
-  int64_t m_dashUntilMs = 0;
+  bool m_dashActive = false;
+  Key m_dashKey = Key::D;
+  unsigned m_dashPhase = 0;
+  uint64_t m_inputFrame = 0;
+  uint64_t m_dashPhaseFrame = 0;
+  int64_t m_dashNextMs = 0;
   unsigned m_hotbarGroup = 0;
   unsigned m_touchAimMode = 0;
   unsigned m_overlayVisibility = 0;

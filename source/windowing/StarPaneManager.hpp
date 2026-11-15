@@ -79,6 +79,9 @@ public:
 
   bool sendInputEvent(InputEvent const& event);
 
+  // Invalidate retained UI after a pane rebuilds its widget geometry.
+  void invalidatePane(Pane* pane);
+
   void render();
   void update(float dt);
 

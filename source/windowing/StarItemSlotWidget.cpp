@@ -149,12 +149,15 @@ void ItemSlotWidget::setProgress(float progress) {
 }
 
 void ItemSlotWidget::setItemScale(float scale) {
-  scale = clamp(scale, 0.5f, 3.0f);
+  scale = clamp(scale, 0.1f, 3.0f);
   float ratio = scale / m_itemScale;
   m_itemScale = scale;
   m_itemDraggableArea = RectI(Vec2I::round(Vec2F(m_itemDraggableArea.min()) * ratio),
       Vec2I::round(Vec2F(m_itemDraggableArea.max()) * ratio));
-  setSize(size().piecewiseMax(m_itemDraggableArea.max()));
+  Vec2I backingSize;
+  if (!m_backingImage.empty())
+    backingSize = Vec2I(Root::singleton().imageMetadataDatabase()->imageSize(m_backingImage));
+  setSize(backingSize.piecewiseMax(m_itemDraggableArea.max()));
   m_durabilityBar->setPosition(Vec2I::round(Vec2F(m_durabilityBar->relativePosition()) * ratio));
   m_durabilityBar->setSize(Vec2I::round(Vec2F(m_durabilityBar->size()) * ratio));
 }

@@ -28,6 +28,8 @@ public:
   Maybe<String> cursorOverride(Vec2I const& screenPosition) override;
 
 private:
+  void constructLayout(float scale);
+
   struct CustomBarEntry {
     ItemSlotWidgetPtr left;
     ItemSlotWidgetPtr right;
@@ -43,6 +45,9 @@ private:
   MainInterfacePaneManager* m_paneManager;
   PlayerPtr m_player;
   Json m_config;
+  Json m_baseConfig;
+  float m_layoutScale = 1.0f;
+  unsigned m_fullLayoutWidth = 0;
 
   Vec2I m_actionBarSelectOffset;
   StringList m_switchSounds;

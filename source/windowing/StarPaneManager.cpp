@@ -316,6 +316,11 @@ bool PaneManager::allDisplayedReplayable() const {
   return true;
 }
 
+void PaneManager::invalidatePane(Pane* pane) {
+  m_paneRenderCache.remove(pane);
+  ++m_displayedPanesVersion;
+}
+
 void PaneManager::render() {
   if (m_backgroundWidget) {
     auto size = m_backgroundWidget->size();
